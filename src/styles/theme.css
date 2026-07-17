@@ -1,0 +1,110 @@
+:root {
+  /* ── Blender-exact colors ───────────────────────────────── */
+  --color-bg-app:          #303030;
+  --color-bg-surface:      #282828;
+  --color-bg-surface-alt:  #242424;
+  --color-bg-panel:        #383838;
+  --color-bg-panel-header: #333333;
+  --color-bg-hover:        #444444;
+  --color-bg-active:       #4772b3;
+  --color-bg-input:        #2b2b2b;
+  --color-bg-raised:       #3d3d3d;
+  --color-bg-overlay:      rgba(0,0,0,0.6);
+
+  --color-border:          #232323;
+  --color-border-light:    #2a2a2a;
+  --color-border-focus:    #4772b3;
+
+  --color-text-primary:    #e6e6e6;
+  --color-text-secondary:  #a0a0a0;
+  --color-text-disabled:   #666666;
+  --color-text-accent:     #8cb9f5;
+
+  --color-accent:          #4772b3;
+  --color-accent-hover:    #5a8cce;
+  --color-accent-muted:    #2a4a7a;
+
+  --color-danger:          #b34747;
+  --color-warning:         #b3a247;
+  --color-success:         #47b35a;
+
+  /* ── Typography ─────────────────────────────────────────── */
+  --font-family:           'Inter', system-ui, -apple-system, sans-serif;
+  --font-family-mono:      'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  --font-size-xs:          10px;
+  --font-size-sm:          11px;
+  --font-size-md:          12px;
+  --font-size-lg:          14px;
+  --font-weight-normal:    400;
+  --font-weight-medium:    500;
+  --font-weight-semibold:  600;
+
+  /* ── Sizing ─────────────────────────────────────────────── */
+  --size-menubar-height:   28px;
+  --size-tabs-height:      28px;
+  --size-toolbar-width:    44px;
+  --size-panel-header:     26px;
+  --size-splitter:         4px;
+  --size-timeline-height:  200px;
+  --size-icon-sm:          14px;
+  --size-icon-md:          16px;
+  --size-icon-lg:          20px;
+  --size-row:              22px;
+  --size-input:            22px;
+  --size-timeline-header:  28px;
+  --size-timeline-row:     20px;
+  --size-keyframe:          8px;
+  --size-scrollbar:         8px;
+
+  /* ── Spacing ────────────────────────────────────────────── */
+  --space-1:               2px;
+  --space-2:               4px;
+  --space-3:               6px;
+  --space-4:               8px;
+  --space-5:               12px;
+  --space-6:               16px;
+
+  /* ── Radii ──────────────────────────────────────────────── */
+  --radius-sm:             2px;
+  --radius-md:             4px;
+
+  /* ── Shadows ────────────────────────────────────────────── */
+  --shadow-dropdown:       0 4px 12px rgba(0,0,0,0.4);
+  --shadow-modal:          0 8px 24px rgba(0,0,0,0.6);
+  --shadow-tooltip:        0 2px 8px rgba(0,0,0,0.5);
+
+  /* ── Transitions ────────────────────────────────────────── */
+  --transition-fast:       100ms;
+  --transition-normal:     200ms;
+
+  /* ── Z-index ────────────────────────────────────────────── */
+  --z-base:                0;
+  --z-panel:               1;
+  --z-overlay:             10;
+  --z-dropdown:            20;
+  --z-menu:                30;
+  --z-modal:               40;
+  --z-tooltip:             50;
+
+  /* ── Scrollbar ──────────────────────────────────────────── */
+  --scrollbar-track:       #282828;
+  --scrollbar-thumb:       #555;
+  --scrollbar-thumb-hover: #666;
+
+  /* ── Viewport ───────────────────────────────────────────── */
+  --viewport-bg:           #1a1a1a;
+  --viewport-grid:         rgba(255,255,255,0.03);
+  --viewport-grid-major:   rgba(255,255,255,0.08);
+  --viewport-crosshair:    rgba(255,255,255,0.12);
+
+  /* ── Timeline ───────────────────────────────────────────── */
+  --timeline-playhead:     #e8b84b;
+  --timeline-grid:         #3a3a3a;
+  --timeline-grid-sub:     #333333;
+
+  /* ── Outliner ───────────────────────────────────────────── */
+  --outliner-indent:       16px;
+
+  /* ── Properties ─────────────────────────────────────────── */
+  --prop-label-width:       80px;
+}

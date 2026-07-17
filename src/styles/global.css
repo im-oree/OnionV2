@@ -1,0 +1,32 @@
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+@import './theme.css';
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+html{font-size:var(--font-size-md);line-height:1.5;-webkit-font-smoothing:antialiased;overflow:hidden;height:100%}
+
+body{font-family:var(--font-family);background:var(--color-bg-app);color:var(--color-text-primary);height:100%;overflow:hidden;user-select:none;cursor:default}
+
+#root{height:100%;display:flex;flex-direction:column}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:var(--size-scrollbar);height:var(--size-scrollbar)}
+::-webkit-scrollbar-track{background:var(--scrollbar-track)}
+::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:calc(var(--size-scrollbar)/2)}
+::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-thumb-hover)}
+
+/* Focus */
+:focus-visible{outline:1px solid var(--color-border-focus);outline-offset:-1px}
+::selection{background:var(--color-accent);color:#fff}
+
+/* Inputs */
+input,textarea,select,button{font-family:inherit;font-size:inherit;color:inherit}
+input[type="text"],input[type="number"],input[type="search"]{background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:var(--radius-sm);padding:1px 4px;height:var(--size-input);color:var(--color-text-primary);outline:none;transition:border-color var(--transition-fast)}
+input[type="text"]:focus,input[type="number"]:focus,input[type="search"]:focus{border-color:var(--color-border-focus)}
+input::placeholder{color:var(--color-text-disabled)}
+
+.no-select{user-select:none;-webkit-user-select:none}
+
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
