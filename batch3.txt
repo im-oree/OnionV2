@@ -1,0 +1,1593 @@
+﻿===== src\ui\panels\viewport\ViewportPanel.tsx =====
+/**
+ * ViewportPanel â€” the main viewport area.
+ * Two-layer approach: Three.js canvas for rendering, SVG/HTML overlay for HUD/rulers/guides.
+ */
+import React, { useRef } from 'react';
+import { useRenderer } from './hooks/useRenderer';
+import { useViewportInput } from './hooks/useViewportInput';
+import { useViewportSize } from './hooks/useViewportSize';
+import { ViewportHUD } from './ViewportHUD';
+import { TransformHUD } from './TransformHUD';
+import { Rulers } from './Rulers';
+import { Guides } from './Guides';
+import { AxisGizmo } from './AxisGizmo';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useViewportStore } from '../../../state/viewportStore';
+import { STRINGS } from './strings';
+
+export const ViewportPanel: React.FC = () => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewportSize = useViewportSize(containerRef as React.RefObject<HTMLElement | null>);
+  const { state, viewportState, renderer } = useRenderer(containerRef.current);
+
+  const comp = useCompositionStore((s) => {
+    const id = s.activeCompositionId;
+    return id ? s.compositions.find((c) => c.id === id) ?? null : null;
+  });
+
+  const showRulers = useViewportStore((s) => s.settings.showRulers);
+  const showGuides = useViewportStore((s) => s.settings.showGuides);
+  const showStats = useViewportStore((s) => s.settings.showStats);
+
+  // Mount viewport input (pan/zoom/select/transform) on the canvas
+  useViewportInput({
+    canvas: renderer?.canvas ?? null,
+    cameraManager: renderer?.cameraManager ?? null,
+    hitTester: renderer?.hitTester ?? null,
+    modalTransform: renderer?.modalTransform ?? null,
+    requestRender: renderer ? () => renderer.renderLoop.requestRender() : undefined,
+  });
+
+  return (
+    <div className="w-full h-full relative overflow-hidden bg-[var(--viewport-bg)]">
+      <div ref={containerRef} className="absolute inset-0" style={{ zIndex: 1 }} />
+
+      {!comp && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <div className="flex flex-col items-center gap-2 text-text-disabled">
+            <span className="text-ui-lg font-medium">{STRINGS.title}</span>
+            <span className="text-ui-sm">{STRINGS.placeholder}</span>
+            <span className="text-ui-xs">{STRINGS.noComp}</span>
+          </div>
+        </div>
+      )}
+
+      {comp && (
+        <div className="absolute inset-0 z-20 pointer-events-none">
+          {showRulers && viewportSize.width > 0 && (
+            <Rulers zoom={state.zoom} viewportSize={viewportSize} cameraManager={renderer?.cameraManager ?? null} />
+          )}
+          {showGuides && <Guides viewportSize={viewportSize} />}
+        </div>
+      )}
+
+      {comp && (
+        <AxisGizmo />
+      )}
+
+      {comp && (
+        <TransformHUD modalTransform={renderer?.modalTransform ?? null} cameraManager={renderer?.cameraManager ?? null} />
+      )}
+
+      {comp && (
+        <ViewportHUD
+          fps={state.fps}
+          zoom={state.zoom}
+          showStats={showStats}
+          viewportSize={viewportSize}
+          selectedLayerIds={viewportState.selectedLayerIds}
+          transformMode={viewportState.transformMode}
+          onZoomChange={(z) => {
+            const r = renderer;
+            if (r) {
+              r.cameraManager.setZoom(z);
+              r.renderLoop.requestRender();
+            }
+          }}
+          onFitToViewport={() => {
+            const r = renderer;
+            if (r) r.cameraManager.fitToComposition();
+          }}
+        />
+      )}
+
+      {!comp && (
+        <span className="absolute bottom-2 right-2 text-ui-xs text-text-disabled/40 pointer-events-none z-10">
+          1920Ã—1080 | 30fps
+        </span>
+      )}
+    </div>
+  );
+};
+
+export default ViewportPanel;
+
+
+===== src\ui\panels\viewport\hooks\useViewportInput.ts =====
+/**
+ * useViewportInput â€” mounts mouse/keyboard event handlers on the Three.js canvas.
+ *
+ * BEHAVIOR:
+ * - SELECT: click-select, box-select (default)
+ * - MOVE/ROTATE/SCALE tools: hit-test â†’ select â†’ start modal transform
+ * - HAND: click-drag to pan
+ * - ZOOM: click to zoom in, alt+click to zoom out
+ * - SHAPE_RECT/SHAPE_ELLIPSE: click-drag to draw shape
+ * - PEN: click to place shape at cursor
+ * - TEXT: click to place text at cursor
+ *
+ * MODAL TRANSFORM (I1-I9):
+ * - Click on layer â†’ direct drag (no pointer lock)
+ * - G/R/S keyboard â†’ pointer lock, hidden cursor
+ * - During transform: X/Y axis lock, Shift+X/Y exclude, numeric input, precision/snap
+ * - Right-click or Esc: cancel, Enter or mouseup: confirm
+ * - Axis guide lines drawn as SVG overlay
+ */
+import { useEffect, useRef } from 'react';
+import { CameraManager } from '../../../../renderer/CameraManager';
+import { HitTester } from '../../../../renderer/interaction/HitTest';
+import { ModalTransform } from '../../../../renderer/interaction/ModalTransform';
+import { VIEWPORT_CONFIG } from '../../../../config/viewportConfig';
+import { useCompositionStore } from '../../../../state/compositionStore';
+import { useSelectionStore } from '../../../../state/selectionStore';
+import { useToolStore, type ToolId } from '../../../../state/toolStore';
+import { TOOLS } from '../../../../config/constants';
+import { createDefaultLayer } from '../../../../config/defaults';
+import type { Layer } from '../../../../types/layer';
+
+function genId(): string {
+  return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+interface UseViewportInputOptions {
+  canvas: HTMLCanvasElement | null;
+  cameraManager: CameraManager | null;
+  hitTester: HitTester | null;
+  modalTransform: ModalTransform | null;
+  requestRender?: () => void;
+}
+
+export function useViewportInput({
+  canvas, cameraManager, hitTester, modalTransform, requestRender,
+}: UseViewportInputOptions): void {
+  const isPanning = useRef(false);
+  const isSpacePanning = useRef(false);
+  const isBoxSelecting = useRef(false);
+  const isDrawing = useRef(false);
+  const lastMouse = useRef({ x: 0, y: 0 });
+  const boxStart = useRef({ x: 0, y: 0 });
+  const cmRef = useRef(cameraManager);
+  const htRef = useRef(hitTester);
+  const mtRef = useRef(modalTransform);
+  const canvasRef = useRef(canvas);
+  const axisGuideRef = useRef<SVGSVGElement | null>(null);
+  const mouseMoved = useRef(false);
+
+  useEffect(() => {
+    if (!canvas) return;
+    canvasRef.current = canvas;
+    const el = canvas;
+    let drawSvg: SVGSVGElement | null = null;
+    let boxSvg: SVGSVGElement | null = null;
+
+    // â”€â”€ Document-level listeners for transforms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    let docMousemove: ((e: MouseEvent) => void) | null = null;
+    let docMouseup: ((e: MouseEvent) => void) | null = null;
+    let docKeydown: ((e: KeyboardEvent) => void) | null = null;
+    let docKeyup: ((e: KeyboardEvent) => void) | null = null;
+
+    function attachDocListeners(): void {
+      detachDocListeners();
+      docMousemove = (ev: MouseEvent) => {
+        const mt = mtRef.current;
+        if (!mt?.active || !cmRef.current) return;
+
+        if (document.pointerLockElement === canvasRef.current) {
+          // Pointer lock active â€” use movement deltas (I2)
+          if (ev.movementX !== 0 || ev.movementY !== 0) {
+            mouseMoved.current = true;
+            mt.updateDelta(ev.movementX, ev.movementY);
+          }
+        } else {
+          // Direct drag â€” compute delta from clientX/Y (H1b)
+          const dx = ev.clientX - lastMouse.current.x;
+          const dy = ev.clientY - lastMouse.current.y;
+          lastMouse.current = { x: ev.clientX, y: ev.clientY };
+          if (dx !== 0 || dy !== 0) {
+            mouseMoved.current = true;
+            mt.updateDelta(dx, dy);
+          }
+        }
+      };
+
+      docMouseup = (ev: MouseEvent) => {
+        const mt = mtRef.current;
+        if (!mt?.active) return;
+        // Right-click â†’ cancel, Left-click â†’ confirm (Blender convention)
+        if (ev.button === 2) mt.cancel();
+        else if (ev.button === 0) mt.confirm();
+        mouseMoved.current = false;
+        detachDocListeners();
+      };
+
+      // Key handlers during modal transform (I5)
+      docKeydown = (ev: KeyboardEvent) => {
+        const mt = mtRef.current;
+        if (!mt?.active) return;
+
+        // Confirm/Cancel
+        if (ev.key === 'Escape') { mt.cancel(); detachDocListeners(); return; }
+        if (ev.key === 'Enter') { mt.confirm(); detachDocListeners(); return; }
+
+        // Axis constraints (I5)
+        if (ev.key === 'x' && !ev.shiftKey) { mt.setAxisLock('x'); updateAxisGuide(); return; }
+        if (ev.key === 'y' && !ev.shiftKey) { mt.setAxisLock('y'); updateAxisGuide(); return; }
+        if (ev.key === 'X' && ev.shiftKey) { mt.setAxisExclude('x'); updateAxisGuide(); return; }
+        if (ev.key === 'Y' && ev.shiftKey) { mt.setAxisExclude('y'); updateAxisGuide(); return; }
+
+        // Precision mode (Shift held â€” tracked in keyup)
+        if (ev.key === 'Shift') { mt.setPrecisionMode(true); return; }
+        // Snap mode (Ctrl held)
+        if (ev.key === 'Control') { mt.setSnapMode(true); return; }
+        // Aspect lock for scale (Alt held) (J7)
+        if (ev.key === 'Alt') { mt.setAspectLock(true); return; }
+
+        // Numeric input (I5)
+        if (/^[0-9.\-]$/.test(ev.key)) { mt.pushNumericChar(ev.key); return; }
+        if (ev.key === 'Backspace') { mt.backspaceNumeric(); return; }
+      };
+
+      docKeyup = (ev: KeyboardEvent) => {
+        const mt = mtRef.current;
+        if (!mt?.active) return;
+        if (ev.key === 'Shift') { mt.setPrecisionMode(false); return; }
+        if (ev.key === 'Control') { mt.setSnapMode(false); return; }
+        if (ev.key === 'Alt') { mt.setAspectLock(false); return; } // J7
+      };
+
+      document.addEventListener('mousemove', docMousemove);
+      document.addEventListener('mouseup', docMouseup);
+      document.addEventListener('keydown', docKeydown);
+      document.addEventListener('keyup', docKeyup);
+      createAxisGuide();
+    }
+
+    function detachDocListeners(): void {
+      if (docMousemove) document.removeEventListener('mousemove', docMousemove);
+      if (docMouseup) document.removeEventListener('mouseup', docMouseup);
+      if (docKeydown) document.removeEventListener('keydown', docKeydown);
+      if (docKeyup) document.removeEventListener('keyup', docKeyup);
+      docMousemove = null;
+      docMouseup = null;
+      docKeydown = null;
+      docKeyup = null;
+      removeAxisGuide();
+    }
+
+    // â”€â”€ Axis guide lines (I4) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    function createAxisGuide(): void {
+      removeAxisGuide();
+      const parent = el.parentElement;
+      if (!parent) return;
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.style.position = 'absolute';
+      svg.style.inset = '0';
+      svg.style.pointerEvents = 'none';
+      svg.style.zIndex = '24';
+      svg.style.width = '100%';
+      svg.style.height = '100%';
+      parent.appendChild(svg);
+      axisGuideRef.current = svg;
+    }
+
+    function removeAxisGuide(): void {
+      if (axisGuideRef.current && axisGuideRef.current.parentElement) {
+        axisGuideRef.current.parentElement.removeChild(axisGuideRef.current);
+      }
+      axisGuideRef.current = null;
+    }
+
+    function updateAxisGuide(): void {
+      const svg = axisGuideRef.current;
+      const mt = mtRef.current;
+      if (!svg || !mt?.active || (!mt.axisLock && !mt.axisExclude)) {
+        if (svg) svg.innerHTML = '';
+        return;
+      }
+      svg.innerHTML = '';
+      const ns = 'http://www.w3.org/2000/svg';
+      const w = svg.clientWidth || 300;
+      const h = svg.clientHeight || 200;
+      const halfW = w / 2;
+      const halfH = h / 2;
+
+      // X axis line â€” red, dashed
+      if (mt.axisLock === 'x') {
+        const line = document.createElementNS(ns, 'line');
+        line.setAttribute('x1', '0'); line.setAttribute('y1', String(halfH));
+        line.setAttribute('x2', String(w)); line.setAttribute('y2', String(halfH));
+        line.setAttribute('stroke', '#ff4444');
+        line.setAttribute('stroke-width', '1');
+        line.setAttribute('stroke-dasharray', '4 2');
+        svg.appendChild(line);
+      }
+      // Y axis line â€” green, dashed
+      if (mt.axisLock === 'y') {
+        const line = document.createElementNS(ns, 'line');
+        line.setAttribute('x1', String(halfW)); line.setAttribute('y1', '0');
+        line.setAttribute('x2', String(halfW)); line.setAttribute('y2', String(h));
+        line.setAttribute('stroke', '#44ff44');
+        line.setAttribute('stroke-width', '1');
+        line.setAttribute('stroke-dasharray', '4 2');
+        svg.appendChild(line);
+      }
+      // Axis exclude: draw both dimmed (I4)
+      if (mt.axisExclude === 'x') {
+        const l = document.createElementNS(ns, 'line');
+        l.setAttribute('x1', '0'); l.setAttribute('y1', String(halfH));
+        l.setAttribute('x2', String(w)); l.setAttribute('y2', String(halfH));
+        l.setAttribute('stroke', 'rgba(255,68,68,0.4)');
+        l.setAttribute('stroke-width', '1');
+        l.setAttribute('stroke-dasharray', '2 3');
+        svg.appendChild(l);
+      }
+      if (mt.axisExclude === 'y') {
+        const l = document.createElementNS(ns, 'line');
+        l.setAttribute('x1', String(halfW)); l.setAttribute('y1', '0');
+        l.setAttribute('x2', String(halfW)); l.setAttribute('y2', String(h));
+        l.setAttribute('stroke', 'rgba(68,255,68,0.4)');
+        l.setAttribute('stroke-width', '1');
+        l.setAttribute('stroke-dasharray', '2 3');
+        svg.appendChild(l);
+      }
+    }
+
+    // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const createOverlay = (kind: 'draw' | 'box') => {
+      const parent = el.parentElement;
+      if (!parent) return null;
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.style.position = 'absolute';
+      svg.style.inset = '0';
+      svg.style.pointerEvents = 'none';
+      svg.style.zIndex = kind === 'draw' ? '22' : '20';
+      svg.style.width = '100%';
+      svg.style.height = '100%';
+      parent.appendChild(svg);
+      return svg;
+    };
+
+    const getTool = () => useToolStore.getState().activeTool;
+
+    function hitTestAndSelect(
+      mouseX: number, mouseY: number, clientX: number, clientY: number, tool: string,
+    ): boolean {
+      const cm = cmRef.current;
+      const ht = htRef.current;
+      if (!cm || !ht) return false;
+      const compState = useCompositionStore.getState();
+      const compId = compState.activeCompositionId;
+      if (!compId) return false;
+      const comp = compState.compositions.find((c) => c.id === compId);
+      if (!comp) return false;
+
+      const visibleIds = comp.layers.filter((l) => l.visible && !l.locked).map((l) => l.id);
+      const hit = ht.hitTest(mouseX, mouseY, visibleIds);
+      if (!hit) return false;
+
+      // Select the hit layer
+      useSelectionStore.getState().select({ type: 'layer', id: hit.layerId, compositionId: compId });
+
+      // Start direct-drag modal transform (no pointer lock for mouse-initiated drag)
+      if (mtRef.current) {
+        const mode = tool === (TOOLS.ROTATE as ToolId) ? 'rotate'
+                   : tool === (TOOLS.SCALE as ToolId) ? 'scale'
+                   : 'grab';
+        mtRef.current.start(mode as 'grab' | 'rotate' | 'scale');
+        // J4: Store initial mouse screen position for pivot-based scale
+        mtRef.current.startMouseScreen = { x: clientX, y: clientY };
+        mouseMoved.current = false;
+        lastMouse.current = { x: clientX, y: clientY };
+        attachDocListeners();
+      }
+
+      isPanning.current = false;
+      return true;
+    }
+
+    // â”€â”€ Mouse handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    // L2-L3: Handle bounding box handles (data-handle) + Blender gizmo (data-gizmo) on the container
+    // SVG elements with pointer-events:all intercept clicks before they reach the canvas.
+    const container = el.parentElement;
+    const gizmoMouseDown = (e: MouseEvent) => {
+      const target = e.target as SVGElement;
+      const handleAttr = target?.getAttribute?.('data-handle');
+      const gizmoAttr = target?.getAttribute?.('data-gizmo');
+      if (!handleAttr && !gizmoAttr) return;
+      if (!mtRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Determine mode from handle type
+      let mode: 'grab' | 'rotate' | 'scale';
+      if (handleAttr === 'rotate') mode = 'rotate';
+      else if (handleAttr || gizmoAttr === 'corner' || gizmoAttr === 'edge' ||
+               gizmoAttr === 'scale-uniform' || gizmoAttr === 'scale-x' || gizmoAttr === 'scale-y') mode = 'scale';
+      else if (gizmoAttr?.startsWith('rotate')) mode = 'rotate';
+      else if (gizmoAttr?.startsWith('scale')) mode = 'scale';
+      else mode = 'grab';
+
+      mtRef.current.start(mode);
+      mtRef.current.startMouseScreen = { x: e.clientX, y: e.clientY };
+
+      // L3: Compute handle pivot for PowerPoint-style opposite-corner/edge scaling
+      if (handleAttr && mode !== 'grab' && cmRef.current) {
+        const compState = useCompositionStore.getState();
+        const compId = compState.activeCompositionId;
+        if (compId) {
+          const comp = compState.compositions.find((c) => c.id === compId);
+          const selectedIds = useSelectionStore.getState().getSelectedIds();
+          if (comp && selectedIds.length > 0) {
+            const layer = comp.layers.find((l) => l.id === selectedIds[0]);
+            if (layer) {
+              const pos = layer.transform.position;
+              const sc = layer.transform.scale;
+              // Approximate half-size from layer data (varies by type)
+              let halfW = 50, halfH = 50;
+              if ('width' in (layer.data || {}) && 'height' in (layer.data || {})) {
+                halfW = ((layer.data as any).width / 2) * (sc.x / 100);
+                halfH = ((layer.data as any).height / 2) * (sc.y / 100);
+              }
+              // Rotation in radians for rotating the offset
+              const rad = (layer.transform.rotation || 0) * (Math.PI / 180);
+              const cos = Math.cos(rad);
+              const sin = Math.sin(rad);
+              // Pivot offset based on handle type (opposite corner/edge)
+              let px = 0, py = 0;
+              // Corners: offset from center to opposite corner
+              if (handleAttr === 'tl') { px = halfW; py = -halfH; }       // opposite = BR
+              else if (handleAttr === 'tr') { px = -halfW; py = -halfH; } // opposite = BL
+              else if (handleAttr === 'br') { px = -halfW; py = halfH; }  // opposite = TL
+              else if (handleAttr === 'bl') { px = halfW; py = halfH; }   // opposite = TR
+              // Edges: offset from center to opposite edge
+              else if (handleAttr === 'top') { px = 0; py = -halfH; }     // opposite = bottom edge
+              else if (handleAttr === 'bottom') { px = 0; py = halfH; }   // opposite = top edge
+              else if (handleAttr === 'left') { px = halfW; py = 0; }     // opposite = right edge
+              else if (handleAttr === 'right') { px = -halfW; py = 0; }   // opposite = left edge
+              // Rotate offset by layer rotation
+              const rx = px * cos - py * sin;
+              const ry = px * sin + py * cos;
+              mtRef.current.setHandlePivotWorld({ x: pos.x + rx, y: pos.y + ry });
+            }
+          }
+        }
+      }
+
+      // Axis lock / aspect lock
+      if (gizmoAttr === 'move-x' || gizmoAttr === 'scale-x') mtRef.current.setAxisLock('x');
+      else if (gizmoAttr === 'move-y' || gizmoAttr === 'scale-y') mtRef.current.setAxisLock('y');
+      else if (gizmoAttr === 'scale-uniform' || handleAttr === 'corner' ||
+               handleAttr === 'tl' || handleAttr === 'tr' || handleAttr === 'br' || handleAttr === 'bl') {
+        mtRef.current.setAspectLock(true);
+      }
+      // Edge handles: constrain to single axis
+      if (handleAttr === 'top' || handleAttr === 'bottom') mtRef.current.setAxisLock('y');
+      if (handleAttr === 'left' || handleAttr === 'right') mtRef.current.setAxisLock('x');
+
+      mouseMoved.current = false;
+      lastMouse.current = { x: e.clientX, y: e.clientY };
+      attachDocListeners();
+    };
+    if (container) container.addEventListener('mousedown', gizmoMouseDown);
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 1 || (e.button === 0 && (e.ctrlKey || e.metaKey))) {
+        isPanning.current = true;
+        lastMouse.current = { x: e.clientX, y: e.clientY };
+        e.preventDefault();
+        return;
+      }
+      if (e.button !== 0) return;
+
+      const tool = getTool();
+      const rect = el.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      cmRef.current = cameraManager;
+      htRef.current = hitTester;
+      mtRef.current = modalTransform;
+
+      // MOVE / ROTATE / SCALE tools â€” hit-test and start modal transform on hit
+      if (tool === (TOOLS.MOVE as ToolId) || tool === (TOOLS.ROTATE as ToolId) || tool === (TOOLS.SCALE as ToolId)) {
+        if (hitTestAndSelect(mouseX, mouseY, e.clientX, e.clientY, tool)) return;
+      }
+
+      // PEN tool â€” click to create shape at cursor
+      if (tool === (TOOLS.PEN as ToolId)) {
+        if (cmRef.current) {
+          const world = cmRef.current.screenToWorld(mouseX, mouseY);
+          const compState = useCompositionStore.getState();
+          const compId = compState.activeCompositionId;
+          if (compId) {
+            const comp = compState.compositions.find((c) => c.id === compId);
+            if (comp) {
+              const typeName = comp.layers.filter((l) => l.type === 'shape').length + 1;
+              const base = createDefaultLayer('shape', `Path ${typeName}`);
+              const layer: Layer = {
+                ...base, id: genId(), zIndex: comp.layers.length + 1,
+                transform: { position: { x: world.x, y: world.y }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
+                data: { type: 'rectangle', width: 50, height: 50, borderRadius: 0 },
+              };
+              useCompositionStore.getState().addLayer(compId, layer);
+              useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+            }
+          }
+        }
+        return;
+      }
+
+      // TEXT tool â€” click to create text layer at cursor
+      if (tool === (TOOLS.TEXT as ToolId)) {
+        if (cmRef.current) {
+          const world = cmRef.current.screenToWorld(mouseX, mouseY);
+          const compState = useCompositionStore.getState();
+          const compId = compState.activeCompositionId;
+          if (compId) {
+            const comp = compState.compositions.find((c) => c.id === compId);
+            if (comp) {
+              const typeName = comp.layers.filter((l) => l.type === 'text').length + 1;
+              const base = createDefaultLayer('text', `Text ${typeName}`);
+              const layer: Layer = {
+                ...base, id: genId(), zIndex: comp.layers.length + 1,
+                transform: { position: { x: world.x, y: world.y }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
+                data: { text: 'Text', fontFamily: 'Inter', fontSize: 48, fontWeight: 400, color: '#ffffff', lineHeight: 1.2, letterSpacing: 0, alignment: 'center' as const },
+              };
+              useCompositionStore.getState().addLayer(compId, layer);
+              useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+            }
+          }
+        }
+        return;
+      }
+
+      // Modal transform already active â€” let doc listeners handle it
+      if (mtRef.current?.active) {
+        isPanning.current = false;
+        lastMouse.current = { x: mouseX, y: mouseY };
+        return;
+      }
+
+      // HAND tool â€” always pan
+      if (tool === (TOOLS.HAND as ToolId)) {
+        isPanning.current = true;
+        lastMouse.current = { x: mouseX, y: mouseY };
+        e.preventDefault();
+        return;
+      }
+
+      // ZOOM tool â€” click = zoom in, alt+click = zoom out
+      if (tool === (TOOLS.ZOOM as ToolId)) {
+        if (cmRef.current) {
+          const factor = e.altKey ? 1 / 1.5 : 1.5;
+          cmRef.current.setZoom(cmRef.current.zoom * factor);
+        }
+        return;
+      }
+
+      // SHAPE tools â€” start drawing (M4)
+      if (tool === (TOOLS.SHAPE_RECT as ToolId) || tool === (TOOLS.SHAPE_ELLIPSE as ToolId)) {
+        boxStart.current = { x: mouseX, y: mouseY };
+        isDrawing.current = true;
+        drawSvg = createOverlay('draw');
+        return;
+      }
+
+      // SELECT tool â€” hit-test first, then box-select
+      if (hitTestAndSelect(mouseX, mouseY, e.clientX, e.clientY, tool)) return;
+
+      // No hit â€” start box-select (H1c)
+      isBoxSelecting.current = true;
+      boxStart.current = { x: mouseX, y: mouseY };
+      boxSvg = createOverlay('box');
+      if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        useSelectionStore.getState().deselectAll();
+      }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      // Modal transform is handled by document listeners
+      if (mtRef.current?.active) return;
+
+      // Shape drawing preview
+      if (isDrawing.current && cmRef.current) {
+        // ... unchanged from previous implementation ...
+        const rect = el.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const x = Math.min(boxStart.current.x, mx);
+        const y = Math.min(boxStart.current.y, my);
+        const w = Math.abs(mx - boxStart.current.x);
+        const h = Math.abs(my - boxStart.current.y);
+        if (drawSvg) {
+          drawSvg.innerHTML = '';
+          const ns = 'http://www.w3.org/2000/svg';
+          const shape = document.createElementNS(ns, 'rect');
+          shape.setAttribute('x', String(x)); shape.setAttribute('y', String(y));
+          shape.setAttribute('width', String(w)); shape.setAttribute('height', String(h));
+          shape.setAttribute('fill', 'rgba(71, 114, 179, 0.2)');
+          shape.setAttribute('stroke', 'var(--color-accent)');
+          shape.setAttribute('stroke-width', '1');
+          drawSvg.appendChild(shape);
+        }
+        return;
+      }
+
+      // Pan (M1: requestRender for real-time updates)
+      if ((isPanning.current || isSpacePanning.current) && cmRef.current) {
+        const dx = e.clientX - lastMouse.current.x;
+        const dy = e.clientY - lastMouse.current.y;
+        const zoom = cmRef.current.zoom;
+        cmRef.current.pan(-dx * zoom, dy * zoom);
+        lastMouse.current = { x: e.clientX, y: e.clientY };
+        requestRender?.();
+        return;
+      }
+
+      // Box select
+      if (isBoxSelecting.current && boxSvg && cmRef.current) {
+        const rect = el.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const x = Math.min(boxStart.current.x, mx);
+        const y = Math.min(boxStart.current.y, my);
+        const w = Math.abs(mx - boxStart.current.x);
+        const h = Math.abs(my - boxStart.current.y);
+        boxSvg.innerHTML = '';
+        const ns = 'http://www.w3.org/2000/svg';
+        const rectEl = document.createElementNS(ns, 'rect');
+        rectEl.setAttribute('x', String(x)); rectEl.setAttribute('y', String(y));
+        rectEl.setAttribute('width', String(w)); rectEl.setAttribute('height', String(h));
+        rectEl.setAttribute('fill', 'rgba(71, 114, 179, 0.15)');
+        rectEl.setAttribute('stroke', 'var(--color-accent)');
+        rectEl.setAttribute('stroke-width', '1');
+        rectEl.setAttribute('stroke-dasharray', '4 2');
+        boxSvg.appendChild(rectEl);
+
+        const compState = useCompositionStore.getState();
+        const compId = compState.activeCompositionId;
+        if (compId) {
+          const comp = compState.compositions.find((c) => c.id === compId);
+          if (comp) {
+            const worldMin = cmRef.current.screenToWorld(x, y);
+            const worldMax = cmRef.current.screenToWorld(x + w, y + h);
+            const intersecting = comp.layers.filter((l) => {
+              const t = l.transform;
+              return t.position.x - 50 < worldMax.x && t.position.x + 50 > worldMin.x &&
+                     t.position.y - 50 < worldMax.y && t.position.y + 50 > worldMin.y;
+            });
+            useSelectionStore.getState().replaceSelection(intersecting.map((l) => l.id), compId);
+          }
+        }
+      }
+    };
+
+    const onMouseUp = (e: MouseEvent) => {
+      if (e.button === 1) isPanning.current = false;
+      if (e.button === 0) {
+        isSpacePanning.current = false;
+        isPanning.current = false;
+
+        if (isDrawing.current) {
+          isDrawing.current = false;
+          if (drawSvg && drawSvg.parentElement) drawSvg.parentElement.removeChild(drawSvg);
+          drawSvg = null;
+
+          const tool = getTool();
+          const rect = el.getBoundingClientRect();
+          const mx = e.clientX - rect.left;
+          const my = e.clientY - rect.top;
+          const w = Math.abs(mx - boxStart.current.x);
+          const h = Math.abs(my - boxStart.current.y);
+          if (w < 5 || h < 5) return;
+
+          if (cmRef.current) {
+            // M4: Shift = constrain aspect, Alt = draw from center
+            const isE = e as MouseEvent;
+            const shiftHeld = isE.shiftKey;
+            const altHeld = isE.altKey;
+            let dw = w, dh = h;
+            if (shiftHeld) {
+              // Constrain to square/circle
+              const size = Math.max(dw, dh);
+              dw = size;
+              dh = size;
+            }
+            const centerWorld = cmRef.current.screenToWorld(
+              altHeld
+                ? boxStart.current.x
+                : (boxStart.current.x + mx) / 2,
+              altHeld
+                ? boxStart.current.y
+                : (boxStart.current.y + my) / 2,
+            );
+            const worldW = dw * cmRef.current.zoom;
+            const worldH = dh * cmRef.current.zoom;
+            const compState = useCompositionStore.getState();
+            const compId = compState.activeCompositionId;
+            if (compId) {
+              const comp = compState.compositions.find((c) => c.id === compId);
+              if (comp) {
+                const isRect = tool === (TOOLS.SHAPE_RECT as ToolId);
+                const typeName = comp.layers.filter((l) => l.type === 'shape').length + 1;
+                const base = createDefaultLayer('shape', `${isRect ? 'Rectangle' : 'Ellipse'} ${typeName}`);
+                const layer: Layer = {
+                  ...base, id: genId(), zIndex: comp.layers.length + 1,
+                  transform: { position: { x: centerWorld.x, y: centerWorld.y }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
+                  data: isRect
+                    ? { type: 'rectangle', width: Math.round(worldW), height: Math.round(worldH), borderRadius: 0 }
+                    : { type: 'ellipse', radiusX: Math.round(worldW / 2), radiusY: Math.round(worldH / 2) },
+                };
+                useCompositionStore.getState().addLayer(compId, layer);
+                useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+              }
+            }
+          }
+          return;
+        }
+
+        if (isBoxSelecting.current) {
+          isBoxSelecting.current = false;
+          if (boxSvg && boxSvg.parentElement) boxSvg.parentElement.removeChild(boxSvg);
+          boxSvg = null;
+        }
+      }
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      if (!cmRef.current) return;
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const worldBefore = cmRef.current.screenToWorld(mouseX, mouseY);
+      const factor = e.deltaY < 0 ? 1 / VIEWPORT_CONFIG.ZOOM_FACTOR : VIEWPORT_CONFIG.ZOOM_FACTOR;
+      cmRef.current.setZoom(cmRef.current.zoom * factor);
+      const worldAfter = cmRef.current.screenToWorld(mouseX, mouseY);
+      cmRef.current.pan(worldBefore.x - worldAfter.x, worldBefore.y - worldAfter.y);
+      // M1: Request render after zoom for real-time updates
+      requestRender?.();
+    };
+
+    const onContextMenu = (e: Event) => e.preventDefault();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat) {
+        isSpacePanning.current = true;
+        isPanning.current = true;
+        e.preventDefault();
+      }
+      // Escape during modal handled by docKeydown; this catches non-modal Esc
+      if (e.key === 'Escape' && mtRef.current?.active) { mtRef.current.cancel(); detachDocListeners(); }
+      if (e.key === 'Enter' && mtRef.current?.active) { mtRef.current.confirm(); detachDocListeners(); }
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') { isSpacePanning.current = false; isPanning.current = false; }
+    };
+
+    // Attach doc listeners when transform starts from keyboard (G/R/S via event chain)
+    const onTransformEvent = () => {
+      const mt = mtRef.current;
+      const canvas = canvasRef.current;
+      if (mt?.active && canvas) {
+        // Restart with pointer lock (keyboard-initiated transform)
+        // Re-use the mode from the last start
+        attachDocListeners();
+      }
+    };
+    document.addEventListener('transform:grab', onTransformEvent);
+    document.addEventListener('transform:rotate', onTransformEvent);
+    document.addEventListener('transform:scale', onTransformEvent);
+
+    el.addEventListener('mousedown', onMouseDown);
+    el.addEventListener('mousemove', onMouseMove);
+    el.addEventListener('mouseup', onMouseUp);
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('contextmenu', onContextMenu);
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+
+    return () => {
+      if (container) container.removeEventListener('mousedown', gizmoMouseDown);
+      document.removeEventListener('transform:grab', onTransformEvent);
+      document.removeEventListener('transform:rotate', onTransformEvent);
+      document.removeEventListener('transform:scale', onTransformEvent);
+      el.removeEventListener('mousedown', onMouseDown);
+      el.removeEventListener('mousemove', onMouseMove);
+      el.removeEventListener('mouseup', onMouseUp);
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('contextmenu', onContextMenu);
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('keyup', onKeyUp);
+      detachDocListeners();
+      if (drawSvg && drawSvg.parentElement) drawSvg.parentElement.removeChild(drawSvg);
+      if (boxSvg && boxSvg.parentElement) boxSvg.parentElement.removeChild(boxSvg);
+      removeAxisGuide();
+    };
+  }, [canvas, cameraManager, hitTester, modalTransform]);
+}
+
+
+===== src\ui\panels\viewport\hooks\useRenderer.ts =====
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { Renderer, type RendererState } from '../../../../renderer/Renderer';
+import { useCompositionStore } from '../../../../state/compositionStore';
+import { useSelectionStore } from '../../../../state/selectionStore';
+import { useViewportStore } from '../../../../state/viewportStore';
+import { useToolStore } from '../../../../state/toolStore';
+import { setRequestRender } from '../../../../state/uiStore';
+import { TOOLS } from '../../../../config/constants';
+import type { GizmoMode } from '../../../../renderer/interaction/SelectionOverlay';
+import type { Composition } from '../../../../types/composition';
+
+interface UseRendererResult {
+  ready: boolean;
+  state: RendererState;
+  viewportState: {
+    fps: number;
+    zoom: number;
+    frameCount: number;
+    selectedLayerIds: string[];
+    transformMode: string | null;
+  };
+  renderer: Renderer | null;
+  zoomToFit: () => void;
+  setZoom: (zoom: number) => void;
+}
+
+export function useRenderer(container: HTMLElement | null): UseRendererResult {
+  const rendererRef = useRef<Renderer | null>(null);
+  const [ready, setReady] = useState(false);
+  const [state, setState] = useState<RendererState>({ fps: 0, zoom: 1, frameCount: 0 });
+  const [transformMode, setTransformMode] = useState<string | null>(null);
+  const transformModeRef = useRef<string | null>(null);
+
+  const composition = useCompositionStore((s) => {
+    const id = s.activeCompositionId;
+    return id ? s.compositions.find((c: Composition) => c.id === id) ?? null : null;
+  });
+
+  const layers = useCompositionStore((s) => {
+    if (!s.activeCompositionId) return [];
+    const comp = s.compositions.find((c) => c.id === s.activeCompositionId);
+    return comp?.layers ?? [];
+  });
+
+  const selectedIds = useSelectionStore((s) =>
+    s.selected.filter((x) => x.type === 'layer').map((x) => x.id),
+  );
+
+  const activeTool = useToolStore((s) => s.activeTool);
+
+  const showGrid = useViewportStore((s) => s.settings.showGrid);
+  const showSafeZones = useViewportStore((s) => s.settings.showSafeZones);
+  const snappingEnabled = useViewportStore((s) => s.settings.snappingEnabled);
+
+  // Create/mount renderer
+  useEffect(() => {
+    if (!container) return;
+    const renderer = new Renderer(container);
+    renderer.onStateChange = (newState: RendererState) => setState(newState);
+    rendererRef.current = renderer;
+    setReady(true);
+    // Wire render request callback for animation playback (Phase 4)
+    setRequestRender(() => renderer.renderLoop.requestRender());
+    return () => {
+      renderer.dispose();
+      rendererRef.current = null;
+      setReady(false);
+    };
+  }, [container]);
+
+  // Track the last composition identity so we know when to re-apply (not just re-sync)
+  const compIdentityRef = useRef<string>('');
+
+  // Apply composition â€” only when comp ID or dimensions change (NOT on every layer add)
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r || !composition) return;
+    const identity = `${composition.id}_${composition.width}_${composition.height}_${composition.fps}_${composition.backgroundColor}`;
+    if (compIdentityRef.current === identity) return;
+    compIdentityRef.current = identity;
+    r.applyComposition(composition);
+  }, [composition]);
+
+  // Sync layers to scene â€” independent of composition setup
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r || !composition) return;
+    r.layerSync.sync(layers);
+    r.renderLoop.requestRender();
+  }, [composition?.id, layers]);
+
+  // Compute gizmo mode from active tool + modal transform state
+  // L4: Also hide bounding box handles during modal transform
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r) return;
+    const mt = r.modalTransform;
+    let gizmo: GizmoMode = null;
+    const isModalActive = mt.active;
+    if (isModalActive && mt.mode === 'grab') gizmo = 'move';
+    else if (isModalActive && mt.mode === 'rotate') gizmo = 'rotate';
+    else if (isModalActive && mt.mode === 'scale') gizmo = 'scale';
+    else if (activeTool === (TOOLS.MOVE as string)) gizmo = 'move';
+    else if (activeTool === (TOOLS.ROTATE as string)) gizmo = 'rotate';
+    else if (activeTool === (TOOLS.SCALE as string)) gizmo = 'scale';
+    r.selectionOverlay.gizmoMode = gizmo;
+    r.selectionOverlay.hideHandles = isModalActive;
+  }, [activeTool, ready, transformMode]);
+
+  // Update selection overlay â€” reacts to selection, layers, zoom, and gizmo mode
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r) return;
+    if (selectedIds.length === 0) {
+      r.selectionOverlay.hide();
+    } else {
+      r.selectionOverlay.show();
+      const renderers: any[] = [];
+      for (const id of selectedIds) {
+        const ren = r.layerSync.getRenderer(id);
+        if (ren) renderers.push(ren);
+      }
+      r.selectionOverlay.update(renderers);
+    }
+  }, [selectedIds, layers, state.zoom, activeTool, transformMode]);
+
+  // Track transform mode from ModalTransform via event-driven approach
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r) return;
+
+    const updateMode = () => {
+      const mt = r.modalTransform;
+      const mode = mt.active ? (mt.mode?.toUpperCase() ?? null) : null;
+      transformModeRef.current = mode;
+      setTransformMode(mode);
+    };
+
+    // Check modal state on transform events
+    document.addEventListener('transform:grab', updateMode);
+    document.addEventListener('transform:rotate', updateMode);
+    document.addEventListener('transform:scale', updateMode);
+    // Confirm/cancel via mouse events
+    const onMouseUp = () => updateMode();
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.key === 'Enter') updateMode();
+    };
+    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('keyup', onKeyUp);
+
+    return () => {
+      document.removeEventListener('transform:grab', updateMode);
+      document.removeEventListener('transform:rotate', updateMode);
+      document.removeEventListener('transform:scale', updateMode);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('keyup', onKeyUp);
+    };
+  }, [ready]);
+
+  // Viewport store toggles
+  useEffect(() => {
+    if (!rendererRef.current) return;
+    rendererRef.current.setGridVisible(showGrid);
+  }, [showGrid]);
+
+  useEffect(() => {
+    if (!rendererRef.current) return;
+    rendererRef.current.setSafeZonesVisible(showSafeZones);
+  }, [showSafeZones]);
+
+  useEffect(() => {
+    if (!rendererRef.current) return;
+    rendererRef.current.setSnappingEnabled(snappingEnabled);
+  }, [snappingEnabled]);
+
+  // Update grid when zoom changes
+  useEffect(() => {
+    if (!rendererRef.current || !composition) return;
+    rendererRef.current.sceneManager.updateGrid(state.zoom);
+  }, [composition, state.zoom]);
+
+  // Viewport event listeners
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+
+    const onFrameAll = () => renderer.cameraManager.fitToComposition();
+    const onFrameSelected = () => renderer.cameraManager.fitToComposition();
+    const onZoom100 = () => renderer.cameraManager.zoomTo100Percent();
+    const onGrab = () => renderer.modalTransform.start('grab', renderer.canvas);
+    const onRotate = () => renderer.modalTransform.start('rotate', renderer.canvas);
+    const onScale = () => renderer.modalTransform.start('scale', renderer.canvas);
+
+    document.addEventListener('viewport:frameAll', onFrameAll);
+    document.addEventListener('viewport:frameSelected', onFrameSelected);
+    document.addEventListener('viewport:zoom100', onZoom100);
+    document.addEventListener('transform:grab', onGrab);
+    document.addEventListener('transform:rotate', onRotate);
+    document.addEventListener('transform:scale', onScale);
+
+    return () => {
+      document.removeEventListener('viewport:frameAll', onFrameAll);
+      document.removeEventListener('viewport:frameSelected', onFrameSelected);
+      document.removeEventListener('viewport:zoom100', onZoom100);
+      document.removeEventListener('transform:grab', onGrab);
+      document.removeEventListener('transform:rotate', onRotate);
+      document.removeEventListener('transform:scale', onScale);
+    };
+  }, [ready]);
+
+  const zoomToFit = useCallback(() => {
+    rendererRef.current?.cameraManager.fitToComposition();
+  }, []);
+
+  const setZoom = useCallback((zoom: number) => {
+    rendererRef.current?.cameraManager.setZoom(zoom);
+  }, []);
+
+  return {
+    ready,
+    state,
+    viewportState: {
+      fps: state.fps,
+      zoom: state.zoom,
+      frameCount: state.frameCount,
+      selectedLayerIds: selectedIds,
+      transformMode,
+    },
+    renderer: rendererRef.current,
+    zoomToFit,
+    setZoom,
+  };
+}
+
+
+===== src\ui\panels\timeline\TimelinePanel.tsx =====
+/**
+ * TimelinePanel â€” AE-style timeline with Outliner embedded on the left.
+ * Layout: header (playback controls) â†’ flex row containing [Outliner | Ruler+Tracks].
+ * The Outliner (left sidebar) shows layer names aligned with timeline track rows.
+ * Playhead updates via direct DOM manipulation for smooth playback.
+ */
+import React, { useRef, useCallback, useEffect, useState } from 'react';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useTimelineStore } from '../../../state/timelineStore';
+import { PlaybackControls } from './PlaybackControls';
+import { TimelineRuler } from './TimelineRuler';
+import { TrackLabels } from './TrackLabels';
+import { KeyframeArea } from './KeyframeArea';
+import { Playhead } from './Playhead';
+
+const OutlinerPanel = React.lazy(() => import('../outliner/OutlinerPanel'));
+
+export const TimelinePanel: React.FC = () => {
+  const comp = useCompositionStore((s) => s.activeCompositionId
+    ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null : null);
+  const zoom = useTimelineStore((s) => s.zoom);
+  const scrollX = useTimelineStore((s) => s.scrollX);
+  const setScrollX = useTimelineStore((s) => s.setScrollX);
+
+  const [expandedLayers, setExpandedLayers] = useState<Set<string>>(new Set());
+  const [trackLabelWidth, setTrackLabelWidth] = useState(200);
+  const [outlinerWidth, setOutlinerWidth] = useState(250);
+  const tracksRef = useRef<HTMLDivElement>(null);
+  const playheadRef = useRef<HTMLDivElement>(null);
+
+  const layers = comp?.layers ?? [];
+  const totalFrames = comp ? Math.floor(comp.duration * comp.fps) : 250;
+  const currentFrame = comp ? Math.floor(comp.currentTime * comp.fps) : 0;
+
+  // Update playhead DOM position directly during playback
+  useEffect(() => {
+    if (playheadRef.current) {
+      playheadRef.current.style.left = `${currentFrame * zoom}px`;
+    }
+  }, [currentFrame, zoom]);
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollX(e.currentTarget.scrollLeft);
+  }, [setScrollX]);
+
+  const toggleExpand = useCallback((layerId: string) => {
+    setExpandedLayers((prev) => {
+      const next = new Set(prev);
+      if (next.has(layerId)) next.delete(layerId);
+      else next.add(layerId);
+      return next;
+    });
+  }, []);
+
+  if (!comp) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center text-ui-xs text-text-disabled">
+        No composition
+      </div>
+    );
+  }
+
+  const propertyPaths = [
+    { path: 'transform.position', label: 'Position' },
+    { path: 'transform.rotation', label: 'Rotation' },
+    { path: 'transform.scale', label: 'Scale' },
+    { path: 'opacity', label: 'Opacity' },
+  ];
+
+  return (
+    <div className="flex flex-col h-full bg-surface-alt select-none">
+      {/* â”€â”€ Header: Playback controls + time display + zoom â”€â”€ */}
+      <PlaybackControls comp={comp} totalFrames={totalFrames} currentFrame={currentFrame} />
+
+      {/* â”€â”€ Flex row: Outliner (left) + Timeline content (right) â”€â”€ */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* K5: Outliner embedded on left side of timeline (AE-style) */}
+        <div
+          className="flex-shrink-0 overflow-hidden border-r border-border bg-surface flex flex-col"
+          style={{ width: outlinerWidth }}
+        >
+          <React.Suspense fallback={<div className="flex-1 flex items-center justify-center text-ui-xs">Loading...</div>}>
+            <OutlinerPanel />
+          </React.Suspense>
+        </div>
+
+        {/* Resize handle for Outliner width */}
+        <div
+          className="w-1 cursor-col-resize flex-shrink-0 hover:bg-accent bg-border transition-colors"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startW = outlinerWidth;
+            const mm = (ev: MouseEvent) => setOutlinerWidth(Math.max(120, Math.min(500, startW + ev.clientX - startX)));
+            const mu = () => { document.removeEventListener('mousemove', mm); document.removeEventListener('mouseup', mu); };
+            document.addEventListener('mousemove', mm);
+            document.addEventListener('mouseup', mu);
+          }}
+        />
+
+        {/* Timeline content (ruler + track labels + keyframe area) */}
+        <div className="flex flex-col flex-1 overflow-hidden">
+          {/* â”€â”€ Ruler â”€â”€ */}
+          <TimelineRuler
+            totalFrames={totalFrames}
+            currentFrame={currentFrame}
+            zoom={zoom}
+            scrollX={scrollX}
+            compId={comp.id}
+            workAreaStart={comp.workAreaStart != null ? Math.floor(comp.workAreaStart * comp.fps) : undefined}
+            workAreaEnd={comp.workAreaEnd != null ? Math.floor(comp.workAreaEnd * comp.fps) : undefined}
+          />
+
+          {/* â”€â”€ Tracks area (labels + keyframes) â”€â”€ */}
+          <div className="flex flex-1 overflow-hidden">
+            {/* Track labels */}
+            <div
+              className="flex-shrink-0 overflow-hidden border-r border-border bg-surface"
+              style={{ width: trackLabelWidth }}
+            >
+              <TrackLabels
+                layers={layers}
+                expandedLayers={expandedLayers}
+                onToggleExpand={toggleExpand}
+                propertyPaths={propertyPaths}
+                currentFrame={currentFrame}
+                compId={comp.id}
+              />
+            </div>
+
+            {/* Resize handle for track labels */}
+            <div
+              className="w-1 cursor-col-resize flex-shrink-0 hover:bg-accent bg-border transition-colors"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                const startX = e.clientX;
+                const startW = trackLabelWidth;
+                const mm = (ev: MouseEvent) => setTrackLabelWidth(Math.max(100, Math.min(400, startW + ev.clientX - startX)));
+                const mu = () => { document.removeEventListener('mousemove', mm); document.removeEventListener('mouseup', mu); };
+                document.addEventListener('mousemove', mm);
+                document.addEventListener('mouseup', mu);
+              }}
+            />
+
+            {/* Keyframe area */}
+            <div
+              ref={tracksRef}
+              className="flex-1 overflow-auto relative"
+              onScroll={handleScroll}
+            >
+              <div style={{ width: totalFrames * zoom + 100, minHeight: '100%', position: 'relative' }}>
+                <KeyframeArea
+                  layers={layers}
+                  expandedLayers={expandedLayers}
+                  propertyPaths={propertyPaths}
+                  currentFrame={currentFrame}
+                  zoom={zoom}
+                  totalFrames={totalFrames}
+                  compId={comp.id}
+                />
+              </div>
+              <Playhead ref={playheadRef} currentFrame={currentFrame} zoom={zoom} />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default TimelinePanel;
+
+
+===== src\ui\panels\timeline\KeyframeArea.tsx =====
+import React from 'react';
+import type { Layer } from '../../../types/layer';
+import { useKeyframeStore } from '../../../state/keyframeStore';
+import { animationClock } from './PlaybackControls';
+
+interface KeyframeAreaProps {
+  layers: Layer[];
+  expandedLayers: Set<string>;
+  propertyPaths: { path: string; label: string }[];
+  currentFrame: number;
+  zoom: number;
+  totalFrames: number;
+  compId: string;
+}
+
+const TRACK_HEIGHT = 24;
+const PROP_TRACK_HEIGHT = 20;
+
+export const KeyframeArea: React.FC<KeyframeAreaProps> = ({
+  layers, expandedLayers, propertyPaths, currentFrame: _cf, zoom, totalFrames, compId,
+}) => {
+  const engine = useKeyframeStore((s) => s.engine);
+
+  const sortedLayers = [...layers].sort((a, b) => b.zIndex - a.zIndex);
+
+  return (
+    <div className="relative" style={{ paddingTop: 0 }}>
+      {sortedLayers.map((layer) => {
+        const isExpanded = expandedLayers.has(layer.id);
+        const keyframes = engine.getAllKeyframesForLayer(layer.id);
+
+        return (
+          <div key={layer.id}>
+            {/* Layer track bar */}
+            <LayerTrackBar
+              layer={layer}
+              zoom={zoom}
+              compId={compId}
+              onSeek={(f) => animationClock.seekToFrame(f)}
+            />
+
+            {/* Property keyframe tracks (when expanded) */}
+            {isExpanded && propertyPaths.map((prop) => {
+              const propKfs = keyframes.filter((k) => k.property === prop.path);
+              return (
+                <PropertyKeyframeTrack
+                  key={prop.path}
+                  keyframes={propKfs}
+                  zoom={zoom}
+                  totalFrames={totalFrames}
+                />
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+/** Layer bar showing in-point/out-point, draggable */
+const LayerTrackBar: React.FC<{
+  layer: Layer; zoom: number; compId: string; onSeek: (f: number) => void;
+}> = ({ layer, zoom, onSeek }) => (
+  <div
+    className="relative cursor-pointer border-b border-border/20 hover:bg-panel-hover"
+    style={{ height: TRACK_HEIGHT }}
+    onClick={() => onSeek(layer.startFrame)}
+  >
+    {/* In-point â†’ out-point bar */}
+    <div
+      className="absolute top-1/2 -translate-y-1/2 h-[14px] rounded-sm bg-accent/40 border border-accent/60 cursor-grab"
+      style={{
+        left: layer.startFrame * zoom,
+        width: Math.max(4, (layer.endFrame - layer.startFrame) * zoom),
+      }}
+    >
+      {/* In-point handle */}
+      <div className="absolute left-0 top-0 bottom-0 w-[4px] cursor-ew-resize bg-accent rounded-l-sm" />
+      {/* Out-point handle */}
+      <div className="absolute right-0 top-0 bottom-0 w-[4px] cursor-ew-resize bg-accent rounded-r-sm" />
+    </div>
+  </div>
+);
+
+/** Property track showing keyframe diamonds */
+const PropertyKeyframeTrack: React.FC<{
+  keyframes: any[]; zoom: number; totalFrames: number;
+}> = ({ keyframes, zoom, totalFrames }) => (
+  <div
+    className="relative border-b border-border/10"
+    style={{ height: PROP_TRACK_HEIGHT }}
+  >
+    {/* Grid lines (every 10 frames) */}
+    {Array.from({ length: Math.floor(totalFrames / 10) + 1 }, (_, i) => (
+      <div key={i} className="absolute top-0 bottom-0 w-px bg-border/20"
+        style={{ left: i * 10 * zoom }}
+      />
+    ))}
+
+    {/* Keyframe diamonds */}
+    {keyframes.map((kf) => (
+      <KeyframeDiamond key={kf.id} time={kf.time} zoom={zoom} interpolation={kf.interpolation} />
+    ))}
+
+
+  </div>
+);
+
+/** Single keyframe diamond with interpolation-appropriate shape */
+const KeyframeDiamond: React.FC<{
+  time: number; zoom: number; interpolation: string;
+}> = ({ time, zoom, interpolation }) => {
+  let shape: React.ReactNode;
+  const size = 8;
+  const x = time * zoom;
+
+  switch (interpolation) {
+    case 'hold':
+      shape = <rect x={x - size / 2} y={-size / 2} width={size} height={size} fill="#ff4444" rx={1} />;
+      break;
+    case 'bezier':
+      shape = <circle cx={x} cy={0} r={size / 2} fill="#ffaa00" />;
+      break;
+    default: // linear
+      shape = <polygon points={`${x},${-size/2} ${x+size/2},0 ${x},${size/2} ${x-size/2},0`} fill="#88ccff" />;
+  }
+
+  return (
+    <svg width={size + 2} height={size + 2} className="absolute top-1/2 -translate-y-1/2 z-10 cursor-pointer hover:scale-125 transition-transform"
+      style={{ left: x - size / 2 - 1 }}
+    >
+      {shape}
+    </svg>
+  );
+};
+
+
+
+
+===== src\ui\panels\timeline\TrackLabels.tsx =====
+import React, { useCallback } from 'react';
+import type { Layer } from '../../../types/layer';
+import { useSelectionStore } from '../../../state/selectionStore';
+import { Icon } from '../../common/Icon';
+
+interface TrackLabelsProps {
+  layers: Layer[];
+  expandedLayers: Set<string>;
+  onToggleExpand: (layerId: string) => void;
+  propertyPaths: { path: string; label: string }[];
+  currentFrame: number;
+  compId: string;
+}
+
+const LAYER_ICONS: Record<string, string> = {
+  solid: 'square', shape: 'triangle', text: 'type',
+  image: 'image', video: 'film',
+};
+
+export const TrackLabels: React.FC<TrackLabelsProps> = ({
+  layers, expandedLayers, onToggleExpand, propertyPaths, currentFrame: _cf, compId,
+}) => {
+  const selectedIds = useSelectionStore((s) => s.selected.filter((x) => x.type === 'layer').map((x) => x.id));
+
+  const handleSelect = useCallback((layerId: string) => {
+    useSelectionStore.getState().select({ type: 'layer', id: layerId, compositionId: compId });
+  }, [compId]);
+
+  return (
+    <div className="overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center h-[28px] px-2 bg-surface-alt border-b border-border text-ui-xs text-text-secondary font-medium">
+        <span>Layers</span>
+      </div>
+
+      {/* Track rows */}
+      <div className="overflow-auto">
+        {layers.length === 0 && (
+          <div className="text-ui-xs text-text-disabled text-center py-4 px-2">
+            No layers
+          </div>
+        )}
+
+        {layers.map((layer) => {
+          const isExpanded = expandedLayers.has(layer.id);
+          const isSelected = selectedIds.includes(layer.id);
+          return (
+            <div key={layer.id}>
+              {/* Layer track row */}
+              <div
+                className={`flex items-center h-[24px] px-1 gap-1 cursor-pointer text-ui-xs select-none border-b border-border/30 ${isSelected ? 'bg-accent/20 text-text-primary' : 'hover:bg-panel-hover'}`}
+                onClick={() => handleSelect(layer.id)}
+              >
+                {/* Expand chevron */}
+                <button
+                  className="w-[14px] h-[14px] flex items-center justify-center border-0 bg-transparent cursor-pointer text-text-disabled hover:text-text-secondary shrink-0"
+                  onClick={(e) => { e.stopPropagation(); onToggleExpand(layer.id); }}
+                >
+                  <Icon name="chevronRight" size={10}
+                    className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                  />
+                </button>
+
+                {/* Layer type icon */}
+                <Icon name={(LAYER_ICONS[layer.type] ?? 'circle') as any} size={12}
+                  className={`shrink-0 ${isSelected ? 'text-accent' : 'text-text-disabled'}`}
+                />
+
+                {/* Name */}
+                <span className="truncate flex-1">{layer.name}</span>
+
+                {/* Keyframe diamond indicator */}
+                <div className="mr-1 w-[10px] flex items-center justify-center">
+                  <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" className="text-accent">
+                    <polygon points="4,0 8,4 4,8 0,4" />
+                  </svg>
+                </div>
+              </div>
+
+              {/* Property sub-rows (when expanded) */}
+              {isExpanded && propertyPaths.map((prop) => (
+                <div
+                  key={prop.path}
+                  className="flex items-center h-[20px] pl-[30px] pr-1 text-ui-xs text-text-disabled border-b border-border/20 hover:bg-panel-hover cursor-pointer"
+                  onClick={() => handleSelect(layer.id)}
+                  title={prop.path}
+                >
+                  <span className="truncate flex-1">{prop.label}</span>
+                  {/* Keyframe navigation */}
+                  <button className="w-[12px] h-[12px] flex items-center justify-center border-0 bg-transparent cursor-pointer hover:text-text-secondary"
+                    title="Add/remove keyframe">
+                    <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1">
+                      <polygon points="4,0 8,4 4,8 0,4" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+
+===== src\ui\panels\properties\TransformSection.tsx =====
+import React from 'react';
+import { Section, PropRow } from './Section';
+import { Vector2Input } from './inputs/Vector2Input';
+import { NumberInput } from './inputs/NumberInput';
+import type { Layer } from '../../../types/layer';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useKeyframeStore } from '../../../state/keyframeStore';
+
+interface Props {
+  layer: Layer;
+  compId: string;
+}
+
+/**
+ * Auto-keyframe helper: if animation is ON for this property and there's no
+ * keyframe at the current frame, auto-create one with the new value.
+ * This matches AE behavior (spec #10).
+ */
+function autoKeyframeIfNeeded(layerId: string, propPath: string, currentFrame: number, value: number | number[]) {
+  const kfStore = useKeyframeStore.getState();
+  if (!kfStore.isPropertyAnimated(layerId, propPath)) return;
+  const kfs = kfStore.engine.getKeyframesForProperty(layerId, propPath);
+  const atFrame = kfs.some((k) => k.time === currentFrame);
+  if (!atFrame) {
+    kfStore.addKeyframe(layerId, {
+      id: `kf_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+      property: propPath,
+      layerId,
+      time: currentFrame,
+      value,
+      interpolation: 'linear',
+    });
+  } else {
+    // Update existing keyframe's value
+    const existing = kfs.find((k) => k.time === currentFrame);
+    if (existing) kfStore.updateKeyframe(existing.id, { value });
+  }
+}
+
+export const TransformSection: React.FC<Props> = ({ layer, compId }) => {
+  const t = layer.transform;
+  const comp = useCompositionStore((s) => s.activeCompositionId
+    ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null : null);
+  const currentFrame = comp ? Math.floor(comp.currentTime * comp.fps) : 0;
+
+  const update = (transform: Layer['transform'], propPath?: string) => {
+    useCompositionStore.getState().updateLayer(compId, layer.id, { transform });
+    // Auto-keyframe on change (spec #10)
+    if (propPath) {
+      const val = getTransformValue(propPath, transform);
+      autoKeyframeIfNeeded(layer.id, propPath, currentFrame, val);
+    }
+  };
+
+  return (
+    <Section label="Transform">
+      <PropRow label="Anchor" animatable="transform.anchorPoint" layer={layer} currentFrame={currentFrame} compId={compId}>
+        <Vector2Input
+          x={t.anchorPoint.x} y={t.anchorPoint.y}
+          onChange={(x, y) => update({ ...t, anchorPoint: { x, y } }, 'transform.anchorPoint')}
+          step={1} precision={1}
+        />
+      </PropRow>
+      <PropRow label="Position" animatable="transform.position" layer={layer} currentFrame={currentFrame} compId={compId}>
+        <Vector2Input
+          x={t.position.x} y={t.position.y}
+          onChange={(x, y) => update({ ...t, position: { x, y } }, 'transform.position')}
+          step={1} precision={1}
+        />
+      </PropRow>
+      <PropRow label="Scale" animatable="transform.scale" layer={layer} currentFrame={currentFrame} compId={compId}>
+        <Vector2Input
+          x={t.scale.x} y={t.scale.y}
+          onChange={(x, y) => update({ ...t, scale: { x, y } }, 'transform.scale')}
+          min={-10000} max={10000} step={1} precision={1}
+        />
+      </PropRow>
+      <PropRow label="Rotation" animatable="transform.rotation" layer={layer} currentFrame={currentFrame} compId={compId}>
+        <NumberInput value={t.rotation} onChange={(v) => update({ ...t, rotation: v }, 'transform.rotation')} step={1} precision={1} label="Â°" />
+      </PropRow>
+      <PropRow label="Opacity" animatable="opacity" layer={layer} currentFrame={currentFrame} compId={compId}>
+        <NumberInput
+          value={layer.opacity}
+          onChange={(v) => {
+            useCompositionStore.getState().updateLayer(compId, layer.id, { opacity: v });
+            autoKeyframeIfNeeded(layer.id, 'opacity', currentFrame, v);
+          }}
+          min={0} max={100} step={1} precision={0} label="%"
+        />
+      </PropRow>
+    </Section>
+  );
+};
+
+/** Extract a single value from a Transform for a given property path */
+function getTransformValue(path: string, transform: Layer['transform']): number | number[] {
+  const field = path.replace('transform.', '');
+  if (field === 'rotation') return transform.rotation;
+  if (field === 'position') return [transform.position.x, transform.position.y];
+  if (field === 'position.x') return transform.position.x;
+  if (field === 'position.y') return transform.position.y;
+  if (field === 'scale') return [transform.scale.x, transform.scale.y];
+  if (field === 'scale.x') return transform.scale.x;
+  if (field === 'scale.y') return transform.scale.y;
+  if (field === 'anchorPoint') return [transform.anchorPoint.x, transform.anchorPoint.y];
+  if (field === 'anchorPoint.x') return transform.anchorPoint.x;
+  if (field === 'anchorPoint.y') return transform.anchorPoint.y;
+  return 0;
+}
+
+
+

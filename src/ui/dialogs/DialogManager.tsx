@@ -1,7 +1,3 @@
-/**
- * DialogManager — renders the currently active dialog based on uiStore state.
- * Phase 2: Only NewCompositionDialog is wired.
- */
 import React from 'react';
 import { NewCompositionDialog } from './NewCompositionDialog';
 
@@ -9,7 +5,6 @@ interface DialogState {
   newComposition: boolean;
 }
 
-// Global dialog state — could be moved to uiStore in later phases
 let dialogState: DialogState = { newComposition: false };
 const listeners: Array<() => void> = [];
 
@@ -29,7 +24,6 @@ export function closeAllDialogs(): void {
 
 function useDialogState(): DialogState {
   const [state, setState] = React.useState<DialogState>(dialogState);
-
   React.useEffect(() => {
     const handler = () => setState({ ...dialogState });
     listeners.push(handler);
@@ -38,21 +32,14 @@ function useDialogState(): DialogState {
       if (idx >= 0) listeners.splice(idx, 1);
     };
   }, []);
-
   return state;
 }
 
 export const DialogManager: React.FC = () => {
   const state = useDialogState();
-
   return (
     <>
-      {state.newComposition && (
-        <NewCompositionDialog
-          open={true}
-          onClose={closeAllDialogs}
-        />
-      )}
+      {state.newComposition && <NewCompositionDialog open onClose={closeAllDialogs} />}
     </>
   );
 };

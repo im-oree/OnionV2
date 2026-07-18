@@ -1,0 +1,1807 @@
+﻿===== src\ui\panels\timeline\TimelinePanel.tsx =====
+import React, { useRef, useCallback, useEffect, useState } from 'react';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useTimelineStore } from '../../../state/timelineStore';
+import { PlaybackControls } from './PlaybackControls';
+import { TimelineRuler } from './TimelineRuler';
+import { KeyframeArea } from './KeyframeArea';
+import { Playhead } from './Playhead';
+
+const OutlinerPanel = React.lazy(() => import('../outliner/OutlinerPanel'));
+
+export const TimelinePanel: React.FC = () => {
+  const comp = useCompositionStore((s) =>
+    s.activeCompositionId
+      ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null
+      : null,
+  );
+  const zoom = useTimelineStore((s) => s.zoom);
+  const scrollX = useTimelineStore((s) => s.scrollX);
+  const setScrollX = useTimelineStore((s) => s.setScrollX);
+
+  const [expandedLayers] = useState<Set<string>>(new Set());
+  const [outlinerWidth, setOutlinerWidth] = useState(280);
+  const tracksRef = useRef<HTMLDivElement>(null);
+  const playheadRef = useRef<HTMLDivElement>(null);
+
+  const layers = comp?.layers ?? [];
+  const totalFrames = comp ? Math.floor(comp.duration * comp.fps) : 250;
+  const currentFrame = comp ? Math.floor(comp.currentTime * comp.fps) : 0;
+
+  useEffect(() => {
+    if (playheadRef.current) {
+      playheadRef.current.style.left = `${currentFrame * zoom}px`;
+    }
+  }, [currentFrame, zoom]);
+
+  const handleScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      setScrollX(e.currentTarget.scrollLeft);
+    },
+    [setScrollX],
+  );
+
+  if (!comp) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center text-ui-xs text-text-disabled">
+        No composition
+      </div>
+    );
+  }
+
+  const propertyPaths = [
+    { path: 'transform.position', label: 'Position' },
+    { path: 'transform.rotation', label: 'Rotation' },
+    { path: 'transform.scale', label: 'Scale' },
+    { path: 'opacity', label: 'Opacity' },
+  ];
+
+  return (
+    <div className="flex flex-col h-full bg-surface-alt select-none">
+      <PlaybackControls comp={comp} totalFrames={totalFrames} currentFrame={currentFrame} />
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* Outliner (single layer list on the left) */}
+        <div
+          className="flex-shrink-0 overflow-hidden border-r border-border bg-surface flex flex-col"
+          style={{ width: outlinerWidth }}
+        >
+          <React.Suspense
+            fallback={
+              <div className="flex-1 flex items-center justify-center text-ui-xs">
+                Loading...
+              </div>
+            }
+          >
+            <OutlinerPanel />
+          </React.Suspense>
+        </div>
+
+        {/* Splitter */}
+        <div
+          className="w-1 cursor-col-resize flex-shrink-0 hover:bg-accent bg-border transition-colors"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startW = outlinerWidth;
+            const mm = (ev: MouseEvent) =>
+              setOutlinerWidth(Math.max(160, Math.min(500, startW + ev.clientX - startX)));
+            const mu = () => {
+              document.removeEventListener('mousemove', mm);
+              document.removeEventListener('mouseup', mu);
+            };
+            document.addEventListener('mousemove', mm);
+            document.addEventListener('mouseup', mu);
+          }}
+        />
+
+        {/* Timeline content: ruler + keyframe tracks (no duplicate label column) */}
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <TimelineRuler
+            totalFrames={totalFrames}
+            currentFrame={currentFrame}
+            zoom={zoom}
+            scrollX={scrollX}
+            compId={comp.id}
+            workAreaStart={
+              comp.workAreaStart != null ? Math.floor(comp.workAreaStart * comp.fps) : undefined
+            }
+            workAreaEnd={
+              comp.workAreaEnd != null ? Math.floor(comp.workAreaEnd * comp.fps) : undefined
+            }
+          />
+
+          <div
+            ref={tracksRef}
+            className="flex-1 overflow-auto relative"
+            onScroll={handleScroll}
+          >
+            <div
+              style={{
+                width: totalFrames * zoom + 100,
+                minHeight: '100%',
+                position: 'relative',
+              }}
+            >
+              <KeyframeArea
+                layers={layers}
+                expandedLayers={expandedLayers}
+                propertyPaths={propertyPaths}
+                currentFrame={currentFrame}
+                zoom={zoom}
+                totalFrames={totalFrames}
+                compId={comp.id}
+              />
+            </div>
+            <Playhead ref={playheadRef} currentFrame={currentFrame} zoom={zoom} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default TimelinePanel;
+
+===== src\ui\panels\timeline\TimelineRuler.tsx =====
+import React, { useRef, useCallback } from 'react';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { animationClock } from './PlaybackControls';
+
+interface TimelineRulerProps {
+  totalFrames: number;
+  currentFrame: number;
+  zoom: number;
+  scrollX: number;
+  compId: string;
+  workAreaStart?: number;
+  workAreaEnd?: number;
+}
+
+export const TimelineRuler: React.FC<TimelineRulerProps> = ({
+  totalFrames, currentFrame, zoom, scrollX, compId,
+  workAreaStart, workAreaEnd,
+}) => {
+  const rulerRef = useRef<HTMLDivElement>(null);
+  const isScrubbing = useRef(false);
+
+  const calcFrameFromX = useCallback((clientX: number): number => {
+    if (!rulerRef.current) return 0;
+    const rect = rulerRef.current.getBoundingClientRect();
+    const x = clientX - rect.left + scrollX;
+    return Math.max(0, Math.min(totalFrames, Math.round(x / zoom)));
+  }, [zoom, totalFrames, scrollX]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    isScrubbing.current = true;
+    const frame = calcFrameFromX(e.clientX);
+    animationClock.seekToFrame(frame);
+    useCompositionStore.getState().setCurrentTime(compId, frame / (totalFrames / (compId ? 30 : 30)));
+
+    const onMove = (ev: MouseEvent) => {
+      if (!isScrubbing.current) return;
+      const f = calcFrameFromX(ev.clientX);
+      animationClock.seekToFrame(f);
+      useCompositionStore.getState().setCurrentTime(compId, f / (totalFrames / 30));
+    };
+    const onUp = () => {
+      isScrubbing.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [calcFrameFromX, compId, totalFrames]);
+
+  // Generate tick marks â€” show major tick every ~100px
+  const frameStep = Math.max(1, Math.round(100 / zoom));
+  const majorStep = Math.max(frameStep, Math.round(500 / zoom));
+
+  const ticks: React.ReactNode[] = [];
+  for (let f = 0; f <= totalFrames; f += frameStep) {
+    const isMajor = f % majorStep === 0 || f === 0 || f === totalFrames;
+    ticks.push(
+      <div key={f} className="absolute top-0" style={{ left: f * zoom, width: 1 }}>
+        <div className="bg-border-light" style={{ height: isMajor ? 14 : 8 }} />
+        {isMajor && (
+          <span className="absolute left-[3px] top-[14px] text-[8px] text-text-disabled whitespace-nowrap font-mono leading-none">
+            {f}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative flex-shrink-0 bg-surface border-b border-border"
+      style={{ height: 28 }}
+    >
+      <div
+        ref={rulerRef}
+        className="absolute inset-0 cursor-pointer overflow-hidden"
+        onMouseDown={handleMouseDown}
+        style={{ paddingLeft: 0 }}
+      >
+        <div style={{ width: totalFrames * zoom + 100, height: '100%', position: 'relative' }}>
+          {/* Work area dimmed overlays */}
+          {workAreaStart !== undefined && workAreaEnd !== undefined && (
+            <>
+              {workAreaStart > 0 && (
+                <div className="absolute top-0 bottom-0 bg-black/20" style={{ left: 0, width: workAreaStart * zoom }} />
+              )}
+              {workAreaEnd < totalFrames && (
+                <div className="absolute top-0 bottom-0 bg-black/20" style={{ left: workAreaEnd * zoom, width: (totalFrames - workAreaEnd) * zoom }} />
+              )}
+            </>
+          )}
+          {ticks}
+          {/* Playhead line in ruler */}
+          <div className="absolute top-0" style={{ left: currentFrame * zoom, width: 2, height: '100%' }}>
+            <svg width="10" height="8" style={{ position: 'absolute', top: 0, left: -4 }}>
+              <polygon points="0,0 10,0 5,8" fill="var(--timeline-playhead)" />
+            </svg>
+            <div style={{ width: 2, height: '100%', background: 'var(--timeline-playhead)' }} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+===== src\ui\panels\timeline\Playhead.tsx =====
+import { forwardRef } from 'react';
+
+interface PlayheadProps {
+  currentFrame: number;
+  zoom: number;
+}
+
+/**
+ * Playhead â€” renders the vertical playhead line and triangle indicator.
+ * Uses a ref for direct DOM manipulation during playback (no React re-render).
+ */
+export const Playhead = forwardRef<HTMLDivElement, PlayheadProps>(
+  ({ currentFrame, zoom }, ref) => {
+    return (
+      <div
+        ref={ref}
+        className="absolute top-0 z-20 pointer-events-none"
+        style={{
+          left: currentFrame * zoom,
+          width: 2,
+          height: '100%',
+          transition: 'none',
+        }}
+      >
+        {/* Triangle at top */}
+        <svg width="10" height="8" style={{ position: 'absolute', top: -1, left: -4 }}>
+          <polygon points="0,0 10,0 5,8" fill="var(--timeline-playhead)" />
+        </svg>
+
+        {/* Line */}
+        <div
+          style={{
+            width: 2,
+            height: 'calc(100% - 6px)',
+            background: 'var(--timeline-playhead)',
+            opacity: 0.8,
+          }}
+        />
+      </div>
+    );
+  },
+);
+
+Playhead.displayName = 'Playhead';
+
+
+===== src\ui\panels\timeline\KeyframeArea.tsx =====
+import React from 'react';
+import type { Layer } from '../../../types/layer';
+import { useKeyframeStore } from '../../../state/keyframeStore';
+import { animationClock } from './PlaybackControls';
+
+interface KeyframeAreaProps {
+  layers: Layer[];
+  expandedLayers: Set<string>;
+  propertyPaths: { path: string; label: string }[];
+  currentFrame: number;
+  zoom: number;
+  totalFrames: number;
+  compId: string;
+}
+
+const TRACK_HEIGHT = 24;
+const PROP_TRACK_HEIGHT = 20;
+
+export const KeyframeArea: React.FC<KeyframeAreaProps> = ({
+  layers, expandedLayers, propertyPaths, zoom, totalFrames, compId,
+}) => {
+  // FIX: subscribe to revision so component re-renders when keyframes change
+  const engine = useKeyframeStore((s) => {
+    void s.revision; // subscribe to revision changes
+    return s.engine;
+  });
+
+  const sortedLayers = [...layers].sort((a, b) => b.zIndex - a.zIndex);
+
+  return (
+    <div className="relative">
+      {sortedLayers.map((layer) => {
+        const isExpanded = expandedLayers.has(layer.id);
+        const allKeyframes = engine.getAllKeyframesForLayer(layer.id);
+
+        return (
+          <div key={layer.id}>
+            <LayerTrackBar
+              layer={layer}
+              zoom={zoom}
+              compId={compId}
+              onSeek={(f) => animationClock.seekToFrame(f)}
+            />
+            {isExpanded && propertyPaths.map((prop) => {
+              const propKfs = allKeyframes.filter((k) => k.property === prop.path);
+              return (
+                <PropertyKeyframeTrack
+                  key={prop.path}
+                  keyframes={propKfs}
+                  zoom={zoom}
+                  totalFrames={totalFrames}
+                />
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+const LayerTrackBar: React.FC<{
+  layer: Layer; zoom: number; compId: string; onSeek: (f: number) => void;
+}> = ({ layer, zoom, onSeek }) => (
+  <div
+    className="relative cursor-pointer border-b border-border/20 hover:bg-panel-hover"
+    style={{ height: TRACK_HEIGHT }}
+    onClick={() => onSeek(layer.startFrame)}
+  >
+    <div
+      className="absolute top-1/2 -translate-y-1/2 h-[14px] rounded-sm bg-accent/40 border border-accent/60 cursor-grab"
+      style={{
+        left: layer.startFrame * zoom,
+        width: Math.max(4, (layer.endFrame - layer.startFrame) * zoom),
+      }}
+    >
+      <div className="absolute left-0 top-0 bottom-0 w-[4px] cursor-ew-resize bg-accent rounded-l-sm" />
+      <div className="absolute right-0 top-0 bottom-0 w-[4px] cursor-ew-resize bg-accent rounded-r-sm" />
+    </div>
+  </div>
+);
+
+const PropertyKeyframeTrack: React.FC<{
+  keyframes: any[]; zoom: number; totalFrames: number;
+}> = ({ keyframes, zoom, totalFrames }) => (
+  <div className="relative border-b border-border/10" style={{ height: PROP_TRACK_HEIGHT }}>
+    {Array.from({ length: Math.floor(totalFrames / 10) + 1 }, (_, i) => (
+      <div
+        key={i}
+        className="absolute top-0 bottom-0 w-px bg-border/20"
+        style={{ left: i * 10 * zoom }}
+      />
+    ))}
+    {keyframes.map((kf) => (
+      <KeyframeDiamond key={kf.id} time={kf.time} zoom={zoom} interpolation={kf.interpolation} />
+    ))}
+  </div>
+);
+
+const KeyframeDiamond: React.FC<{
+  time: number; zoom: number; interpolation: string;
+}> = ({ time, zoom, interpolation }) => {
+  const size = 8;
+  const x = time * zoom;
+  let fill = '#88ccff';
+  if (interpolation === 'hold') fill = '#ff4444';
+  if (interpolation === 'bezier') fill = '#ffaa00';
+
+  return (
+    <svg
+      width={size + 2}
+      height={size + 2}
+      className="absolute top-1/2 -translate-y-1/2 z-10 cursor-pointer hover:scale-125 transition-transform"
+      style={{ left: x - (size / 2) - 1 }}
+    >
+      {interpolation === 'hold' ? (
+        <rect x={1} y={1} width={size} height={size} fill={fill} rx={1} />
+      ) : interpolation === 'bezier' ? (
+        <circle cx={size / 2 + 1} cy={size / 2 + 1} r={size / 2} fill={fill} />
+      ) : (
+        <polygon
+          points={`${size/2+1},1 ${size+1},${size/2+1} ${size/2+1},${size+1} 1,${size/2+1}`}
+          fill={fill}
+        />
+      )}
+    </svg>
+  );
+};
+
+===== src\ui\panels\timeline\PlaybackControls.tsx =====
+import React, { useCallback } from 'react';
+import { Icon } from '../../common/Icon';
+import { Button } from '../../common/Button';
+import { useTimelineStore } from '../../../state/timelineStore';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { AnimationClock } from '../../../animation/AnimationClock';
+import { formatTime } from '../../../utils/time';
+import type { Composition } from '../../../types/composition';
+
+interface PlaybackControlsProps {
+  comp: Composition;
+  totalFrames: number;
+  currentFrame: number;
+}
+
+/** Global clock singleton for playback */
+export const animationClock = new AnimationClock();
+
+export const PlaybackControls: React.FC<PlaybackControlsProps> = ({ comp, totalFrames, currentFrame }) => {
+  const ps = useTimelineStore((s) => s.playbackState);
+  const setPlaybackState = useTimelineStore((s) => s.setPlaybackState);
+  const zoom = useTimelineStore((s) => s.zoom);
+  const loop = useTimelineStore((s) => s.loop);
+  const setLoop = useTimelineStore((s) => s.setLoop);
+  const timeDisplay = useTimelineStore((s) => s.timeDisplay);
+  const zoomIn = useTimelineStore((s) => s.zoomIn);
+  const zoomOut = useTimelineStore((s) => s.zoomOut);
+
+  // Wire clock to store + PropertyBinder playback loop
+  React.useEffect(() => {
+    animationClock.setFps(comp.fps);
+    animationClock.setTotalFrames(totalFrames);
+    animationClock.setLoopMode(loop ? 'loop' : 'none');
+
+    const cleanupFns: Array<() => void> = [];
+
+    // PropertyBinder + renderer integration â€” evaluate animation and trigger render
+    import('../../../animation/PropertyBinder').then(({ PropertyBinder }) => {
+      import('../../../state/keyframeStore').then(({ useKeyframeStore }) => {
+        import('../../../state/uiStore').then(({ useUIStore }) => {
+          const binder = new PropertyBinder(useKeyframeStore.getState().engine);
+
+          const onFrame2 = (ev: { frame: number }) => {
+            binder.evaluateFrame(comp.id, ev.frame);
+            // Trigger renderer to redraw after animation evaluation
+            const uiState = useUIStore.getState();
+            if (uiState.requestRendererRender) {
+              uiState.requestRendererRender();
+            }
+          };
+
+          animationClock.on('frame-changed', onFrame2);
+          cleanupFns.push(() => animationClock.off('frame-changed', onFrame2));
+        });
+      });
+    });
+
+    const onFrame = (ev: { frame: number }) => {
+      useCompositionStore.getState().setCurrentTime(comp.id, ev.frame / comp.fps);
+    };
+    const onPlay = () => setPlaybackState('playing');
+    const onPause = () => setPlaybackState('paused');
+    const onStop = () => setPlaybackState('stopped');
+
+    animationClock.on('frame-changed', onFrame);
+    animationClock.on('play', onPlay);
+    animationClock.on('pause', onPause);
+    animationClock.on('stop', onStop);
+
+    return () => {
+      animationClock.off('frame-changed', onFrame);
+      animationClock.off('play', onPlay);
+      animationClock.off('pause', onPause);
+      animationClock.off('stop', onStop);
+      cleanupFns.forEach((fn) => fn());
+    };
+  }, [comp.id, comp.fps, totalFrames, loop, setPlaybackState]);
+
+  const toggle = useCallback(() => {
+    animationClock.togglePlay();
+  }, []);
+
+  const goToStart = useCallback(() => animationClock.goToStart(), []);
+  const goToEnd = useCallback(() => animationClock.goToEnd(), []);
+  const prevFrame = useCallback(() => animationClock.stepBackward(), []);
+  const nextFrame = useCallback(() => animationClock.stepForward(), []);
+  const prevKF = useCallback(() => {
+    const kfs = useKeyframeStore.getState().engine.getAllKeyframesForLayer(comp.layers[0]?.id ?? '');
+    const prev = [...kfs].reverse().find((k) => k.time < currentFrame);
+    if (prev) animationClock.seekToFrame(prev.time);
+  }, [comp.layers, currentFrame]);
+  const nextKF = useCallback(() => {
+    const kfs = useKeyframeStore.getState().engine.getAllKeyframesForLayer(comp.layers[0]?.id ?? '');
+    const next = kfs.find((k) => k.time > currentFrame);
+    if (next) animationClock.seekToFrame(next.time);
+  }, [comp.layers, currentFrame]);
+  const toggleLoop = useCallback(() => setLoop(!loop), [loop, setLoop]);
+
+  return (
+    <div className="flex items-center gap-1 px-2 flex-shrink-0 h-tl-header bg-panel-header border-b border-border">
+      <Button variant="icon" size="sm" icon={<Icon name="goToStart" size={14} />} title="Go to start (Home)" onClick={goToStart} />
+      <Button variant="icon" size="sm" icon={<Icon name="frameBack" size={14} />} title="Previous frame (Left)" onClick={prevFrame} />
+      <Button variant="icon" size="sm" icon={<Icon name="goToStart" size={14} />} title="Prev keyframe (J)" onClick={prevKF} />
+      <Button variant="icon" size="sm" icon={<Icon name={ps === 'playing' ? 'pause' : 'play'} size={14} />}
+        title="Play / Pause (Space)" onClick={toggle} />
+      <Button variant="icon" size="sm" icon={<Icon name="goToEnd" size={14} />} title="Next keyframe (K)" onClick={nextKF} />
+      <Button variant="icon" size="sm" icon={<Icon name="frameForward" size={14} />} title="Next frame (Right)" onClick={nextFrame} />
+      <Button variant="icon" size="sm" icon={<Icon name="goToEnd" size={14} />} title="Go to end (End)" onClick={goToEnd} />
+
+      {/* Time display */}
+      <div className="flex items-center px-2 ml-2 font-mono text-ui-xs h-5 bg-panel-input rounded-sm border border-border text-text-primary min-w-[64px] justify-center cursor-pointer select-none"
+        onClick={() => {
+          const modes = ['frames', 'seconds', 'smpte'] as const;
+          const idx = modes.indexOf(timeDisplay as any);
+          useTimelineStore.getState().setTimeDisplay(modes[(idx + 1) % modes.length]);
+        }}
+        title="Click to toggle time display"
+      >
+        {formatTime(comp.currentTime, comp.fps)}
+      </div>
+
+      {/* Loop toggle */}
+      <Button variant="icon" size="sm" icon={<Icon name="grid" size={14} />} title="Loop playback"
+        className={loop ? 'text-accent' : ''} onClick={toggleLoop} />
+
+      <div className="flex-1" />
+
+      {/* Zoom controls */}
+      <Button variant="icon" size="sm" icon={<Icon name="minus" size={12} />} title="Zoom out" onClick={zoomOut} />
+      <span className="text-ui-xs text-text-disabled w-8 text-center">{zoom}</span>
+      <Button variant="icon" size="sm" icon={<Icon name="plus" size={12} />} title="Zoom in" onClick={zoomIn} />
+
+      {/* Current frame display */}
+      <div className="text-ui-xs text-text-disabled ml-2 font-mono min-w-[32px] text-right">
+        {currentFrame}
+      </div>
+    </div>
+  );
+};
+
+// Need to import useKeyframeStore for the keyframe nav buttons
+import { useKeyframeStore } from '../../../state/keyframeStore';
+
+
+===== src\ui\panels\viewport\ViewportPanel.tsx =====
+/**
+ * ViewportPanel â€” the main viewport area.
+ * Two-layer approach: Three.js canvas for rendering, SVG/HTML overlay for HUD/rulers/guides.
+ */
+import React, { useRef } from 'react';
+import { useRenderer } from './hooks/useRenderer';
+import { useViewportInput } from './hooks/useViewportInput';
+import { useViewportSize } from './hooks/useViewportSize';
+import { ViewportHUD } from './ViewportHUD';
+import { TransformHUD } from './TransformHUD';
+import { Rulers } from './Rulers';
+import { Guides } from './Guides';
+import { AxisGizmo } from './AxisGizmo';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useViewportStore } from '../../../state/viewportStore';
+import { STRINGS } from './strings';
+
+export const ViewportPanel: React.FC = () => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewportSize = useViewportSize(containerRef as React.RefObject<HTMLElement | null>);
+  const { state, viewportState, renderer } = useRenderer(containerRef.current);
+
+  const comp = useCompositionStore((s) => {
+    const id = s.activeCompositionId;
+    return id ? s.compositions.find((c) => c.id === id) ?? null : null;
+  });
+
+  const showRulers = useViewportStore((s) => s.settings.showRulers);
+  const showGuides = useViewportStore((s) => s.settings.showGuides);
+  const showStats = useViewportStore((s) => s.settings.showStats);
+
+  // Mount viewport input (pan/zoom/select/transform) on the canvas
+  useViewportInput({
+    canvas: renderer?.canvas ?? null,
+    cameraManager: renderer?.cameraManager ?? null,
+    hitTester: renderer?.hitTester ?? null,
+    modalTransform: renderer?.modalTransform ?? null,
+    requestRender: renderer ? () => renderer.renderLoop.requestRender() : undefined,
+  });
+
+  return (
+    <div className="w-full h-full relative overflow-hidden bg-[var(--viewport-bg)]">
+      <div ref={containerRef} className="absolute inset-0" style={{ zIndex: 1 }} />
+
+      {!comp && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <div className="flex flex-col items-center gap-2 text-text-disabled">
+            <span className="text-ui-lg font-medium">{STRINGS.title}</span>
+            <span className="text-ui-sm">{STRINGS.placeholder}</span>
+            <span className="text-ui-xs">{STRINGS.noComp}</span>
+          </div>
+        </div>
+      )}
+
+      {comp && (
+        <div className="absolute inset-0 z-20 pointer-events-none">
+          {showRulers && viewportSize.width > 0 && (
+            <Rulers zoom={state.zoom} viewportSize={viewportSize} cameraManager={renderer?.cameraManager ?? null} />
+          )}
+          {showGuides && <Guides viewportSize={viewportSize} />}
+        </div>
+      )}
+
+      {comp && (
+        <AxisGizmo />
+      )}
+
+      {comp && (
+        <TransformHUD modalTransform={renderer?.modalTransform ?? null} cameraManager={renderer?.cameraManager ?? null} />
+      )}
+
+      {comp && (
+        <ViewportHUD
+          fps={state.fps}
+          zoom={state.zoom}
+          showStats={showStats}
+          viewportSize={viewportSize}
+          selectedLayerIds={viewportState.selectedLayerIds}
+          transformMode={viewportState.transformMode}
+          onZoomChange={(z) => {
+            const r = renderer;
+            if (r) {
+              r.cameraManager.setZoom(z);
+              r.renderLoop.requestRender();
+            }
+          }}
+          onFitToViewport={() => {
+            const r = renderer;
+            if (r) r.cameraManager.fitToComposition();
+          }}
+        />
+      )}
+
+      {!comp && (
+        <span className="absolute bottom-2 right-2 text-ui-xs text-text-disabled/40 pointer-events-none z-10">
+          1920Ã—1080 | 30fps
+        </span>
+      )}
+    </div>
+  );
+};
+
+export default ViewportPanel;
+
+
+===== src\ui\panels\viewport\hooks\useViewportInput.ts =====
+import { useEffect, useRef } from 'react';
+import type { CameraManager } from '../../../../renderer/CameraManager';
+import type { HitTester } from '../../../../renderer/interaction/HitTest';
+import type { ModalTransform } from '../../../../renderer/interaction/ModalTransform';
+import { VIEWPORT_CONFIG } from '../../../../config/viewportConfig';
+import { useCompositionStore } from '../../../../state/compositionStore';
+import { useSelectionStore } from '../../../../state/selectionStore';
+import { useToolStore, type ToolId } from '../../../../state/toolStore';
+import { TOOLS } from '../../../../config/constants';
+import { createDefaultLayer } from '../../../../config/defaults';
+import type { Layer } from '../../../../types/layer';
+
+function genId(): string {
+  return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+interface UseViewportInputOptions {
+  canvas: HTMLCanvasElement | null;
+  cameraManager: CameraManager | null;
+  hitTester: HitTester | null;
+  modalTransform: ModalTransform | null;
+  requestRender?: () => void;
+}
+
+export function useViewportInput({
+  canvas, cameraManager, hitTester, modalTransform, requestRender,
+}: UseViewportInputOptions): void {
+  const isPanning = useRef(false);
+  const isSpacePanning = useRef(false);
+  const isBoxSelecting = useRef(false);
+  const isDrawing = useRef(false);
+  const lastMouse = useRef({ x: 0, y: 0 });
+  const boxStart = useRef({ x: 0, y: 0 });
+  const cmRef = useRef(cameraManager);
+  const htRef = useRef(hitTester);
+  const mtRef = useRef(modalTransform);
+  const axisGuideRef = useRef<SVGSVGElement | null>(null);
+  const mouseMoved = useRef(false);
+
+  // Keep refs up to date without re-running the effect
+  useEffect(() => { cmRef.current = cameraManager; }, [cameraManager]);
+  useEffect(() => { htRef.current = hitTester; }, [hitTester]);
+  useEffect(() => { mtRef.current = modalTransform; }, [modalTransform]);
+
+  useEffect(() => {
+    if (!canvas) return;
+    const el = canvas;
+    let drawSvg: SVGSVGElement | null = null;
+    let boxSvg: SVGSVGElement | null = null;
+
+    let docMousemove: ((e: MouseEvent) => void) | null = null;
+    let docMouseup: ((e: MouseEvent) => void) | null = null;
+    let docKeydown: ((e: KeyboardEvent) => void) | null = null;
+    let docKeyup: ((e: KeyboardEvent) => void) | null = null;
+
+    function attachDocListeners(): void {
+      detachDocListeners();
+
+      docMousemove = (ev: MouseEvent) => {
+        const mt = mtRef.current;
+        if (!mt?.active) return;
+
+        if (document.pointerLockElement === canvas) {
+          if (ev.movementX !== 0 || ev.movementY !== 0) {
+            mouseMoved.current = true;
+            mt.updateDelta(ev.movementX, ev.movementY);
+          }
+        } else {
+          const dx = ev.clientX - lastMouse.current.x;
+          const dy = ev.clientY - lastMouse.current.y;
+          lastMouse.current = { x: ev.clientX, y: ev.clientY };
+          if (dx !== 0 || dy !== 0) {
+            mouseMoved.current = true;
+            // FIX: pass raw screen deltas â€” ModalTransform handles Y inversion internally
+            mt.updateDelta(dx, dy);
+          }
+        }
+        requestRender?.();
+      };
+
+      docMouseup = (ev: MouseEvent) => {
+        const mt = mtRef.current;
+        if (!mt?.active) return;
+        if (ev.button === 2) mt.cancel();
+        else if (ev.button === 0) mt.confirm();
+        mouseMoved.current = false;
+        detachDocListeners();
+        requestRender?.();
+      };
+
+      docKeydown = (ev: KeyboardEvent) => {
+        const mt = mtRef.current;
+        if (!mt?.active) return;
+        if (ev.key === 'Escape') { mt.cancel(); detachDocListeners(); return; }
+        if (ev.key === 'Enter') { mt.confirm(); detachDocListeners(); return; }
+        if (ev.key === 'x' && !ev.shiftKey) { mt.setAxisLock('x'); updateAxisGuide(); return; }
+        if (ev.key === 'y' && !ev.shiftKey) { mt.setAxisLock('y'); updateAxisGuide(); return; }
+        if (ev.key === 'X' && ev.shiftKey) { mt.setAxisExclude('x'); updateAxisGuide(); return; }
+        if (ev.key === 'Y' && ev.shiftKey) { mt.setAxisExclude('y'); updateAxisGuide(); return; }
+        if (ev.key === 'Shift') { mt.setPrecisionMode(true); return; }
+        if (ev.key === 'Control') { mt.setSnapMode(true); return; }
+        if (ev.key === 'Alt') { mt.setAspectLock(true); return; }
+        if (/^[0-9.\-]$/.test(ev.key)) { mt.pushNumericChar(ev.key); return; }
+        if (ev.key === 'Backspace') { mt.backspaceNumeric(); return; }
+      };
+
+      docKeyup = (ev: KeyboardEvent) => {
+        const mt = mtRef.current;
+        if (!mt?.active) return;
+        if (ev.key === 'Shift') mt.setPrecisionMode(false);
+        if (ev.key === 'Control') mt.setSnapMode(false);
+        if (ev.key === 'Alt') mt.setAspectLock(false);
+      };
+
+      document.addEventListener('mousemove', docMousemove);
+      document.addEventListener('mouseup', docMouseup);
+      document.addEventListener('keydown', docKeydown);
+      document.addEventListener('keyup', docKeyup);
+      createAxisGuide();
+    }
+
+    function detachDocListeners(): void {
+      if (docMousemove) document.removeEventListener('mousemove', docMousemove);
+      if (docMouseup) document.removeEventListener('mouseup', docMouseup);
+      if (docKeydown) document.removeEventListener('keydown', docKeydown);
+      if (docKeyup) document.removeEventListener('keyup', docKeyup);
+      docMousemove = null;
+      docMouseup = null;
+      docKeydown = null;
+      docKeyup = null;
+      removeAxisGuide();
+    }
+
+    function createAxisGuide(): void {
+      removeAxisGuide();
+      const parent = el.parentElement;
+      if (!parent) return;
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:24;width:100%;height:100%';
+      parent.appendChild(svg);
+      axisGuideRef.current = svg;
+    }
+
+    function removeAxisGuide(): void {
+      if (axisGuideRef.current?.parentElement) {
+        axisGuideRef.current.parentElement.removeChild(axisGuideRef.current);
+      }
+      axisGuideRef.current = null;
+    }
+
+    function updateAxisGuide(): void {
+      const svg = axisGuideRef.current;
+      const mt = mtRef.current;
+      if (!svg) return;
+      svg.innerHTML = '';
+      if (!mt?.active || (!mt.axisLock && !mt.axisExclude)) return;
+      const ns = 'http://www.w3.org/2000/svg';
+      const w = svg.clientWidth || 300;
+      const h = svg.clientHeight || 200;
+
+      if (mt.axisLock === 'x' || mt.axisExclude === 'y') {
+        const line = document.createElementNS(ns, 'line');
+        line.setAttribute('x1', '0'); line.setAttribute('y1', String(h / 2));
+        line.setAttribute('x2', String(w)); line.setAttribute('y2', String(h / 2));
+        line.setAttribute('stroke', mt.axisLock === 'x' ? '#ff4444' : 'rgba(255,68,68,0.4)');
+        line.setAttribute('stroke-width', '1');
+        line.setAttribute('stroke-dasharray', '4 2');
+        svg.appendChild(line);
+      }
+      if (mt.axisLock === 'y' || mt.axisExclude === 'x') {
+        const line = document.createElementNS(ns, 'line');
+        line.setAttribute('x1', String(w / 2)); line.setAttribute('y1', '0');
+        line.setAttribute('x2', String(w / 2)); line.setAttribute('y2', String(h));
+        line.setAttribute('stroke', mt.axisLock === 'y' ? '#44ff44' : 'rgba(68,255,68,0.4)');
+        line.setAttribute('stroke-width', '1');
+        line.setAttribute('stroke-dasharray', '4 2');
+        svg.appendChild(line);
+      }
+    }
+
+    const createOverlay = (zIndex: string): SVGSVGElement => {
+      const parent = el.parentElement!;
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.style.cssText = `position:absolute;inset:0;pointer-events:none;z-index:${zIndex};width:100%;height:100%`;
+      parent.appendChild(svg);
+      return svg;
+    };
+
+    const getTool = () => useToolStore.getState().activeTool;
+
+    function hitTestAndSelect(mouseX: number, mouseY: number, clientX: number, clientY: number): boolean {
+      const cm = cmRef.current;
+      const ht = htRef.current;
+      if (!cm || !ht) return false;
+      const compState = useCompositionStore.getState();
+      const compId = compState.activeCompositionId;
+      if (!compId) return false;
+      const comp = compState.compositions.find((c) => c.id === compId);
+      if (!comp) return false;
+
+      // FIX: sort by zIndex descending so topmost layer is tested first
+      const visibleIds = [...comp.layers]
+        .filter((l) => l.visible && !l.locked)
+        .sort((a, b) => b.zIndex - a.zIndex)
+        .map((l) => l.id);
+
+      const hit = ht.hitTest(mouseX, mouseY, visibleIds);
+      if (!hit) return false;
+
+      useSelectionStore.getState().select({
+        type: 'layer', id: hit.layerId, compositionId: compId,
+      });
+
+      if (mtRef.current) {
+        const tool = getTool();
+        const mode = tool === (TOOLS.ROTATE as ToolId) ? 'rotate'
+          : tool === (TOOLS.SCALE as ToolId) ? 'scale'
+          : 'grab';
+        mtRef.current.start(mode);
+        mtRef.current.startMouseScreen = { x: clientX, y: clientY };
+        mouseMoved.current = false;
+        lastMouse.current = { x: clientX, y: clientY };
+        attachDocListeners();
+      }
+
+      return true;
+    }
+
+    const container = el.parentElement;
+
+    // Handle bounding box handles and gizmo clicks
+    const gizmoMouseDown = (e: MouseEvent) => {
+      const target = e.target as SVGElement | null;
+      if (!target) return;
+      const handleAttr = target.getAttribute('data-handle');
+      const gizmoAttr = target.getAttribute('data-gizmo');
+      if (!handleAttr && !gizmoAttr) return;
+      if (!mtRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      let mode: 'grab' | 'rotate' | 'scale';
+      if (handleAttr === 'rotate' || gizmoAttr?.startsWith('rotate')) mode = 'rotate';
+      else if (gizmoAttr?.startsWith('scale') || handleAttr) mode = 'scale';
+      else mode = 'grab';
+
+      mtRef.current.start(mode);
+      mtRef.current.startMouseScreen = { x: e.clientX, y: e.clientY };
+
+      // Compute handle pivot (opposite corner/edge in world space)
+      if (handleAttr && handleAttr !== 'rotate' && cmRef.current) {
+        const compState = useCompositionStore.getState();
+        const compId = compState.activeCompositionId;
+        if (compId) {
+          const comp = compState.compositions.find((c) => c.id === compId);
+          const selectedIds = useSelectionStore.getState().getSelectedIds();
+          if (comp && selectedIds.length > 0) {
+            const layer = comp.layers.find((l) => l.id === selectedIds[0]);
+            if (layer) {
+              const pos = layer.transform.position;
+              const sc = layer.transform.scale;
+              let halfW = 50, halfH = 50;
+              const d = layer.data as any;
+              if (d?.width !== undefined) {
+                halfW = (d.width / 2) * (sc.x / 100);
+                halfH = (d.height / 2) * (sc.y / 100);
+              }
+              const rad = (layer.transform.rotation || 0) * (Math.PI / 180);
+              const cos = Math.cos(rad);
+              const sin = Math.sin(rad);
+              let px = 0, py = 0;
+              if (handleAttr === 'tl') { px = halfW; py = -halfH; }
+              else if (handleAttr === 'tr') { px = -halfW; py = -halfH; }
+              else if (handleAttr === 'br') { px = -halfW; py = halfH; }
+              else if (handleAttr === 'bl') { px = halfW; py = halfH; }
+              else if (handleAttr === 'top') { py = -halfH; }
+              else if (handleAttr === 'bottom') { py = halfH; }
+              else if (handleAttr === 'left') { px = halfW; }
+              else if (handleAttr === 'right') { px = -halfW; }
+              const rx = px * cos - py * sin;
+              const ry = px * sin + py * cos;
+              mtRef.current.setHandlePivotWorld({ x: pos.x + rx, y: pos.y + ry });
+            }
+          }
+        }
+      }
+
+      // Axis constraints from gizmo
+      if (gizmoAttr === 'move-x' || gizmoAttr === 'scale-x') mtRef.current.setAxisLock('x');
+      else if (gizmoAttr === 'move-y' || gizmoAttr === 'scale-y') mtRef.current.setAxisLock('y');
+
+      // Aspect lock for corner handles and uniform scale
+      if (gizmoAttr === 'scale-uniform' ||
+          handleAttr === 'tl' || handleAttr === 'tr' ||
+          handleAttr === 'br' || handleAttr === 'bl') {
+        mtRef.current.setAspectLock(true);
+      }
+
+      // Edge handles: single axis
+      if (handleAttr === 'top' || handleAttr === 'bottom') mtRef.current.setAxisLock('y');
+      if (handleAttr === 'left' || handleAttr === 'right') mtRef.current.setAxisLock('x');
+
+      mouseMoved.current = false;
+      lastMouse.current = { x: e.clientX, y: e.clientY };
+      attachDocListeners();
+    };
+
+    if (container) container.addEventListener('mousedown', gizmoMouseDown);
+
+    const onMouseDown = (e: MouseEvent) => {
+      // Middle mouse or ctrl+left = pan
+      if (e.button === 1 || (e.button === 0 && isSpacePanning.current)) {
+        isPanning.current = true;
+        lastMouse.current = { x: e.clientX, y: e.clientY };
+        e.preventDefault();
+        return;
+      }
+      if (e.button !== 0) return;
+
+      const tool = getTool();
+      const rect = el.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      if (tool === (TOOLS.HAND as ToolId)) {
+        isPanning.current = true;
+        lastMouse.current = { x: e.clientX, y: e.clientY };
+        e.preventDefault();
+        return;
+      }
+
+      if (tool === (TOOLS.ZOOM as ToolId)) {
+        if (cmRef.current) {
+          cmRef.current.setZoom(e.altKey ? cmRef.current.zoom / 1.5 : cmRef.current.zoom * 1.5);
+          requestRender?.();
+        }
+        return;
+      }
+
+      if (mtRef.current?.active) {
+        lastMouse.current = { x: e.clientX, y: e.clientY };
+        return;
+      }
+
+      if (tool === (TOOLS.PEN as ToolId)) {
+        const cm = cmRef.current;
+        if (!cm) return;
+        const world = cm.screenToWorld(mouseX, mouseY);
+        const compState = useCompositionStore.getState();
+        const compId = compState.activeCompositionId;
+        if (!compId) return;
+        const comp = compState.compositions.find((c) => c.id === compId);
+        if (!comp) return;
+        const count = comp.layers.filter((l) => l.type === 'shape').length + 1;
+        const base = createDefaultLayer('shape', `Path ${count}`);
+        const layer: Layer = {
+          ...base, id: genId(), zIndex: comp.layers.length + 1,
+          transform: { position: { x: world.x, y: world.y }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
+          data: { type: 'rectangle', width: 50, height: 50, borderRadius: 0 },
+        };
+        useCompositionStore.getState().addLayer(compId, layer);
+        useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+        return;
+      }
+
+      if (tool === (TOOLS.TEXT as ToolId)) {
+        const cm = cmRef.current;
+        if (!cm) return;
+        const world = cm.screenToWorld(mouseX, mouseY);
+        const compState = useCompositionStore.getState();
+        const compId = compState.activeCompositionId;
+        if (!compId) return;
+        const comp = compState.compositions.find((c) => c.id === compId);
+        if (!comp) return;
+        const count = comp.layers.filter((l) => l.type === 'text').length + 1;
+        const base = createDefaultLayer('text', `Text ${count}`);
+        const layer: Layer = {
+          ...base, id: genId(), zIndex: comp.layers.length + 1,
+          transform: { position: { x: world.x, y: world.y }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
+          data: { text: 'Text', fontFamily: 'Inter', fontSize: 48, fontWeight: 400, color: '#ffffff', lineHeight: 1.2, letterSpacing: 0, alignment: 'center' as const },
+        };
+        useCompositionStore.getState().addLayer(compId, layer);
+        useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+        return;
+      }
+
+      if (tool === (TOOLS.SHAPE_RECT as ToolId) || tool === (TOOLS.SHAPE_ELLIPSE as ToolId)) {
+        boxStart.current = { x: mouseX, y: mouseY };
+        isDrawing.current = true;
+        drawSvg = createOverlay('22');
+        return;
+      }
+
+      // MOVE/ROTATE/SCALE/SELECT: hit test first
+      if (hitTestAndSelect(mouseX, mouseY, e.clientX, e.clientY)) return;
+
+      // No hit â†’ box select
+      isBoxSelecting.current = true;
+      boxStart.current = { x: mouseX, y: mouseY };
+      boxSvg = createOverlay('20');
+      if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        useSelectionStore.getState().deselectAll();
+      }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (mtRef.current?.active) return;
+
+      const rect = el.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      if (isDrawing.current && cmRef.current) {
+        const x = Math.min(boxStart.current.x, mx);
+        const y = Math.min(boxStart.current.y, my);
+        const w = Math.abs(mx - boxStart.current.x);
+        const h = Math.abs(my - boxStart.current.y);
+        if (drawSvg) {
+          drawSvg.innerHTML = '';
+          const shape = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          shape.setAttribute('x', String(x)); shape.setAttribute('y', String(y));
+          shape.setAttribute('width', String(w)); shape.setAttribute('height', String(h));
+          shape.setAttribute('fill', 'rgba(71,114,179,0.2)');
+          shape.setAttribute('stroke', 'var(--color-accent)');
+          shape.setAttribute('stroke-width', '1');
+          drawSvg.appendChild(shape);
+        }
+        return;
+      }
+
+      if ((isPanning.current || isSpacePanning.current) && cmRef.current) {
+        const dx = e.clientX - lastMouse.current.x;
+        const dy = e.clientY - lastMouse.current.y;
+        lastMouse.current = { x: e.clientX, y: e.clientY };
+        // FIX: pan in screen space â€” dx right = world left (negative pan X in world)
+        // CameraManager.pan adds to _panX/_panY, which offset the camera frustum.
+        // Moving camera left means panning scene right, so invert dx.
+        // For Y: screen down = world up in Y-up coords, so invert dy too.
+        const worldPerPixel = 1 / cmRef.current.zoom;
+        cmRef.current.pan(-dx * worldPerPixel, dy * worldPerPixel);
+        requestRender?.();
+        return;
+      }
+
+      if (isBoxSelecting.current && boxSvg && cmRef.current) {
+        const x = Math.min(boxStart.current.x, mx);
+        const y = Math.min(boxStart.current.y, my);
+        const w = Math.abs(mx - boxStart.current.x);
+        const h = Math.abs(my - boxStart.current.y);
+        boxSvg.innerHTML = '';
+        const ns = 'http://www.w3.org/2000/svg';
+        const rectEl = document.createElementNS(ns, 'rect');
+        rectEl.setAttribute('x', String(x)); rectEl.setAttribute('y', String(y));
+        rectEl.setAttribute('width', String(w)); rectEl.setAttribute('height', String(h));
+        rectEl.setAttribute('fill', 'rgba(71,114,179,0.15)');
+        rectEl.setAttribute('stroke', 'var(--color-accent)');
+        rectEl.setAttribute('stroke-width', '1');
+        rectEl.setAttribute('stroke-dasharray', '4 2');
+        boxSvg.appendChild(rectEl);
+
+        const compState = useCompositionStore.getState();
+        const compId = compState.activeCompositionId;
+        if (compId && cmRef.current) {
+          const comp = compState.compositions.find((c) => c.id === compId);
+          if (comp) {
+            const worldMin = cmRef.current.screenToWorld(x, y + h);
+            const worldMax = cmRef.current.screenToWorld(x + w, y);
+            const intersecting = comp.layers.filter((l) => {
+              const t = l.transform;
+              return (
+                t.position.x > worldMin.x && t.position.x < worldMax.x &&
+                t.position.y > worldMin.y && t.position.y < worldMax.y
+              );
+            });
+            useSelectionStore.getState().replaceSelection(intersecting.map((l) => l.id), compId);
+          }
+        }
+      }
+    };
+
+    const onMouseUp = (e: MouseEvent) => {
+      if (e.button === 1) { isPanning.current = false; return; }
+      if (e.button !== 0) return;
+
+      isPanning.current = false;
+
+      if (isDrawing.current) {
+        isDrawing.current = false;
+        if (drawSvg?.parentElement) drawSvg.parentElement.removeChild(drawSvg);
+        drawSvg = null;
+
+        const tool = getTool();
+        const rect = el.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const w = Math.abs(mx - boxStart.current.x);
+        const h = Math.abs(my - boxStart.current.y);
+        if (w < 5 || h < 5 || !cmRef.current) return;
+
+        const shiftHeld = e.shiftKey;
+        let dw = w, dh = h;
+        if (shiftHeld) { const s = Math.max(dw, dh); dw = s; dh = s; }
+
+        const centerScreen = {
+          x: (boxStart.current.x + mx) / 2,
+          y: (boxStart.current.y + my) / 2,
+        };
+        const centerWorld = cmRef.current.screenToWorld(centerScreen.x, centerScreen.y);
+        // FIX: world size = screen pixels / zoom (zoom is world-units-per-pixel inverse)
+        const worldPerPixel = 1 / cmRef.current.zoom;
+        const worldW = dw * worldPerPixel;
+        const worldH = dh * worldPerPixel;
+
+        const compState = useCompositionStore.getState();
+        const compId = compState.activeCompositionId;
+        if (!compId) return;
+        const comp = compState.compositions.find((c) => c.id === compId);
+        if (!comp) return;
+
+        const isRect = tool === (TOOLS.SHAPE_RECT as ToolId);
+        const count = comp.layers.filter((l) => l.type === 'shape').length + 1;
+        const base = createDefaultLayer('shape', `${isRect ? 'Rectangle' : 'Ellipse'} ${count}`);
+        const layer: Layer = {
+          ...base, id: genId(), zIndex: comp.layers.length + 1,
+          transform: { position: { x: centerWorld.x, y: centerWorld.y }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
+          data: isRect
+            ? { type: 'rectangle', width: Math.max(1, Math.round(worldW)), height: Math.max(1, Math.round(worldH)), borderRadius: 0 }
+            : { type: 'ellipse', radiusX: Math.max(1, Math.round(worldW / 2)), radiusY: Math.max(1, Math.round(worldH / 2)) },
+        };
+        useCompositionStore.getState().addLayer(compId, layer);
+        useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+        return;
+      }
+
+      if (isBoxSelecting.current) {
+        isBoxSelecting.current = false;
+        if (boxSvg?.parentElement) boxSvg.parentElement.removeChild(boxSvg);
+        boxSvg = null;
+      }
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      if (!cmRef.current) return;
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const worldBefore = cmRef.current.screenToWorld(mouseX, mouseY);
+      const factor = e.deltaY < 0 ? VIEWPORT_CONFIG.ZOOM_FACTOR : 1 / VIEWPORT_CONFIG.ZOOM_FACTOR;
+      cmRef.current.setZoom(cmRef.current.zoom * factor);
+      const worldAfter = cmRef.current.screenToWorld(mouseX, mouseY);
+      // FIX: pan to keep the point under cursor stationary
+      cmRef.current.pan(worldBefore.x - worldAfter.x, worldBefore.y - worldAfter.y);
+      requestRender?.();
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat) {
+        isSpacePanning.current = true;
+        isPanning.current = true;
+        e.preventDefault();
+      }
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        isSpacePanning.current = false;
+        isPanning.current = false;
+      }
+    };
+
+    const onTransformStart = () => {
+      if (mtRef.current?.active) attachDocListeners();
+    };
+
+    document.addEventListener('transform:grab', onTransformStart);
+    document.addEventListener('transform:rotate', onTransformStart);
+    document.addEventListener('transform:scale', onTransformStart);
+
+    el.addEventListener('mousedown', onMouseDown);
+    el.addEventListener('mousemove', onMouseMove);
+    el.addEventListener('mouseup', onMouseUp);
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+
+    if (container) container.addEventListener('mousedown', gizmoMouseDown);
+
+    return () => {
+      if (container) container.removeEventListener('mousedown', gizmoMouseDown);
+      document.removeEventListener('transform:grab', onTransformStart);
+      document.removeEventListener('transform:rotate', onTransformStart);
+      document.removeEventListener('transform:scale', onTransformStart);
+      el.removeEventListener('mousedown', onMouseDown);
+      el.removeEventListener('mousemove', onMouseMove);
+      el.removeEventListener('mouseup', onMouseUp);
+      el.removeEventListener('wheel', onWheel);
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('keyup', onKeyUp);
+      detachDocListeners();
+      drawSvg?.parentElement?.removeChild(drawSvg);
+      boxSvg?.parentElement?.removeChild(boxSvg);
+      removeAxisGuide();
+    };
+  }, [canvas]);
+}
+
+===== src\input\KeyboardManager.ts =====
+/**
+ * KeyboardManager â€” listens to global keydown events and delegates
+ * matching shortcuts to the ShortcutRegistry.
+ */
+import { useEffect } from 'react';
+import { shortcutRegistry } from './ShortcutRegistry';
+import { useToolStore } from '../state/toolStore';
+import { useUIStore } from '../state/uiStore';
+import { useViewportStore } from '../state/viewportStore';
+import { useCompositionStore } from '../state/compositionStore';
+import { useSelectionStore } from '../state/selectionStore';
+import { createLayerInstance } from '../utils/createLayerInstance';
+import type { Composition } from '../types/composition';
+
+export function useKeyboardManager(): void {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      shortcutRegistry.handleEvent(e);
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+}
+
+function getCompWithCheck(): { compId: string; comp: Composition } | null {
+  const compState = useCompositionStore.getState();
+  const compId = compState.activeCompositionId;
+  if (!compId) return null;
+  const comp = compState.compositions.find((c) => c.id === compId);
+  if (!comp) return null;
+  return { compId, comp };
+}
+
+function genLayerId(): string {
+  return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function duplicateSelected(): void {
+  const ctx = getCompWithCheck();
+  if (!ctx) return;
+  const selectedIds = useSelectionStore.getState().getSelectedIds();
+  for (const id of selectedIds) {
+    const orig = ctx.comp.layers.find((l: any) => l.id === id);
+    if (orig) {
+      const dup = { ...JSON.parse(JSON.stringify(orig)), id: genLayerId(), name: `${orig.name} (copy)`, zIndex: ctx.comp.layers.length + 1 };
+      useCompositionStore.getState().addLayer(ctx.compId, dup);
+    }
+  }
+}
+
+function deleteSelected(): void {
+  const ctx = getCompWithCheck();
+  if (!ctx) return;
+  const selectedIds = useSelectionStore.getState().getSelectedIds();
+  for (const id of selectedIds) useCompositionStore.getState().removeLayer(ctx.compId, id);
+  useSelectionStore.getState().clearSelection();
+}
+
+/**
+ * Register all shortcuts once during app startup.
+ */
+export function registerAllShortcuts(): void {
+  // â”€â”€ Tool switching shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  shortcutRegistry.register({ id: 'tool.select', key: 'v', context: 'global', handler: () => useToolStore.getState().setActiveTool('select'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.hand', key: 'h', context: 'global', handler: () => useToolStore.getState().setActiveTool('hand'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.zoom', key: 'z', context: 'global', handler: () => useToolStore.getState().setActiveTool('zoom'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.rect', key: 'r', shift: true, context: 'global', handler: () => useToolStore.getState().setActiveTool('shapeRect'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.ellipse', key: 'e', shift: true, context: 'global', handler: () => useToolStore.getState().setActiveTool('shapeEllipse'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.pen', key: 'p', context: 'global', handler: () => useToolStore.getState().setActiveTool('pen'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.text', key: 't', context: 'global', handler: () => useToolStore.getState().setActiveTool('text'), remappable: true });
+
+  // â”€â”€ Phase 1: UI toggles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  shortcutRegistry.register({
+    id: 'ui.toggleSidePanel', key: 'n', context: 'global',
+    handler: () => {
+      const s = useUIStore.getState();
+      s.setRightPanelWidth(s.rightPanelWidth > 10 ? 0 : 320);
+    }, remappable: true,
+  });
+  shortcutRegistry.register({ id: 'edit.undo', key: 'z', ctrl: true, context: 'global', handler: () => console.log('[Shortcut] Ctrl+Z'), remappable: true });
+  shortcutRegistry.register({ id: 'edit.redo', key: 'z', ctrl: true, shift: true, context: 'global', handler: () => console.log('[Shortcut] Ctrl+Shift+Z'), remappable: true });
+  // â”€â”€ Phase 4: Playback shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const togglePlayback = () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => {
+      m.animationClock.togglePlay();
+    });
+  };
+  shortcutRegistry.register({ id: 'playback.toggle', key: ' ', context: 'global', handler: togglePlayback, remappable: true });
+  shortcutRegistry.register({ id: 'file.save', key: 's', ctrl: true, context: 'global', handler: () => console.log('[Shortcut] Ctrl+S'), remappable: true });
+
+  // â”€â”€ Phase 2: Viewport shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  shortcutRegistry.register({ id: 'viewport.fitToViewport', key: 'Home', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('viewport:frameAll')), remappable: true });
+  shortcutRegistry.register({ id: 'viewport.toggleGrid', key: 'g', ctrl: true, context: 'global', handler: () => useViewportStore.getState().toggleGrid(), remappable: true });
+  shortcutRegistry.register({ id: 'viewport.toggleRulers', key: 'r', ctrl: true, context: 'global', handler: () => useViewportStore.getState().toggleRulers(), remappable: true });
+  shortcutRegistry.register({ id: 'viewport.toggleSnapping', key: 'Tab', shift: true, context: 'global', handler: () => useViewportStore.getState().toggleSnapping(), remappable: true });
+  shortcutRegistry.register({ id: 'viewport.frameSelected', key: '.', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('viewport:frameSelected')), remappable: true });
+  shortcutRegistry.register({ id: 'viewport.zoom100', key: '1', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('viewport:zoom100')), remappable: true });
+
+  // â”€â”€ Phase 3: Layer shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // â”€â”€ Phase 4: More playback shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  shortcutRegistry.register({ id: 'playback.start', key: 'Home', context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.goToStart());
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.end', key: 'End', context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.goToEnd());
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.prevFrame', key: 'ArrowLeft', context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.stepBackward());
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.nextFrame', key: 'ArrowRight', context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.stepForward());
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.skipBack', key: 'ArrowLeft', shift: true, context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.jumpBackward(10));
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.skipForward', key: 'ArrowRight', shift: true, context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.jumpForward(10));
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.prevKeyframe', key: 'j', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/keyframeStore'),
+      import('../state/selectionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([kfStore, selStore, pc]) => {
+      const sel = selStore.useSelectionStore.getState().getSelectedIds();
+      if (sel.length > 0) {
+        const kfs = kfStore.useKeyframeStore.getState().engine.getAllKeyframesForLayer(sel[0]);
+        const prev = [...kfs].reverse().find((k: any) => k.time < pc.animationClock.currentFrame);
+        if (prev) pc.animationClock.seekToFrame(prev.time);
+      }
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.nextKeyframe', key: 'k', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/keyframeStore'),
+      import('../state/selectionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([kfStore, selStore, pc]) => {
+      const sel = selStore.useSelectionStore.getState().getSelectedIds();
+      if (sel.length > 0) {
+        const kfs = kfStore.useKeyframeStore.getState().engine.getAllKeyframesForLayer(sel[0]);
+        const next = kfs.find((k: any) => k.time > pc.animationClock.currentFrame);
+        if (next) pc.animationClock.seekToFrame(next.time);
+      }
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.workAreaStart', key: 'b', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/compositionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([compStore, pc]) => {
+      const compId = compStore.useCompositionStore.getState().activeCompositionId;
+      if (compId) {
+        const frame = pc.animationClock.currentFrame;
+        const comp = compStore.useCompositionStore.getState().compositions.find((c: any) => c.id === compId);
+        const fps = comp?.fps ?? 30;
+        compStore.useCompositionStore.getState().updateComposition(compId, { workAreaStart: frame / fps });
+      }
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.workAreaEnd', key: 'n', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/compositionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([compStore, pc]) => {
+      const compId = compStore.useCompositionStore.getState().activeCompositionId;
+      if (compId) {
+        const frame = pc.animationClock.currentFrame;
+        const comp = compStore.useCompositionStore.getState().compositions.find((c: any) => c.id === compId);
+        const fps = comp?.fps ?? 30;
+        compStore.useCompositionStore.getState().updateComposition(compId, { workAreaEnd: frame / fps });
+      }
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.setInPoint', key: 'i', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/compositionStore'),
+      import('../state/selectionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([compStore, selStore, pc]) => {
+      const sel = selStore.useSelectionStore.getState().getSelectedIds();
+      const compId = compStore.useCompositionStore.getState().activeCompositionId;
+      const frame = pc.animationClock.currentFrame;
+      if (compId && sel.length > 0) {
+        for (const id of sel) {
+          compStore.useCompositionStore.getState().updateLayer(compId, id, { startFrame: frame });
+        }
+      }
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.setOutPoint', key: 'o', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/compositionStore'),
+      import('../state/selectionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([compStore, selStore, pc]) => {
+      const sel = selStore.useSelectionStore.getState().getSelectedIds();
+      const compId = compStore.useCompositionStore.getState().activeCompositionId;
+      const frame = pc.animationClock.currentFrame;
+      if (compId && sel.length > 0) {
+        for (const id of sel) {
+          compStore.useCompositionStore.getState().updateLayer(compId, id, { endFrame: frame });
+        }
+      }
+    });
+  }, remappable: true });
+  // â”€â”€ Phase 4: Additional playback shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  shortcutRegistry.register({ id: 'playback.reverseToggle', key: ' ', shift: true, context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => {
+      const clock = m.animationClock;
+      clock.setPlaybackRate(clock.playbackRate > 0 ? -1 : 1);
+      clock.togglePlay();
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.stop', key: 'Escape', context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.stop());
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.easeSelected', key: 'F9', context: 'global', handler: () => {
+    import('../state/keyframeStore').then((m) => {
+      const state = m.useKeyframeStore.getState();
+      state.selectedKeyframeIds.forEach((id) => state.setInterpolation(id, 'bezier'));
+    });
+  }, remappable: true });
+
+  shortcutRegistry.register({ id: 'playback.addKeyframe', key: 'k', alt: true, context: 'global', handler: () => {
+    document.dispatchEvent(new CustomEvent('animation:addKeyframe'));
+  }, remappable: true });
+
+  shortcutRegistry.register({ id: 'layer.grab', key: 'g', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('transform:grab')), remappable: true });
+  shortcutRegistry.register({ id: 'layer.rotate', key: 'r', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('transform:rotate')), remappable: true });
+  shortcutRegistry.register({ id: 'layer.scale', key: 's', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('transform:scale')), remappable: true });
+
+  shortcutRegistry.register({
+    id: 'layer.selectAll', key: 'a', context: 'global',
+    handler: () => {
+      const ctx = getCompWithCheck();
+      if (!ctx) return;
+      useSelectionStore.getState().selectAll(ctx.compId, ctx.comp.layers.map((l: any) => l.id));
+    }, remappable: true,
+  });
+  shortcutRegistry.register({ id: 'layer.deselectAll', key: 'a', alt: true, context: 'global', handler: () => useSelectionStore.getState().deselectAll(), remappable: true });
+  shortcutRegistry.register({ id: 'layer.duplicate', key: 'd', ctrl: true, context: 'global', handler: () => duplicateSelected(), remappable: true });
+
+  shortcutRegistry.register({
+    id: 'layer.newSolid', key: 'y', ctrl: true, context: 'global',
+    handler: () => {
+      const ctx = getCompWithCheck();
+      if (!ctx) return;
+      const layer = createLayerInstance('solid', ctx.comp);
+      useCompositionStore.getState().addLayer(ctx.compId, layer);
+      useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: ctx.compId });
+    }, remappable: true,
+  });
+  shortcutRegistry.register({
+    id: 'layer.newText', key: 't', ctrl: true, context: 'global',
+    handler: () => {
+      const ctx = getCompWithCheck();
+      if (!ctx) return;
+      const layer = createLayerInstance('text', ctx.comp);
+      useCompositionStore.getState().addLayer(ctx.compId, layer);
+      useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: ctx.compId });
+    }, remappable: true,
+  });
+
+  shortcutRegistry.register({ id: 'layer.delete', key: 'Delete', context: 'global', handler: () => deleteSelected(), remappable: true });
+  shortcutRegistry.register({ id: 'layer.deleteAlt', key: 'x', context: 'global', handler: () => deleteSelected(), remappable: true });
+  shortcutRegistry.register({ id: 'layer.rename', key: 'F2', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('layer:rename')), remappable: true });
+}
+
+
+===== src\input\ShortcutRegistry.ts =====
+/**
+ * ShortcutRegistry â€” stores all keyboard shortcut bindings.
+ * Shortcuts can be added/removed and are checked by KeyboardManager.
+ * Supports context-based activation (e.g., only fire when viewport is focused).
+ *
+ * K1: Uses lazy import to check ModalTransform.activeAnywhere â€” when a modal
+ * transform is active (G/R/S), global shortcuts like 'X' for delete are suspended
+ * so the modal transform's own key handlers work without conflict.
+ */
+
+// Lazy reference to avoid circular imports
+let _getModalActive: (() => boolean) | null = null;
+function getModalActive(): boolean {
+  return _getModalActive ? _getModalActive() : false;
+}
+
+export function registerModalActiveCheck(fn: () => boolean): void {
+  _getModalActive = fn;
+}
+
+export interface ShortcutBinding {
+  id: string;
+  key: string;
+  ctrl?: boolean;
+  shift?: boolean;
+  alt?: boolean;
+  meta?: boolean;
+  /** Context in which this shortcut is active (e.g. 'viewport', 'timeline', 'global') */
+  context?: string;
+  handler: () => void;
+  /** Whether this shortcut can be remapped */
+  remappable: boolean;
+}
+
+type ShortcutMap = Map<string, ShortcutBinding[]>;
+
+class ShortcutRegistryClass {
+  private shortcuts: ShortcutMap = new Map();
+  private activeContext = 'global';
+
+  /**
+   * Register a keyboard shortcut.
+   * Key format: combination of modifiers + key, e.g. 'ctrl+z', 'n', 'ctrl+shift+z'
+   */
+  register(binding: ShortcutBinding): void {
+    const key = this.buildKey(binding);
+    const existing = this.shortcuts.get(key) ?? [];
+    existing.push(binding);
+    this.shortcuts.set(key, existing);
+  }
+
+  /** Remove a shortcut by its ID */
+  unregister(id: string): void {
+    for (const [key, bindings] of this.shortcuts.entries()) {
+      const filtered = bindings.filter((b) => b.id !== id);
+      if (filtered.length === 0) {
+        this.shortcuts.delete(key);
+      } else {
+        this.shortcuts.set(key, filtered);
+      }
+    }
+  }
+
+  /** Set the active context (e.g., 'viewport', 'timeline', 'global') */
+  setActiveContext(context: string): void {
+    this.activeContext = context;
+  }
+
+  /** Match a keyboard event against registered shortcuts and execute the handler */
+  handleEvent(e: KeyboardEvent): boolean {
+    // Don't fire when typing in input/textarea
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+      return false;
+    }
+
+    // K1: Skip ALL global shortcuts while a modal transform is active
+    // The modal transform's own docKeydown handler in useViewportInput handles X/Y/Esc/Enter/numbers
+    if (getModalActive()) {
+      return false;
+    }
+
+    const key = this.buildKeyFromEvent(e);
+    const bindings = this.shortcuts.get(key);
+    if (!bindings || bindings.length === 0) return false;
+
+    // Find the first matching binding for the current context
+    for (const binding of bindings) {
+      if (!binding.context || binding.context === 'global' || binding.context === this.activeContext) {
+        e.preventDefault();
+        binding.handler();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Clear all shortcuts */
+  clear(): void {
+    this.shortcuts.clear();
+  }
+
+  private buildKey(b: ShortcutBinding): string {
+    const parts: string[] = [];
+    if (b.ctrl) parts.push('ctrl');
+    if (b.shift) parts.push('shift');
+    if (b.alt) parts.push('alt');
+    if (b.meta) parts.push('meta');
+    parts.push(b.key.toLowerCase());
+    return parts.join('+');
+  }
+
+  private buildKeyFromEvent(e: KeyboardEvent): string {
+    const parts: string[] = [];
+    if (e.ctrlKey || e.metaKey) parts.push('ctrl');
+    if (e.shiftKey) parts.push('shift');
+    if (e.altKey) parts.push('alt');
+    parts.push(e.key.toLowerCase());
+    return parts.join('+');
+  }
+}
+
+export const shortcutRegistry = new ShortcutRegistryClass();
+
+
+===== src\styles\theme.css =====
+:root {
+  /* â”€â”€ AE-exact colors (K6) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+    /* Panel gutter â€” dark space BETWEEN panels (like Blender/AE) */
+  --color-gutter:          #131313;
+  --color-border:          #131313;
+  --color-border-light:    #1a1a1a;
+  --color-bg-app:          #232323;
+  --color-bg-surface:      #2b2b2b;
+  --color-bg-surface-alt:  #202020;
+  --color-bg-panel:        #303030;
+  --color-bg-panel-header: #2a2a2a;
+  --color-bg-hover:        #3a3a3a;
+  --color-bg-active:       #4772b3;
+  --color-bg-input:        #1e1e1e;
+  --color-bg-raised:       #353535;
+  --color-bg-overlay:      rgba(0,0,0,0.7);
+
+  --color-border:          #131313;
+  --color-border-light:    #1a1a1a;
+  --color-border-focus:    #4772b3;
+
+  --color-text-primary:    #e6e6e6;
+  --color-text-secondary:  #a0a0a0;
+  --color-text-disabled:   #555555;
+  --color-text-accent:     #8cb9f5;
+
+  --color-bg-panel-input:  var(--color-bg-input);
+  --color-text-muted:      var(--color-text-secondary);
+
+  --color-accent:          #4772b3;
+  --color-accent-hover:    #5a8cce;
+  --color-accent-muted:    #2a4a7a;
+
+  --color-danger:          #b34747;
+  --color-warning:         #b3a247;
+  --color-success:         #47b35a;
+
+  /* â”€â”€ Typography â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --font-family:           'Inter', system-ui, -apple-system, sans-serif;
+  --font-family-mono:      'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  --font-size-xs:          10px;
+  --font-size-sm:          11px;
+  --font-size-md:          12px;
+  --font-size-lg:          14px;
+  --font-weight-normal:    400;
+  --font-weight-medium:    500;
+  --font-weight-semibold:  600;
+
+  /* â”€â”€ Sizing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --size-menubar-height:   28px;
+  --size-tabs-height:      28px;
+  --size-toolbar-width:    40px;
+  --size-toolbar-icon:     24px;
+  --size-panel-header:     26px;
+  --size-splitter:         4px;
+  --size-timeline-height:  200px;
+  --size-icon-sm:          14px;
+  --size-icon-md:          16px;
+  --size-icon-lg:          20px;
+  --size-row:              22px;
+  --size-input:            22px;
+  --size-timeline-header:  28px;
+  --size-timeline-row:     20px;
+  --size-keyframe:          8px;
+  --size-scrollbar:         8px;
+
+  /* â”€â”€ Spacing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --space-1:               2px;
+  --space-2:               4px;
+  --space-3:               6px;
+  --space-4:               8px;
+  --space-5:               12px;
+  --space-6:               16px;
+
+  /* â”€â”€ Radii â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --radius-sm:             2px;
+  --radius-md:             4px;
+
+  /* â”€â”€ Shadows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --shadow-dropdown:       0 4px 12px rgba(0,0,0,0.4);
+  --shadow-modal:          0 8px 24px rgba(0,0,0,0.6);
+  --shadow-tooltip:        0 2px 8px rgba(0,0,0,0.5);
+
+  /* â”€â”€ Transitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --transition-fast:       100ms;
+  --transition-normal:     200ms;
+
+  /* â”€â”€ Z-index â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --z-base:                0;
+  --z-panel:               1;
+  --z-overlay:             10;
+  --z-dropdown:            20;
+  --z-menu:                30;
+  --z-modal:               40;
+  --z-tooltip:             50;
+
+  /* â”€â”€ Scrollbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --scrollbar-track:       #282828;
+  --scrollbar-thumb:       #555;
+  --scrollbar-thumb-hover: #666;
+
+  /* â”€â”€ Viewport â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --viewport-bg:           #1a1a1a;
+  --viewport-grid:         rgba(255,255,255,0.03);
+  --viewport-grid-major:   rgba(255,255,255,0.08);
+  --viewport-crosshair:    rgba(255,255,255,0.12);
+
+  /* â”€â”€ Timeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --timeline-playhead:     #e8b84b;
+  --timeline-grid:         #3a3a3a;
+  --timeline-grid-sub:     #333333;
+
+  /* â”€â”€ Outliner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --outliner-indent:       16px;
+
+  /* â”€â”€ Properties â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --prop-label-width:       80px;
+}
+
+
+

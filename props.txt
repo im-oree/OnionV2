@@ -1,0 +1,901 @@
+﻿===== src\ui\panels\properties\Section.tsx =====
+import React from 'react';
+import { useKeyframeStore } from '../../../state/keyframeStore';
+import type { Layer } from '../../../types/layer';
+
+interface SectionProps {
+  label: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}
+
+export const Section: React.FC<SectionProps> = ({ label, defaultOpen = true, children }) => {
+  const [open, setOpen] = React.useState(defaultOpen);
+  return (
+    <div>
+      <button
+        className="flex items-center w-full h-panel-header px-2 gap-1 border-0 cursor-pointer text-ui-xs font-medium text-text-secondary uppercase tracking-wider bg-panel-header hover:bg-panel-hover"
+        onClick={() => setOpen(!open)}
+      >
+        <span className="text-text-disabled text-[8px] w-3">{open ? 'â–¼' : 'â–¸'}</span>
+        <span>{label}</span>
+      </button>
+      {open && <div className="py-1 px-2 space-y-1">{children}</div>}
+    </div>
+  );
+};
+
+interface PropRowProps {
+  label: string;
+  children: React.ReactNode;
+  /** Property path for animation (e.g. "transform.position.x"). If provided, shows stopwatch + diamond. */
+  animatable?: string;
+  /** The layer this property belongs to (needed for stopwatch/keyframe logic) */
+  layer?: Layer;
+  /** Current frame in the composition */
+  currentFrame?: number;
+  /** Composition ID */
+  compId?: string;
+}
+
+export const PropRow: React.FC<PropRowProps> = ({
+  label,
+  children,
+  animatable,
+  layer,
+  currentFrame = 0,
+  compId: _compId,
+}) => {
+  const [isAnimated, setIsAnimated] = React.useState(false);
+  const [hasKeyframeAtFrame, setHasKeyframeAtFrame] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!animatable || !layer) return;
+    const store = useKeyframeStore.getState();
+    const animated = store.isPropertyAnimated(layer.id, animatable);
+    setIsAnimated(animated);
+
+    if (animated) {
+      const kfs = store.engine.getKeyframesForProperty(layer.id, animatable);
+      setHasKeyframeAtFrame(kfs.some((k) => k.time === currentFrame));
+    } else {
+      setHasKeyframeAtFrame(false);
+    }
+  }, [animatable, layer, currentFrame]);
+
+  const handleStopwatchClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!animatable || !layer) return;
+    const store = useKeyframeStore.getState();
+    store.toggleAnimatedProperty(layer.id, animatable);
+
+    // If enabling animation, add a keyframe at current frame
+    if (!isAnimated) {
+      const value = getCurrentPropertyValue(animatable, layer);
+      store.addKeyframe(layer.id, {
+        id: `kf_${Date.now()}`,
+        property: animatable,
+        layerId: layer.id,
+        time: currentFrame,
+        value,
+        interpolation: 'linear',
+      });
+    }
+  };
+
+  const handleDiamondClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!animatable || !layer) return;
+    const store = useKeyframeStore.getState();
+    if (hasKeyframeAtFrame) {
+      const kfs = store.engine.getKeyframesForProperty(layer.id, animatable);
+      const existing = kfs.find((k) => k.time === currentFrame);
+      if (existing) store.removeKeyframe(existing.id);
+    } else {
+      const value = getCurrentPropertyValue(animatable, layer);
+      store.addKeyframe(layer.id, {
+        id: `kf_${Date.now()}`,
+        property: animatable,
+        layerId: layer.id,
+        time: currentFrame,
+        value,
+        interpolation: 'linear',
+      });
+    }
+    setHasKeyframeAtFrame(!hasKeyframeAtFrame);
+  };
+
+  return (
+    <div className="flex items-center justify-between min-h-[20px] group">
+      <div className="flex items-center gap-0.5 shrink-0" style={{ width: 70 }}>
+        {/* Stopwatch icon */}
+        {animatable && layer && (
+          <button
+            className={`w-3 h-3 flex items-center justify-center border-0 bg-transparent cursor-pointer rounded-sm transition-colors
+              ${isAnimated ? 'text-accent' : 'text-text-disabled opacity-0 group-hover:opacity-40 hover:opacity-100'}`}
+            onClick={handleStopwatchClick}
+            title={isAnimated ? 'Disable animation' : 'Enable animation'}
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+              <circle cx="5" cy="5" r="4" fill="none" stroke="currentColor" strokeWidth="1.2" />
+              <line x1="5" y1="2" x2="5" y2="5" stroke="currentColor" strokeWidth="1.2" />
+              <line x1="5" y1="5" x2="7" y2="6" stroke="currentColor" strokeWidth="0.8" />
+            </svg>
+          </button>
+        )}
+        {/* Label */}
+        <span className="text-ui-xs text-text-secondary truncate">{label}</span>
+      </div>
+      <div className="flex-1 min-w-0">{children}</div>
+      {/* Keyframe diamond indicator */}
+      {animatable && isAnimated && (
+        <button
+          className={`w-3 h-3 flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0 ml-1 transition-colors
+            ${hasKeyframeAtFrame ? 'text-accent' : 'text-text-disabled'}`}
+          onClick={handleDiamondClick}
+          title={hasKeyframeAtFrame ? 'Remove keyframe' : 'Add keyframe'}
+        >
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
+            {hasKeyframeAtFrame ? (
+              <polygon points="4,0 8,4 4,8 0,4" />
+            ) : (
+              <polygon points="4,0 8,4 4,8 0,4" fill="none" stroke="currentColor" strokeWidth="0.8" />
+            )}
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+};
+
+/** Extract the current value for a property path from the layer */
+function getCurrentPropertyValue(path: string, layer: Layer): number | number[] {
+  if (path === 'opacity') return layer.opacity;
+  if (path.startsWith('transform.')) {
+    const field = path.slice('transform.'.length);
+    if (field === 'rotation') return layer.transform.rotation;
+    if (field === 'position') return [layer.transform.position.x, layer.transform.position.y];
+    if (field === 'position.x') return layer.transform.position.x;
+    if (field === 'position.y') return layer.transform.position.y;
+    if (field === 'scale') return [layer.transform.scale.x, layer.transform.scale.y];
+    if (field === 'scale.x') return layer.transform.scale.x;
+    if (field === 'scale.y') return layer.transform.scale.y;
+    if (field === 'anchorPoint') return [layer.transform.anchorPoint.x, layer.transform.anchorPoint.y];
+    if (field === 'anchorPoint.x') return layer.transform.anchorPoint.x;
+    if (field === 'anchorPoint.y') return layer.transform.anchorPoint.y;
+  }
+  return 0;
+}
+
+
+===== src\ui\panels\properties\PropertiesPanel.tsx =====
+import React from 'react';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useSelectionStore } from '../../../state/selectionStore';
+import { TransformSection } from './TransformSection';
+import { LayerSection } from './LayerSection';
+import { SolidSection } from './SolidSection';
+import { ShapeSection } from './ShapeSection';
+import { TextSection } from './TextSection';
+import { CompSection } from './CompSection';
+
+export const PropertiesPanel: React.FC = () => {
+  const comp = useCompositionStore((s) =>
+    s.activeCompositionId
+      ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null
+      : null,
+  );
+  const selectedIds = useSelectionStore((s) =>
+    s.selected.filter((x) => x.type === 'layer').map((x) => x.id),
+  );
+
+  const layers = comp?.layers ?? [];
+  const selectedLayers = layers.filter((l) => selectedIds.includes(l.id));
+
+  if (!comp) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="p-3 text-ui-xs text-text-disabled italic text-center">
+          No composition
+        </div>
+      </div>
+    );
+  }
+
+  if (selectedLayers.length === 0) {
+    return (
+      <div className="flex flex-col h-full overflow-auto">
+        <CompSection />
+      </div>
+    );
+  }
+
+  const single = selectedLayers.length === 1 ? selectedLayers[0] : null;
+
+  return (
+    <div className="flex flex-col h-full overflow-auto">
+      {single && (
+        <div className="flex items-center px-2 gap-1 bg-panel-header border-b border-border" style={{ height: 28 }}>
+          <input
+            type="text"
+            value={single.name}
+            onChange={(e) =>
+              useCompositionStore.getState().updateLayer(comp.id, single.id, { name: e.target.value })
+            }
+            className="flex-1 h-[18px] text-ui-xs px-1 bg-transparent border-0 text-text-primary outline-none"
+          />
+          <span className="text-[9px] text-text-disabled uppercase">{single.type}</span>
+        </div>
+      )}
+
+      {selectedLayers.length > 1 && (
+        <div className="flex items-center px-2 bg-panel-header border-b border-border" style={{ height: 28 }}>
+          <span className="text-ui-xs text-text-secondary">
+            {selectedLayers.length} layers selected
+          </span>
+        </div>
+      )}
+
+      {single && (
+        <>
+          <TransformSection layer={single} compId={comp.id} />
+          <LayerSection layer={single} compId={comp.id} />
+          {single.type === 'solid' && <SolidSection layer={single} compId={comp.id} />}
+          {single.type === 'shape' && <ShapeSection layer={single} compId={comp.id} />}
+          {single.type === 'text' && <TextSection layer={single} compId={comp.id} />}
+        </>
+      )}
+    </div>
+  );
+};
+
+export default PropertiesPanel;
+
+===== src\ui\panels\properties\SolidSection.tsx =====
+import React from 'react';
+import { Section, PropRow } from './Section';
+import { NumberInput } from './inputs/NumberInput';
+import { ColorInput } from './inputs/ColorInput';
+import type { Layer, SolidData } from '../../../types/layer';
+import { useCompositionStore } from '../../../state/compositionStore';
+
+interface Props {
+  layer: Layer;
+  compId: string;
+}
+
+export const SolidSection: React.FC<Props> = ({ layer, compId }) => {
+  const data = layer.data as SolidData | undefined;
+  if (!data) return null;
+  return (
+    <Section label="Solid">
+      <PropRow label="Color">
+        <ColorInput value={data.color} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, color: v } })} />
+      </PropRow>
+      <PropRow label="Width">
+        <NumberInput value={data.width} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, width: v } })} min={1} step={1} precision={0} />
+      </PropRow>
+      <PropRow label="Height">
+        <NumberInput value={data.height} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, height: v } })} min={1} step={1} precision={0} />
+      </PropRow>
+    </Section>
+  );
+};
+
+
+===== src\ui\panels\properties\ShapeSection.tsx =====
+import React from 'react';
+import { Section, PropRow } from './Section';
+import { NumberInput } from './inputs/NumberInput';
+import type { Layer, ShapeData } from '../../../types/layer';
+import { useCompositionStore } from '../../../state/compositionStore';
+
+interface Props {
+  layer: Layer;
+  compId: string;
+}
+
+export const ShapeSection: React.FC<Props> = ({ layer, compId }) => {
+  const data = layer.data as ShapeData | undefined;
+  if (!data) return null;
+
+  return (
+    <Section label="Shape">
+      {data.type === 'rectangle' && (
+        <>
+          <PropRow label="Width">
+            <NumberInput value={data.width} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, width: v } })} min={1} step={1} precision={0} />
+          </PropRow>
+          <PropRow label="Height">
+            <NumberInput value={data.height} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, height: v } })} min={1} step={1} precision={0} />
+          </PropRow>
+          <PropRow label="Corner">
+            <NumberInput value={data.borderRadius} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, borderRadius: v } })} min={0} step={1} precision={0} />
+          </PropRow>
+        </>
+      )}
+      {data.type === 'ellipse' && (
+        <>
+          <PropRow label="RX">
+            <NumberInput value={data.radiusX} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, radiusX: v } })} min={1} step={1} precision={0} />
+          </PropRow>
+          <PropRow label="RY">
+            <NumberInput value={data.radiusY} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, radiusY: v } })} min={1} step={1} precision={0} />
+          </PropRow>
+        </>
+      )}
+    </Section>
+  );
+};
+
+
+===== src\ui\panels\properties\CompSection.tsx =====
+import React from 'react';
+import { Section, PropRow } from './Section';
+import { NumberInput } from './inputs/NumberInput';
+import { ColorInput } from './inputs/ColorInput';
+import { useCompositionStore } from '../../../state/compositionStore';
+
+export const CompSection: React.FC = () => {
+  const comp = useCompositionStore((s) => {
+    const id = s.activeCompositionId;
+    return id ? s.compositions.find((c) => c.id === id) ?? null : null;
+  });
+
+  if (!comp) return null;
+
+  return (
+    <Section label="Composition">
+      <PropRow label="Name">
+        <input
+          type="text" value={comp.name}
+          onChange={(e) => useCompositionStore.getState().updateComposition(comp.id, { name: e.target.value })}
+          className="w-full h-[18px] text-ui-xs px-1 bg-surface border border-border rounded-sm text-text-primary outline-none focus:border-accent"
+        />
+      </PropRow>
+      <PropRow label="Width">
+        <NumberInput value={comp.width} onChange={(v) => useCompositionStore.getState().updateComposition(comp.id, { width: v })} min={64} max={8192} step={1} precision={0} />
+      </PropRow>
+      <PropRow label="Height">
+        <NumberInput value={comp.height} onChange={(v) => useCompositionStore.getState().updateComposition(comp.id, { height: v })} min={64} max={8192} step={1} precision={0} />
+      </PropRow>
+      <PropRow label="FPS">
+        <NumberInput value={comp.fps} onChange={(v) => useCompositionStore.getState().updateComposition(comp.id, { fps: v })} min={1} max={120} step={1} precision={0} />
+      </PropRow>
+      <PropRow label="Duration">
+        <NumberInput value={comp.duration} onChange={(v) => useCompositionStore.getState().updateComposition(comp.id, { duration: v })} min={1} step={1} precision={0} />
+      </PropRow>
+      <PropRow label="Bg Color">
+        <ColorInput value={comp.backgroundColor} onChange={(v) => useCompositionStore.getState().updateComposition(comp.id, { backgroundColor: v })} />
+      </PropRow>
+    </Section>
+  );
+};
+
+
+===== src\ui\panels\properties\LayerSection.tsx =====
+import React from 'react';
+import { Section, PropRow } from './Section';
+import { NumberInput } from './inputs/NumberInput';
+import { SelectInput } from './inputs/SelectInput';
+import { CheckboxInput } from './inputs/CheckboxInput';
+import type { Layer } from '../../../types/layer';
+import { useCompositionStore } from '../../../state/compositionStore';
+
+interface Props {
+  layer: Layer;
+  compId: string;
+}
+
+export const LayerSection: React.FC<Props> = ({ layer, compId }) => {
+  return (
+    <Section label="Layer">
+      <PropRow label="Blend">
+        <SelectInput
+          value={layer.blendMode}
+          onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { blendMode: v as any })}
+          options={[
+            { label: 'Normal', value: 'normal' },
+            { label: 'Multiply', value: 'multiply' },
+            { label: 'Screen', value: 'screen' },
+            { label: 'Overlay', value: 'overlay' },
+          ]}
+        />
+      </PropRow>
+      <PropRow label="Start">
+        <NumberInput value={layer.startFrame} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { startFrame: v })} min={0} step={1} precision={0} />
+      </PropRow>
+      <PropRow label="End">
+        <NumberInput value={layer.endFrame} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { endFrame: v })} min={0} step={1} precision={0} />
+      </PropRow>
+      <PropRow label="Visible">
+        <CheckboxInput value={layer.visible} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { visible: v })} />
+      </PropRow>
+      <PropRow label="Locked">
+        <CheckboxInput value={layer.locked} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { locked: v })} />
+      </PropRow>
+    </Section>
+  );
+};
+
+
+===== src\ui\panels\properties\EffectsSection.tsx =====
+/**
+ * EffectsSection â€” UI for managing the effect stack on a layer.
+ * Shows effects list with enable toggle, parameter editors, and reordering.
+ * Each parameter integrates with Phase 4's keyframe system (stopwatch + diamond).
+ */
+import React, { useState } from 'react';
+import { useEffectsStore } from '../../../state/effectsStore';
+import { useKeyframeStore } from '../../../state/keyframeStore';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { effectRegistry } from '../../../renderer/effects/EffectRegistry';
+import { Section } from './Section';
+import { NumberInput } from './inputs/NumberInput';
+import { ColorInput } from './inputs/ColorInput';
+import { SelectInput } from './inputs/SelectInput';
+import { CheckboxInput } from './inputs/CheckboxInput';
+import type { EffectInstance, EffectType, EffectCategory } from '../../../types/effect';
+import type { Layer } from '../../../types/layer';
+
+interface Props { layer: Layer; compId: string; }
+
+export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
+  const effects = useEffectsStore((s) => s.effectsByLayer[layer.id] ?? []);
+  const addEffect = useEffectsStore((s) => s.addEffect);
+  const removeEffect = useEffectsStore((s) => s.removeEffect);
+  const reorderEffect = useEffectsStore((s) => s.reorderEffect);
+  const updateParameter = useEffectsStore((s) => s.updateParameter);
+  const toggleEffect = useEffectsStore((s) => s.toggleEffect);
+  const duplicateEffect = useEffectsStore((s) => s.duplicateEffect);
+  const copyEffects = useEffectsStore((s) => s.copyEffects);
+  const pasteEffects = useEffectsStore((s) => s.pasteEffects);
+  const removeAllEffects = useEffectsStore((s) => s.removeAllEffects);
+
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const comp = useCompositionStore((s) => s.activeCompositionId
+    ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null : null);
+  const currentFrame = comp ? Math.floor(comp.currentTime * comp.fps) : 0;
+  const categories = effectRegistry.listCategories();
+
+  return (
+    <Section label="Effects">
+      <div className="space-y-0.5">
+        {effects.length === 0 && <div className="text-ui-xs text-text-disabled py-1">No effects</div>}
+        {effects.map((effect, idx) => (
+          <EffectItem key={effect.id} effect={effect} index={idx} total={effects.length}
+            currentFrame={currentFrame} layerId={layer.id} compId={compId}
+            onToggle={() => toggleEffect(layer.id, effect.id)}
+            onRemove={() => removeEffect(layer.id, effect.id)}
+            onDuplicate={() => duplicateEffect(layer.id, effect.id)}
+            onMoveUp={() => reorderEffect(layer.id, effect.id, idx - 1)}
+            onMoveDown={() => reorderEffect(layer.id, effect.id, idx + 1)}
+            onParamChange={(paramId, value) => updateParameter(layer.id, effect.id, paramId, value)}
+          />
+        ))}
+        <div className="relative">
+          <button className="w-full text-left px-2 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer rounded-sm flex items-center gap-1"
+            onClick={() => setShowAddMenu(!showAddMenu)}>
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+              <line x1="5" y1="1" x2="5" y2="9" stroke="currentColor" strokeWidth="1.5" />
+              <line x1="1" y1="5" x2="9" y2="5" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+            <span>Add Effect</span>
+          </button>
+          {showAddMenu && (
+            <AddEffectDropdown categories={categories}
+              onSelect={(type) => { addEffect(layer.id, type); setShowAddMenu(false); }}
+              onClose={() => setShowAddMenu(false)} />
+          )}
+          {effects.length > 0 && (
+            <div className="flex items-center gap-1 px-2 py-0.5">
+              <button className="text-[9px] text-text-disabled hover:text-text-secondary border-0 bg-transparent cursor-pointer"
+                onClick={() => copyEffects(layer.id)} title="Copy effects">Copy</button>
+              <span className="text-text-disabled">Â·</span>
+              <button className="text-[9px] text-text-disabled hover:text-text-secondary border-0 bg-transparent cursor-pointer"
+                onClick={() => pasteEffects(layer.id)} title="Paste effects">Paste</button>
+              <span className="text-text-disabled">Â·</span>
+              <button className="text-[9px] text-text-disabled hover:text-text-secondary border-0 bg-transparent cursor-pointer"
+                onClick={() => removeAllEffects(layer.id)} title="Remove all">Clear</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </Section>
+  );
+};
+
+/** Single effect item */
+const EffectItem: React.FC<{
+  effect: EffectInstance; index: number; total: number; currentFrame: number;
+  layerId: string; compId: string;
+  onToggle: () => void; onRemove: () => void; onDuplicate: () => void;
+  onMoveUp: () => void; onMoveDown: () => void;
+  onParamChange: (paramId: string, value: any) => void;
+}> = ({ effect, index, total, currentFrame, layerId, onToggle, onRemove, onDuplicate, onMoveUp, onMoveDown, onParamChange }) => {
+  const autoKeyframe = (paramId: string, value: any) => {
+    const propPath = `effect.${effect.id}.${paramId}`;
+    const kfStore = useKeyframeStore.getState();
+    if (!kfStore.isPropertyAnimated(layerId, propPath)) return;
+    const kfs = kfStore.engine.getKeyframesForProperty(layerId, propPath);
+    const atFrame = kfs.some((k) => k.time === currentFrame);
+    if (!atFrame) {
+      kfStore.addKeyframe(layerId, { id: `kf_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, property: propPath, layerId, time: currentFrame, value, interpolation: 'linear' });
+    }
+  };
+  const [collapsed, setCollapsed] = React.useState(effect.collapsed);
+  return (
+    <div className="border border-border-light rounded-sm overflow-hidden">
+      <div className="flex items-center h-[22px] px-1 gap-0.5 bg-surface-alt">
+        <button className="w-[14px] h-[14px] flex items-center justify-center border-0 bg-transparent cursor-pointer text-text-disabled shrink-0"
+          onClick={() => setCollapsed(!collapsed)}>
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" className={`transition-transform ${collapsed ? '' : 'rotate-90'}`}>
+            <polygon points="2,0 6,4 2,8" />
+          </svg>
+        </button>
+        <label className="flex items-center gap-1 cursor-pointer shrink-0" onClick={(e) => { e.stopPropagation(); onToggle(); }}>
+          <input type="checkbox" checked={effect.enabled} onChange={onToggle} className="w-2.5 h-2.5 accent-accent cursor-pointer" />
+        </label>
+        <span className="text-ui-xs text-text-primary truncate flex-1">{effect.name}</span>
+        {index > 0 && (
+          <button onClick={onMoveUp} className="w-3 h-3 border-0 bg-transparent cursor-pointer text-text-disabled hover:text-text-secondary" title="Move up">
+            <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><polygon points="4,0 8,6 0,6" /></svg>
+          </button>
+        )}
+        {index < total - 1 && (
+          <button onClick={onMoveDown} className="w-3 h-3 border-0 bg-transparent cursor-pointer text-text-disabled hover:text-text-secondary" title="Move down">
+            <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><polygon points="0,0 8,0 4,8" /></svg>
+          </button>
+        )}
+        <button onClick={onDuplicate} className="w-3 h-3 border-0 bg-transparent cursor-pointer text-text-disabled hover:text-text-secondary" title="Duplicate effect">
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="0.8">
+            <rect x="1" y="1" width="5" height="5" /><rect x="3" y="3" width="5" height="5" />
+          </svg>
+        </button>
+        <button onClick={onRemove} className="w-3 h-3 border-0 bg-transparent cursor-pointer text-text-disabled hover:text-danger" title="Remove effect">
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="0.8">
+            <line x1="1" y1="1" x2="7" y2="7" /><line x1="7" y1="1" x2="1" y2="7" />
+          </svg>
+        </button>
+      </div>
+      {!collapsed && effect.parameters.length > 0 && (
+        <div className="px-1.5 py-1 space-y-1">
+          {effect.parameters.map((param) => (
+            <EffectParamRow key={param.id} param={param} currentFrame={currentFrame} layerId={layerId} effectId={effect.id}
+              onChange={(value) => { onParamChange(param.id, value); autoKeyframe(param.id, value); }} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/** Single effect parameter row */
+const EffectParamRow: React.FC<{
+  param: EffectInstance['parameters'][0]; currentFrame: number; layerId: string; effectId: string; onChange: (value: any) => void;
+}> = ({ param, currentFrame, layerId, effectId, onChange }) => {
+  const propPath = `effect.${effectId}.${param.id}`;
+  const isAnimated = useKeyframeStore((s) => s.isPropertyAnimated(layerId, propPath));
+  const hasKeyframe = useKeyframeStore((s) => {
+    if (!isAnimated) return false;
+    const kfs = s.engine.getKeyframesForProperty(layerId, propPath);
+    return kfs.some((k) => k.time === currentFrame);
+  });
+  const pv: number | number[] = (typeof param.value === 'number' ? param.value : Array.isArray(param.value) ? param.value : 0) as number | number[];
+  const toggleStopwatch = () => {
+    const store = useKeyframeStore.getState();
+    store.toggleAnimatedProperty(layerId, propPath);
+    if (!isAnimated) {
+      store.addKeyframe(layerId, { id: `kf_${Date.now()}`, property: propPath, layerId, time: currentFrame, value: pv, interpolation: 'linear' });
+    }
+  };
+  const toggleDiamond = () => {
+    const store = useKeyframeStore.getState();
+    if (hasKeyframe) { const kfs = store.engine.getKeyframesForProperty(layerId, propPath); const existing = kfs.find((k) => k.time === currentFrame); if (existing) store.removeKeyframe(existing.id); }
+    else { store.addKeyframe(layerId, { id: `kf_${Date.now()}`, property: propPath, layerId, time: currentFrame, value: pv, interpolation: 'linear' }); }
+  };
+  return (
+    <div className="flex items-center gap-1 min-h-[18px] group">
+      <button className={`w-2.5 h-2.5 flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0 ${isAnimated ? 'text-accent' : 'text-text-disabled opacity-0 group-hover:opacity-40'}`}
+        onClick={toggleStopwatch} title={isAnimated ? 'Disable animation' : 'Enable animation'}>
+        <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+          <circle cx="5" cy="5" r="4" /><line x1="5" y1="2" x2="5" y2="5" /><line x1="5" y1="5" x2="7" y2="6" />
+        </svg>
+      </button>
+      <span className="text-ui-xs text-text-secondary w-14 truncate shrink-0">{param.name}</span>
+      <div className="flex-1 min-w-0"><ParamInput param={param} onChange={onChange} /></div>
+      {isAnimated && (
+        <button className={`w-2.5 h-2.5 flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0 ${hasKeyframe ? 'text-accent' : 'text-text-disabled'}`}
+          onClick={toggleDiamond} title={hasKeyframe ? 'Remove keyframe' : 'Add keyframe'}>
+          <svg width="6" height="6" viewBox="0 0 8 8" fill={hasKeyframe ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="0.8">
+            <polygon points="4,0 8,4 4,8 0,4" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+};
+
+/** Input widget router */
+function ParamInput({ param, onChange }: { param: any; onChange: (value: any) => void }) {
+  switch (param.type) {
+    case 'number':
+    case 'percent':
+    case 'angle':
+      return <NumberInput value={Number(param.value)} onChange={(v: number) => onChange(v)} min={param.min} max={param.max} step={param.step ?? 1} precision={param.type === 'angle' ? 0 : 1} label={param.type === 'percent' ? '%' : param.type === 'angle' ? 'Â°' : ''} />;
+    case 'color':
+      return <ColorInput value={param.value} onChange={onChange} />;
+    case 'boolean':
+      return <CheckboxInput value={param.value} onChange={onChange} />;
+    case 'select':
+      return <SelectInput value={param.value} options={(param.options ?? []).map((o: string) => ({ label: o, value: o }))} onChange={onChange} />;
+    case 'vector2': {
+      const v = param.value;
+      const stepVal = param.step ?? 1;
+      return <div className="flex gap-1">
+        <NumberInput value={v[0]} onChange={(x: number) => onChange([x, v[1]])} step={stepVal} precision={1} label="X" />
+        <NumberInput value={v[1]} onChange={(y: number) => onChange([v[0], y])} step={stepVal} precision={1} label="Y" />
+      </div>;
+    }
+    default:
+      return <span className="text-ui-xs text-text-disabled">â€”</span>;
+  }
+}
+
+/** Dropdown for adding effects */
+const AddEffectDropdown: React.FC<{ categories: EffectCategory[]; onSelect: (type: EffectType) => void; onClose: () => void }> = ({ categories, onSelect, onClose }) => {
+  const [search, setSearch] = useState('');
+  return (
+    <div className="absolute top-full left-0 mt-1 min-w-[180px] bg-panel border border-border rounded-md shadow-dropdown z-50 py-1" onMouseLeave={onClose}>
+      <div className="px-2 pb-1">
+        <input type="text" placeholder="Search effects..." value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full h-[18px] text-ui-xs px-1 bg-surface border border-border rounded-sm text-text-primary outline-none focus:border-accent" autoFocus />
+      </div>
+      {categories.filter((cat) => !search.trim() || effectRegistry.listByCategory(cat).some((d) => d.displayName.toLowerCase().includes(search.toLowerCase()))).map((cat) => (
+        <div key={cat}>
+          <div className="px-2 py-0.5 text-[9px] text-text-disabled uppercase tracking-wider">{cat}</div>
+          {effectRegistry.listByCategory(cat).filter((d) => !search.trim() || d.displayName.toLowerCase().includes(search.toLowerCase())).map((def) => (
+            <button key={def.type} className="w-full text-left px-3 py-0.5 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer"
+              onClick={() => onSelect(def.type)}>{def.displayName}</button>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+
+===== src\ui\panels\viewport\ViewportPanel.tsx =====
+/**
+ * ViewportPanel â€” the main viewport area.
+ * Two-layer approach: Three.js canvas for rendering, SVG/HTML overlay for HUD/rulers/guides.
+ */
+import React, { useRef } from 'react';
+import { useRenderer } from './hooks/useRenderer';
+import { useViewportInput } from './hooks/useViewportInput';
+import { useViewportSize } from './hooks/useViewportSize';
+import { ViewportHUD } from './ViewportHUD';
+import { TransformHUD } from './TransformHUD';
+import { Rulers } from './Rulers';
+import { Guides } from './Guides';
+import { AxisGizmo } from './AxisGizmo';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useViewportStore } from '../../../state/viewportStore';
+import { STRINGS } from './strings';
+
+export const ViewportPanel: React.FC = () => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewportSize = useViewportSize(containerRef as React.RefObject<HTMLElement | null>);
+  const { state, viewportState, renderer } = useRenderer(containerRef.current);
+
+  const comp = useCompositionStore((s) => {
+    const id = s.activeCompositionId;
+    return id ? s.compositions.find((c) => c.id === id) ?? null : null;
+  });
+
+  const showRulers = useViewportStore((s) => s.settings.showRulers);
+  const showGuides = useViewportStore((s) => s.settings.showGuides);
+  const showStats = useViewportStore((s) => s.settings.showStats);
+
+  // Mount viewport input (pan/zoom/select/transform) on the canvas
+  useViewportInput({
+    canvas: renderer?.canvas ?? null,
+    cameraManager: renderer?.cameraManager ?? null,
+    hitTester: renderer?.hitTester ?? null,
+    modalTransform: renderer?.modalTransform ?? null,
+    requestRender: renderer ? () => renderer.renderLoop.requestRender() : undefined,
+  });
+
+  return (
+    <div className="w-full h-full relative overflow-hidden bg-[var(--viewport-bg)]">
+      <div ref={containerRef} className="absolute inset-0" style={{ zIndex: 1 }} />
+
+      {!comp && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <div className="flex flex-col items-center gap-2 text-text-disabled">
+            <span className="text-ui-lg font-medium">{STRINGS.title}</span>
+            <span className="text-ui-sm">{STRINGS.placeholder}</span>
+            <span className="text-ui-xs">{STRINGS.noComp}</span>
+          </div>
+        </div>
+      )}
+
+      {comp && (
+        <div className="absolute inset-0 z-20 pointer-events-none">
+          {showRulers && viewportSize.width > 0 && (
+            <Rulers zoom={state.zoom} viewportSize={viewportSize} cameraManager={renderer?.cameraManager ?? null} />
+          )}
+          {showGuides && <Guides viewportSize={viewportSize} />}
+        </div>
+      )}
+
+      {comp && (
+        <AxisGizmo />
+      )}
+
+      {comp && (
+        <TransformHUD modalTransform={renderer?.modalTransform ?? null} cameraManager={renderer?.cameraManager ?? null} />
+      )}
+
+      {comp && (
+        <ViewportHUD
+          fps={state.fps}
+          zoom={state.zoom}
+          showStats={showStats}
+          viewportSize={viewportSize}
+          selectedLayerIds={viewportState.selectedLayerIds}
+          transformMode={viewportState.transformMode}
+          onZoomChange={(z) => {
+            const r = renderer;
+            if (r) {
+              r.cameraManager.setZoom(z);
+              r.renderLoop.requestRender();
+            }
+          }}
+          onFitToViewport={() => {
+            const r = renderer;
+            if (r) r.cameraManager.fitToComposition();
+          }}
+        />
+      )}
+
+      {!comp && (
+        <span className="absolute bottom-2 right-2 text-ui-xs text-text-disabled/40 pointer-events-none z-10">
+          1920Ã—1080 | 30fps
+        </span>
+      )}
+    </div>
+  );
+};
+
+export default ViewportPanel;
+
+
+===== src\ui\panels\viewport\contextMenus.ts =====
+import type { ContextMenuItem } from '../../common/ContextMenu';
+import { useSelectionStore } from '../../../state/selectionStore';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useKeyframeStore } from '../../../state/keyframeStore';
+import { animationClock } from '../timeline/PlaybackControls';
+import type { Layer } from '../../../types/layer';
+
+function genId(): string {
+  return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+function kfId(): string {
+  return `kf_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+}
+
+function getSelected(): { compId: string; layers: Layer[] } | null {
+  const cs = useCompositionStore.getState();
+  const compId = cs.activeCompositionId;
+  if (!compId) return null;
+  const comp = cs.compositions.find(c => c.id === compId);
+  if (!comp) return null;
+  const ids = useSelectionStore.getState().getSelectedIds();
+  return { compId, layers: comp.layers.filter(l => ids.includes(l.id)) };
+}
+
+function insertKf(layerId: string, prop: string, value: number | number[]): void {
+  const store = useKeyframeStore.getState();
+  const frame = animationClock.currentFrame;
+  if (!store.isPropertyAnimated(layerId, prop)) {
+    store.toggleAnimatedProperty(layerId, prop);
+  }
+  const existing = store.engine.getKeyframesForProperty(layerId, prop)
+    .find(k => k.time === frame);
+  if (existing) {
+    store.updateKeyframe(existing.id, { value });
+  } else {
+    store.addKeyframe(layerId, {
+      id: kfId(), property: prop, layerId, time: frame,
+      value, interpolation: 'linear',
+    });
+  }
+}
+
+export function buildInsertKeyframeMenu(): ContextMenuItem[] {
+  const sel = getSelected();
+  if (!sel || sel.layers.length === 0) return [];
+
+  const loc = () => sel.layers.forEach(l =>
+    insertKf(l.id, 'transform.position', [l.transform.position.x, l.transform.position.y]));
+  const locX = () => sel.layers.forEach(l =>
+    insertKf(l.id, 'transform.position.x', l.transform.position.x));
+  const locY = () => sel.layers.forEach(l =>
+    insertKf(l.id, 'transform.position.y', l.transform.position.y));
+  const rot = () => sel.layers.forEach(l =>
+    insertKf(l.id, 'transform.rotation', l.transform.rotation));
+  const scl = () => sel.layers.forEach(l =>
+    insertKf(l.id, 'transform.scale', [l.transform.scale.x, l.transform.scale.y]));
+  const sclX = () => sel.layers.forEach(l =>
+    insertKf(l.id, 'transform.scale.x', l.transform.scale.x));
+  const sclY = () => sel.layers.forEach(l =>
+    insertKf(l.id, 'transform.scale.y', l.transform.scale.y));
+  const opa = () => sel.layers.forEach(l =>
+    insertKf(l.id, 'opacity', l.opacity));
+  const all = () => { loc(); rot(); scl(); opa(); };
+
+  return [
+    { id: 'kf.hdr', label: 'Insert Keyframe', disabled: true },
+    { id: 'kf.d1', divider: true },
+    { id: 'kf.all', label: 'All Transforms', onClick: all },
+    { id: 'kf.d2', divider: true },
+    {
+      id: 'kf.loc', label: 'Location', children: [
+        { id: 'kf.loc.all', label: 'Location (X, Y)', onClick: loc },
+        { id: 'kf.loc.x', label: 'Location X', onClick: locX },
+        { id: 'kf.loc.y', label: 'Location Y', onClick: locY },
+      ],
+    },
+    { id: 'kf.rot', label: 'Rotation', onClick: rot },
+    {
+      id: 'kf.scl', label: 'Scale', children: [
+        { id: 'kf.scl.all', label: 'Scale (X, Y)', onClick: scl },
+        { id: 'kf.scl.x', label: 'Scale X', onClick: sclX },
+        { id: 'kf.scl.y', label: 'Scale Y', onClick: sclY },
+      ],
+    },
+    { id: 'kf.opa', label: 'Opacity', onClick: opa },
+  ];
+}
+
+export function buildViewportContextMenu(): ContextMenuItem[] {
+  const sel = getSelected();
+  const has = sel && sel.layers.length > 0;
+
+  const dup = () => {
+    if (!sel) return;
+    sel.layers.forEach(l => {
+      const d: Layer = { ...JSON.parse(JSON.stringify(l)), id: genId(), name: `${l.name} (copy)`, zIndex: l.zIndex + 1 };
+      useCompositionStore.getState().addLayer(sel.compId, d);
+    });
+  };
+  const del = () => {
+    if (!sel) return;
+    sel.layers.forEach(l => useCompositionStore.getState().removeLayer(sel.compId, l.id));
+    useSelectionStore.getState().clearSelection();
+  };
+
+  const kfChildren = has
+    ? buildInsertKeyframeMenu().filter(i => i.id !== 'kf.hdr' && i.id !== 'kf.d1')
+    : [];
+
+  return [
+    { id: 'v.hdr', label: 'Object', disabled: true },
+    { id: 'v.d1', divider: true },
+    { id: 'v.dup', label: 'Duplicate', shortcut: 'Ctrl+D', disabled: !has, onClick: dup },
+    { id: 'v.ren', label: 'Rename', shortcut: 'F2', disabled: !has, onClick: () => document.dispatchEvent(new CustomEvent('layer:rename')) },
+    { id: 'v.d2', divider: true },
+    { id: 'v.grab', label: 'Move', shortcut: 'G', disabled: !has, onClick: () => document.dispatchEvent(new CustomEvent('transform:grab')) },
+    { id: 'v.rot', label: 'Rotate', shortcut: 'R', disabled: !has, onClick: () => document.dispatchEvent(new CustomEvent('transform:rotate')) },
+    { id: 'v.scl', label: 'Scale', shortcut: 'S', disabled: !has, onClick: () => document.dispatchEvent(new CustomEvent('transform:scale')) },
+    { id: 'v.d3', divider: true },
+    { id: 'v.kf', label: 'Insert Keyframe', shortcut: 'I', disabled: !has, children: kfChildren },
+    { id: 'v.d4', divider: true },
+    { id: 'v.del', label: 'Delete', shortcut: 'X', disabled: !has, onClick: del },
+  ];
+}
+
+

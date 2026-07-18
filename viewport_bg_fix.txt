@@ -1,0 +1,532 @@
+﻿===== src\renderer\overlays\CompBounds.ts =====
+/**
+ * CompBounds â€” displays the composition boundary as a visible rectangle.
+ * Everything outside is dimmed with a dark overlay quad.
+ * Inside is the composition background color.
+ */
+import * as THREE from 'three';
+
+export class CompBoundsOverlay {
+  public readonly group: THREE.Group;
+  private border: THREE.LineSegments | null = null;
+  private darkOutside: THREE.Mesh | null = null;
+  private bgQuad: THREE.Mesh | null = null;
+  private _visible = true;
+
+  constructor() {
+    this.group = new THREE.Group();
+    this.group.name = 'comp-bounds-overlay';
+  }
+
+  /** Update composition bounds for given dimensions and background color */
+  update(width: number, height: number, bgColor: string): void {
+    this.clear();
+
+    const halfW = width / 2;
+    const halfH = height / 2;
+    const worldSize = Math.max(width, height) * 10; // large enough to cover viewport
+
+    // Dark overlay outside composition
+    const outsideGeo = this.buildOutsideQuad(worldSize, halfW, halfH);
+    const outsideMat = new THREE.MeshBasicMaterial({
+      color: 0x000000,
+      transparent: true,
+      opacity: 0.7,
+      depthTest: false,
+      side: THREE.DoubleSide,
+    });
+    this.darkOutside = new THREE.Mesh(outsideGeo, outsideMat);
+    this.group.add(this.darkOutside);
+
+    // Composition background quad (fills inside)
+    const bgMat = new THREE.MeshBasicMaterial({
+      color: bgColor,
+      depthTest: false,
+      side: THREE.DoubleSide,
+    });
+    const bgGeo = new THREE.PlaneGeometry(width, height);
+    this.bgQuad = new THREE.Mesh(bgGeo, bgMat);
+    this.group.add(this.bgQuad);
+
+    // Border line
+    const borderPos = [
+      -halfW, -halfH, 0, halfW, -halfH, 0,
+      halfW, -halfH, 0, halfW, halfH, 0,
+      halfW, halfH, 0, -halfW, halfH, 0,
+      -halfW, halfH, 0, -halfW, -halfH, 0,
+    ];
+    const borderGeo = new THREE.BufferGeometry();
+    borderGeo.setAttribute('position', new THREE.Float32BufferAttribute(borderPos, 3));
+    const borderMat = new THREE.LineBasicMaterial({
+      color: 0x4772b3,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.5,
+    });
+    this.border = new THREE.LineSegments(borderGeo, borderMat);
+    this.group.add(this.border);
+
+    this.group.visible = this._visible;
+  }
+
+  show(): void { this._visible = true; this.group.visible = true; }
+  hide(): void { this._visible = false; this.group.visible = false; }
+  get visible(): boolean { return this._visible; }
+
+  private buildOutsideQuad(worldSize: number, halfW: number, halfH: number): THREE.BufferGeometry {
+    // Create a large quad with a hole in the middle using 4 separate quads
+    const s = worldSize;
+    const positions: number[] = [
+      // Top strip
+      -s, halfH, 0, s, halfH, 0, s, s, 0, -s, halfH, 0, s, s, 0, -s, s, 0,
+      // Bottom strip
+      -s, -s, 0, s, -s, 0, s, -halfH, 0, -s, -s, 0, s, -halfH, 0, -s, -halfH, 0,
+      // Left strip
+      -s, -halfH, 0, -halfW, -halfH, 0, -halfW, halfH, 0, -s, -halfH, 0, -halfW, halfH, 0, -s, halfH, 0,
+      // Right strip
+      halfW, -halfH, 0, s, -halfH, 0, s, halfH, 0, halfW, -halfH, 0, s, halfH, 0, halfW, halfH, 0,
+    ];
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    return geo;
+  }
+
+  private clear(): void {
+    [this.border, this.darkOutside, this.bgQuad].forEach((obj) => {
+      if (obj) {
+        this.group.remove(obj);
+        obj.geometry.dispose();
+        if (obj instanceof THREE.Mesh) {
+          (obj.material as THREE.Material).dispose();
+        }
+      }
+    });
+    this.border = null;
+    this.darkOutside = null;
+    this.bgQuad = null;
+  }
+
+  dispose(): void { this.clear(); }
+}
+
+
+===== src\renderer\SceneManager.ts =====
+/**
+ * SceneManager â€” manages the Three.js Scene and all renderable content.
+ * RENDER ORDER: compBounds (bg quad, dim outside) renders FIRST, then
+ * grid, then layers, then safeZones on top. This ensures layers appear
+ * inside the composition area and above the background.
+ */
+import * as THREE from 'three';
+import { GridOverlay } from './overlays/Grid';
+import { SafeZonesOverlay } from './overlays/SafeZones';
+import { CompBoundsOverlay } from './overlays/CompBounds';
+
+export class SceneManager {
+  public readonly scene: THREE.Scene;
+  public readonly layerGroup: THREE.Group;
+  public readonly grid: GridOverlay;
+  public readonly safeZones: SafeZonesOverlay;
+  public readonly compBounds: CompBoundsOverlay;
+
+  private compWidth = 1920;
+  private compHeight = 1080;
+
+  constructor() {
+    this.scene = new THREE.Scene();
+    this.scene.background = null;
+
+    // Render order via renderOrder to ensure correct layering.
+    // Since all materials use depthTest: false, THREE.js renders
+    // objects in ascending renderOrder regardless of scene add order.
+    // Order: compBounds bgQuad (-20) â†’ darkOutside (-15) â†’ border (-10)
+    //        â†’ grid (-5) â†’ layers (0) â†’ safeZones (5)
+    // CRITICAL: layers MUST have higher renderOrder than grid so they
+    // render ON TOP, preventing grid from showing through opaque meshes.
+    this.compBounds = new CompBoundsOverlay();
+    this.compBounds.group.renderOrder = -20;
+    this.scene.add(this.compBounds.group);
+
+    this.grid = new GridOverlay();
+    this.grid.group.renderOrder = -5;
+    this.scene.add(this.grid.group);
+
+    // Layer group renders on top of grid
+    this.layerGroup = new THREE.Group();
+    this.layerGroup.name = 'layers';
+    this.layerGroup.renderOrder = 0;
+    this.scene.add(this.layerGroup);
+
+    // Safe zones on top of everything
+    this.safeZones = new SafeZonesOverlay();
+    this.safeZones.group.renderOrder = 5;
+    this.scene.add(this.safeZones.group);
+
+    // Solid background so CSS grid patterns don't show through transparent canvas
+    this.scene.background = new THREE.Color('#1a1a1a');
+  }
+
+  applyComposition(width: number, height: number, bgColor: string): void {
+    this.compWidth = width;
+    this.compHeight = height;
+    this.grid.update(width, height, 1);
+    this.compBounds.update(width, height, bgColor);
+    this.safeZones.update(width, height);
+  }
+
+  updateGrid(zoom: number): void {
+    this.grid.update(this.compWidth, this.compHeight, zoom);
+  }
+
+  addLayer(mesh: THREE.Mesh): void {
+    this.layerGroup.add(mesh);
+  }
+
+  removeLayer(id: string): void {
+    const child = this.layerGroup.getObjectByName(id);
+    if (child instanceof THREE.Mesh) {
+      this.layerGroup.remove(child);
+      child.geometry.dispose();
+      if (child.material instanceof THREE.Material) child.material.dispose();
+    }
+  }
+
+  clearLayers(): void {
+    for (let i = this.layerGroup.children.length - 1; i >= 0; i--) {
+      const child = this.layerGroup.children[i];
+      this.layerGroup.remove(child);
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        if (child.material instanceof THREE.Material) child.material.dispose();
+      }
+    }
+  }
+
+  dispose(): void {
+    this.grid.dispose();
+    this.safeZones.dispose();
+    this.compBounds.dispose();
+    this.clearLayers();
+  }
+}
+
+
+===== src\renderer\Renderer.ts =====
+import * as THREE from 'three';
+import { SceneManager } from './SceneManager';
+import { CameraManager } from './CameraManager';
+import { RenderLoop, type FrameStats } from './RenderLoop';
+import { ResizeHandler } from './ResizeHandler';
+import { Snapping } from './utils/Snapping';
+import { LayerSync } from './sync/LayerSync';
+import { HitTester } from './interaction/HitTest';
+import { SelectionOverlay } from './interaction/SelectionOverlay';
+import { ModalTransform } from './interaction/ModalTransform';
+import { EffectsRenderer } from './effects/EffectsRenderer';
+import type { Composition } from '../types/composition';
+
+export interface RendererState {
+  fps: number;
+  zoom: number;
+  frameCount: number;
+}
+
+export class Renderer {
+  public readonly renderer: THREE.WebGLRenderer;
+  public readonly sceneManager: SceneManager;
+  public readonly cameraManager: CameraManager;
+  public readonly renderLoop: RenderLoop;
+  public readonly resizeHandler: ResizeHandler;
+  public readonly snapping: Snapping;
+  public readonly layerSync: LayerSync;
+  public readonly hitTester: HitTester;
+  public readonly selectionOverlay: SelectionOverlay;
+  public readonly modalTransform: ModalTransform;
+  public readonly effectsRenderer: EffectsRenderer;
+
+  private _state: RendererState = { fps: 0, zoom: 1, frameCount: 0 };
+  private _onStateChange?: (state: RendererState) => void;
+  private _composition: Composition | null = null;
+
+  constructor(container: HTMLElement) {
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    this.renderer.setClearColor(0x1a1a1a, 1);
+    this.renderer.domElement.style.display = 'block';
+    this.renderer.domElement.style.width = '100%';
+    this.renderer.domElement.style.height = '100%';
+    container.appendChild(this.renderer.domElement);
+
+    this.sceneManager = new SceneManager();
+    this.cameraManager = new CameraManager();
+    this.snapping = new Snapping();
+    this.layerSync = new LayerSync(this.sceneManager);
+    this.hitTester = new HitTester(this.sceneManager, this.cameraManager);
+    this.selectionOverlay = new SelectionOverlay(container, this.cameraManager);
+    this.modalTransform = new ModalTransform(this.cameraManager);
+    this.effectsRenderer = new EffectsRenderer(this.renderer);
+
+    // Mount the selection overlay SVG
+    this.selectionOverlay.mount();
+
+    this.renderLoop = new RenderLoop(
+      this.renderer, this.sceneManager.scene, this.cameraManager.camera,
+    );
+
+    this.resizeHandler = new ResizeHandler(this.renderer, this.cameraManager, this.renderLoop);
+
+    // Wire CameraManager changes to trigger real-time viewport updates (M1)
+    this.cameraManager.onChanged = () => this.renderLoop.requestRender();
+
+    // Wire EffectsRenderer into the pre-render pipeline
+    this.renderLoop.beforeRender = () => this._processEffects();
+
+    this.renderLoop.onFrame = (stats: FrameStats) => {
+      const vp = this.cameraManager.getViewportTransform();
+      this._state = { fps: stats.fps, zoom: vp.zoom, frameCount: stats.frameCount };
+      this._onStateChange?.(this._state);
+    };
+
+    this.resizeHandler.observe(container);
+    this.renderLoop.start();
+  }
+
+  applyComposition(comp: Composition): void {
+    this._composition = comp;
+    this.sceneManager.applyComposition(comp.width, comp.height, comp.backgroundColor);
+    this.cameraManager.setCompositionSize(comp.width, comp.height);
+    // K3: Don't auto-fit camera to composition. Let user control zoom/pan.
+    // this.cameraManager.fitToComposition();
+    // Layer sync is handled by the dedicated layerSync effect in useRenderer
+    // â€” don't sync here to avoid double-sync conflicts.
+    this.renderLoop.requestRender();
+  }
+
+  get composition(): Composition | null { return this._composition; }
+
+  setGridVisible(visible: boolean): void {
+    if (visible) this.sceneManager.grid.show();
+    else this.sceneManager.grid.hide();
+    this.renderLoop.requestRender();
+  }
+
+  setSafeZonesVisible(visible: boolean): void {
+    if (visible) this.sceneManager.safeZones.show();
+    else this.sceneManager.safeZones.hide();
+    this.renderLoop.requestRender();
+  }
+
+  setSnappingEnabled(enabled: boolean): void {
+    this.snapping.enabled = enabled;
+  }
+
+  getState(): RendererState { return { ...this._state }; }
+
+  set onStateChange(cb: ((state: RendererState) => void) | undefined) {
+    this._onStateChange = cb;
+  }
+
+  /** Process effects for all layers before each frame render */
+  private _processEffects(): void {
+    const layerIds: string[] = [];
+    for (const child of this.sceneManager.layerGroup.children) {
+      const renderer = this.layerSync.getRenderer(child.name);
+      if (renderer) {
+        layerIds.push(renderer.id);
+        // Hide original mesh if effects are active (effect quad replaces it)
+        const hasFx = this.effectsRenderer.hasEffects(renderer.id);
+        this._toggleOriginalMesh(renderer, !hasFx);
+      }
+    }
+    this.effectsRenderer.prepareFrame(layerIds);
+
+    for (const child of this.sceneManager.layerGroup.children) {
+      const renderer = this.layerSync.getRenderer(child.name);
+      if (renderer && this.effectsRenderer.hasEffects(renderer.id)) {
+        const gn = (renderer as any).geometryWidth();
+        const gh = (renderer as any).geometryHeight();
+        this.effectsRenderer.renderLayer(
+          renderer.id, renderer.mesh, gn, gh,
+          renderer.group,
+        );
+      }
+    }
+  }
+
+  /** Toggle original mesh visibility (hide when effects active) */
+  private _toggleOriginalMesh(layerRenderer: { mesh: THREE.Mesh; group: THREE.Group }, visible: boolean): void {
+    if (layerRenderer.mesh.visible === visible) return;
+    layerRenderer.mesh.visible = visible;
+  }
+
+  get canvas(): HTMLCanvasElement { return this.renderer.domElement; }
+
+  dispose(): void {
+    this.renderLoop.dispose();
+    this.resizeHandler.dispose();
+    this.sceneManager.dispose();
+    this.cameraManager.dispose();
+    this.layerSync.clear();
+    this.effectsRenderer.dispose();
+    this.selectionOverlay.dispose();
+    this.renderer.dispose();
+    if (this.renderer.domElement.parentElement) {
+      this.renderer.domElement.parentElement.removeChild(this.renderer.domElement);
+    }
+  }
+}
+
+
+===== src\styles\theme.css =====
+:root {
+  /* â”€â”€ AE-exact colors (K6) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+    /* Panel gutter â€” dark space BETWEEN panels (like Blender/AE) */
+  --color-gutter:          #131313;
+  --color-border:          #131313;
+  --color-border-light:    #1a1a1a;
+  --color-bg-app:          #232323;
+  --color-bg-surface:      #2b2b2b;
+  --color-bg-surface-alt:  #202020;
+  --color-bg-panel:        #303030;
+  --color-bg-panel-header: #2a2a2a;
+  --color-bg-hover:        #3a3a3a;
+  --color-bg-active:       #4772b3;
+  --color-bg-input:        #1e1e1e;
+  --color-bg-raised:       #353535;
+  --color-bg-overlay:      rgba(0,0,0,0.7);
+
+  --color-border:          #131313;
+  --color-border-light:    #1a1a1a;
+  --color-border-focus:    #4772b3;
+
+  --color-text-primary:    #e6e6e6;
+  --color-text-secondary:  #a0a0a0;
+  --color-text-disabled:   #555555;
+  --color-text-accent:     #8cb9f5;
+
+  --color-bg-panel-input:  var(--color-bg-input);
+  --color-text-muted:      var(--color-text-secondary);
+
+  --color-accent:          #4772b3;
+  --color-accent-hover:    #5a8cce;
+  --color-accent-muted:    #2a4a7a;
+
+  --color-danger:          #b34747;
+  --color-warning:         #b3a247;
+  --color-success:         #47b35a;
+
+  /* â”€â”€ Typography â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --font-family:           'Inter', system-ui, -apple-system, sans-serif;
+  --font-family-mono:      'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  --font-size-xs:          10px;
+  --font-size-sm:          11px;
+  --font-size-md:          12px;
+  --font-size-lg:          14px;
+  --font-weight-normal:    400;
+  --font-weight-medium:    500;
+  --font-weight-semibold:  600;
+
+  /* â”€â”€ Sizing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --size-menubar-height:   28px;
+  --size-tabs-height:      28px;
+  --size-toolbar-width:    40px;
+  --size-toolbar-icon:     24px;
+  --size-panel-header:     26px;
+  --size-splitter:         4px;
+  --size-timeline-height:  200px;
+  --size-icon-sm:          14px;
+  --size-icon-md:          16px;
+  --size-icon-lg:          20px;
+  --size-row:              22px;
+  --size-input:            22px;
+  --size-timeline-header:  28px;
+  --size-timeline-row:     20px;
+  --size-keyframe:          8px;
+  --size-scrollbar:         8px;
+
+  /* â”€â”€ Spacing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --space-1:               2px;
+  --space-2:               4px;
+  --space-3:               6px;
+  --space-4:               8px;
+  --space-5:               12px;
+  --space-6:               16px;
+
+  /* â”€â”€ Radii â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --radius-sm:             2px;
+  --radius-md:             4px;
+
+  /* â”€â”€ Shadows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --shadow-dropdown:       0 4px 12px rgba(0,0,0,0.4);
+  --shadow-modal:          0 8px 24px rgba(0,0,0,0.6);
+  --shadow-tooltip:        0 2px 8px rgba(0,0,0,0.5);
+
+  /* â”€â”€ Transitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --transition-fast:       100ms;
+  --transition-normal:     200ms;
+
+  /* â”€â”€ Z-index â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --z-base:                0;
+  --z-panel:               1;
+  --z-overlay:             10;
+  --z-dropdown:            20;
+  --z-menu:                30;
+  --z-modal:               40;
+  --z-tooltip:             50;
+
+  /* â”€â”€ Scrollbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --scrollbar-track:       #282828;
+  --scrollbar-thumb:       #555;
+  --scrollbar-thumb-hover: #666;
+
+  /* â”€â”€ Viewport â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --viewport-bg:           #1a1a1a;
+  --viewport-grid:         rgba(255,255,255,0.03);
+  --viewport-grid-major:   rgba(255,255,255,0.08);
+  --viewport-crosshair:    rgba(255,255,255,0.12);
+
+  /* â”€â”€ Timeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --timeline-playhead:     #e8b84b;
+  --timeline-grid:         #3a3a3a;
+  --timeline-grid-sub:     #333333;
+
+  /* â”€â”€ Outliner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --outliner-indent:       16px;
+
+  /* â”€â”€ Properties â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  --prop-label-width:       80px;
+}
+
+
+===== src\utils\theme.ts =====
+/**
+ * Theme utility â€” reads CSS custom properties from the document
+ * so the renderer (which has no React dependency) can access theme values.
+ */
+
+/** Read a single CSS variable as a string */
+export function getCSSVar(name: string, el: HTMLElement = document.documentElement): string {
+  return getComputedStyle(el).getPropertyValue(name).trim();
+}
+
+/** Read a CSS color and return it as a hex string suitable for Three.js */
+export function getCSSColor(name: string, fallback = '#ffffff'): string {
+  const val = getCSSVar(name);
+  return val || fallback;
+}
+
+/** Read a CSS numeric variable (e.g. --size-splitter: 4px â†’ 4) */
+export function getCSSNumber(name: string, fallback = 0): number {
+  const val = getCSSVar(name);
+  if (!val) return fallback;
+  const parsed = parseFloat(val);
+  return isNaN(parsed) ? fallback : parsed;
+}
+
+/** Read a CSS variable that is a pixel value (e.g. 4px â†’ 4) */
+export function getCSSPixel(name: string, fallback = 0): number {
+  return getCSSNumber(name, fallback);
+}
+
+
+

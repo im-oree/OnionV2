@@ -1,0 +1,1013 @@
+﻿===== src\state\keyframeStore.ts =====
+/**
+ * keyframeStore â€” Zustand store for keyframe state.
+ * Manages keyframes by (layerId, propertyPath) and selection.
+ */
+import { create } from 'zustand';
+import { KeyframeEngine } from '../animation/KeyframeEngine';
+import type { Keyframe, InterpolationType } from '../types/keyframe';
+
+export interface KeyframeState {
+  /** The engine instance that holds and evaluates keyframes */
+  engine: KeyframeEngine;
+  /** Selected keyframe IDs */
+  selectedKeyframeIds: Set<string>;
+  /** Which properties have animation enabled (stopwatch on) per layer */
+  animatedProperties: Map<string, Set<string>>; // layerId â†’ Set<propertyPath>
+
+  // Actions
+  addKeyframe: (layerId: string, keyframe: Keyframe) => void;
+  removeKeyframe: (keyframeId: string) => void;
+  updateKeyframe: (keyframeId: string, patch: Partial<Keyframe>) => void;
+  moveKeyframe: (keyframeId: string, newTime: number) => void;
+  setInterpolation: (keyframeId: string, interpolation: InterpolationType) => void;
+  deleteSelectedKeyframes: () => void;
+  toggleKeyframeSelection: (id: string) => void;
+  selectKeyframe: (id: string, addToSelection?: boolean) => void;
+  deselectKeyframe: (id: string) => void;
+  clearKeyframeSelection: () => void;
+  getKeyframeIdsForLayer: (layerId: string) => string[];
+  toggleAnimatedProperty: (layerId: string, property: string) => void;
+  isPropertyAnimated: (layerId: string, property: string) => boolean;
+}
+
+export const useKeyframeStore = create<KeyframeState>((set, get) => ({
+  engine: new KeyframeEngine(),
+  selectedKeyframeIds: new Set(),
+  animatedProperties: new Map(),
+
+  addKeyframe: (layerId, keyframe) => {
+    get().engine.addKeyframe(layerId, keyframe);
+    set({ engine: get().engine }); // Trigger re-render by replacing reference
+  },
+
+  removeKeyframe: (keyframeId) => {
+    get().engine.removeKeyframe(keyframeId);
+    set((s) => {
+      const next = new Set(s.selectedKeyframeIds);
+      next.delete(keyframeId);
+      return { selectedKeyframeIds: next };
+    });
+  },
+
+  updateKeyframe: (keyframeId, patch) => {
+    get().engine.updateKeyframe(keyframeId, patch);
+  },
+
+  moveKeyframe: (keyframeId, newTime) => {
+    get().engine.moveKeyframe(keyframeId, newTime);
+  },
+
+  setInterpolation: (keyframeId, interpolation) => {
+    get().engine.setInterpolation(keyframeId, interpolation);
+  },
+
+  deleteSelectedKeyframes: () => {
+    const ids = get().selectedKeyframeIds;
+    for (const id of ids) get().engine.removeKeyframe(id);
+    set({ selectedKeyframeIds: new Set() });
+  },
+
+  toggleKeyframeSelection: (id) => {
+    set((s) => {
+      const next = new Set(s.selectedKeyframeIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { selectedKeyframeIds: next };
+    });
+  },
+
+  selectKeyframe: (id, addToSelection) => {
+    set((s) => {
+      const next = addToSelection ? new Set(s.selectedKeyframeIds) : new Set<string>();
+      next.add(id);
+      return { selectedKeyframeIds: next };
+    });
+  },
+
+  deselectKeyframe: (id) => {
+    set((s) => {
+      const next = new Set(s.selectedKeyframeIds);
+      next.delete(id);
+      return { selectedKeyframeIds: next };
+    });
+  },
+
+  clearKeyframeSelection: () => set({ selectedKeyframeIds: new Set() }),
+
+  getKeyframeIdsForLayer: (layerId) => {
+    return get().engine.getAllKeyframesForLayer(layerId).map((k) => k.id);
+  },
+
+  toggleAnimatedProperty: (layerId, property) => {
+    set((s) => {
+      const next = new Map(s.animatedProperties);
+      const existing = next.get(layerId);
+      if (existing?.has(property)) {
+        existing.delete(property);
+        if (existing.size === 0) next.delete(layerId);
+        else next.set(layerId, existing);
+        // Remove all keyframes for this property
+        s.engine.removeAllForProperty(layerId, property);
+      } else {
+        const props = existing ? new Set(existing) : new Set<string>();
+        props.add(property);
+        next.set(layerId, props);
+      }
+      return { animatedProperties: next };
+    });
+  },
+
+  isPropertyAnimated: (layerId, property) => {
+    return get().animatedProperties.get(layerId)?.has(property) ?? false;
+  },
+}));
+
+
+===== src\state\compositionStore.ts =====
+import { create } from 'zustand';
+import type { Composition } from '../types/composition';
+import type { Layer } from '../types/layer';
+import { DEFAULT_COMPOSITION } from '../config/defaults';
+
+function genId():string{return `comp_${Date.now()}_${Math.random().toString(36).slice(2,9)}`}
+
+export interface CompositionState{
+  compositions:Composition[]; activeCompositionId:string|null;
+  addComposition:(overrides?:Partial<Composition>)=>Composition;
+  removeComposition:(id:string)=>void;
+  setActiveComposition:(id:string)=>void;
+  updateComposition:(id:string,updates:Partial<Composition>)=>void;
+  addLayer:(compId:string,layer:Layer)=>void;
+  removeLayer:(compId:string,layerId:string)=>void;
+  updateLayer:(compId:string,layerId:string,updates:Partial<Layer>)=>void;
+  reorderLayers:(compId:string,from:number,to:number)=>void;
+  setCurrentTime:(compId:string,time:number)=>void;
+  getActiveComposition:()=>Composition|null;
+}
+
+export const useCompositionStore = create<CompositionState>((set,get)=>({
+  compositions:[], activeCompositionId:null,
+  addComposition:(overrides)=>{
+    const c:Composition={...DEFAULT_COMPOSITION,id:genId(),name:`Comp ${get().compositions.length+1}`,...overrides};
+    set(s=>({compositions:[...s.compositions,c],activeCompositionId:s.activeCompositionId??c.id}));
+    return c;
+  },
+  removeComposition:(id)=>set(s=>({compositions:s.compositions.filter(c=>c.id!==id),activeCompositionId:s.activeCompositionId===id?s.compositions.find(c=>c.id!==id)?.id??null:s.activeCompositionId})),
+  setActiveComposition:(id)=>set({activeCompositionId:id}),
+  updateComposition:(id,updates)=>set(s=>({compositions:s.compositions.map(c=>c.id===id?{...c,...updates}:c)})),
+  addLayer:(compId,layer)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,layers:[...c.layers,layer]}:c)})),
+  removeLayer:(compId,layerId)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,layers:c.layers.filter(l=>l.id!==layerId)}:c)})),
+  updateLayer:(compId,layerId,updates)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,layers:c.layers.map(l=>l.id===layerId?{...l,...updates}:l)}:c)})),
+  reorderLayers:(compId,from,to)=>set(s=>({compositions:s.compositions.map(c=>{if(c.id!==compId)return c;const layers=[...c.layers];const[m]=layers.splice(from,1);m&&layers.splice(to,0,m);return{...c,layers}})})),
+  setCurrentTime:(compId,time)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,currentTime:time}:c)})),
+  getActiveComposition:()=>{const s=get();return s.activeCompositionId?s.compositions.find(c=>c.id===s.activeCompositionId)??null:null},
+}));
+
+
+===== src\state\timelineStore.ts =====
+import { create } from 'zustand';
+import { TIME_DISPLAY } from '../config/constants';
+
+export type TimeDisplayMode = typeof TIME_DISPLAY[keyof typeof TIME_DISPLAY];
+export type PlaybackState = 'stopped'|'playing'|'paused';
+export type TrackHeight = 'compact'|'normal'|'expanded';
+
+export interface TimelineState{
+  playbackState:PlaybackState; timeDisplay:TimeDisplayMode;
+  zoom:number; scrollX:number; scrollY:number;
+  snapping:boolean; autoScroll:boolean; loop:boolean;
+  // Phase 4 spec #7 additions
+  workAreaStart:number; workAreaEnd:number;
+  visibleTrackHeight:TrackHeight; snapKeyframes:boolean;
+  playbackRate:number;
+  setPlaybackState:(s:PlaybackState)=>void;
+  play:()=>void; pause:()=>void; stop:()=>void;
+  togglePlayback:()=>void;
+  setTimeDisplay:(m:TimeDisplayMode)=>void;
+  setZoom:(z:number)=>void; setScrollX:(x:number)=>void; setScrollY:(y:number)=>void;
+  setSnapping:(s:boolean)=>void; setAutoScroll:(s:boolean)=>void; setLoop:(l:boolean)=>void;
+  zoomIn:()=>void; zoomOut:()=>void; zoomToFit:()=>void;
+  // Phase 4 spec #7 action additions
+  setWorkArea:(start:number,end:number)=>void;
+  setVisibleTrackHeight:(h:TrackHeight)=>void;
+  setSnapKeyframes:(s:boolean)=>void;
+  setPlaybackRate:(r:number)=>void;
+}
+
+const DEFAULT_ZOOM=30;
+
+export const useTimelineStore = create<TimelineState>((set)=>({
+  playbackState:'stopped', timeDisplay:TIME_DISPLAY.FRAMES as TimeDisplayMode,
+  zoom:DEFAULT_ZOOM, scrollX:0, scrollY:0,
+  snapping:true, autoScroll:true, loop:false,
+  // Phase 4 defaults
+  workAreaStart:0, workAreaEnd:300,
+  visibleTrackHeight:'normal', snapKeyframes:true, playbackRate:1,
+  setPlaybackState:(s)=>set({playbackState:s}),
+  play:()=>set({playbackState:'playing'}),
+  pause:()=>set({playbackState:'paused'}),
+  stop:()=>set({playbackState:'stopped'}),
+  togglePlayback:()=>set(s=>({playbackState:s.playbackState==='playing'?'paused':'playing'})),
+  setTimeDisplay:(m)=>set({timeDisplay:m}),
+  setZoom:(z)=>set({zoom:Math.max(1,Math.min(1000,z))}),
+  setScrollX:(x)=>set({scrollX:x}),
+  setScrollY:(y)=>set({scrollY:y}),
+  setSnapping:(snapping)=>set({snapping}),
+  setAutoScroll:(s)=>set({autoScroll:s}),
+  setLoop:(l)=>set({loop:l}),
+  zoomIn:()=>set(s=>({zoom:Math.min(1000,s.zoom*1.25)})),
+  zoomOut:()=>set(s=>({zoom:Math.max(1,s.zoom/1.25)})),
+  zoomToFit:()=>set({zoom:DEFAULT_ZOOM}),
+  // Phase 4 actions
+  setWorkArea:(start,end)=>set({workAreaStart:start,workAreaEnd:end}),
+  setVisibleTrackHeight:(h)=>set({visibleTrackHeight:h}),
+  setSnapKeyframes:(s)=>set({snapKeyframes:s}),
+  setPlaybackRate:(r)=>set({playbackRate:r}),
+}));
+
+
+===== src\state\selectionStore.ts =====
+import { create } from 'zustand';
+
+export type SelectableType = 'layer' | 'keyframe' | 'effect' | 'mask' | 'point';
+
+export interface SelectionItem {
+  type: SelectableType;
+  id: string;
+  compositionId: string;
+  parentId?: string;
+}
+
+export interface SelectionState {
+  selected: SelectionItem[];
+  lastSelected: SelectionItem | null;
+  hoveredId: string | null;
+
+  select: (item: SelectionItem, addToSelection?: boolean) => void;
+  deselect: (id: string) => void;
+  toggleSelection: (item: SelectionItem) => void;
+  selectAll: (compositionId: string, layerIds: string[]) => void;
+  deselectAll: () => void;
+  clearSelection: () => void;
+  selectRange: (fromId: string, toId: string, allIds: string[]) => void;
+  isSelected: (id: string) => boolean;
+  getSelectedIds: () => string[];
+  getSelectedLayers: () => SelectionItem[];
+  setHovered: (id: string | null) => void;
+  replaceSelection: (ids: string[], compositionId: string) => void;
+}
+
+export const useSelectionStore = create<SelectionState>((set, get) => ({
+  selected: [],
+  lastSelected: null,
+  hoveredId: null,
+
+  select: (item, addToSelection = false) =>
+    set((s) => ({
+      selected: addToSelection
+        ? s.selected.some((x) => x.id === item.id)
+          ? s.selected
+          : [...s.selected, item]
+        : [item],
+      lastSelected: item,
+    })),
+
+  deselect: (id) =>
+    set((s) => ({
+      selected: s.selected.filter((x) => x.id !== id),
+      lastSelected: s.lastSelected?.id === id
+        ? (s.selected.find((x) => x.id !== id) ?? null)
+        : s.lastSelected,
+    })),
+
+  toggleSelection: (item) => {
+    const s = get();
+    if (s.isSelected(item.id)) {
+      s.deselect(item.id);
+    } else {
+      s.select(item, true);
+    }
+  },
+
+  selectAll: (compositionId, layerIds) =>
+    set({
+      selected: layerIds.map((id) => ({ type: 'layer' as const, id, compositionId })),
+      lastSelected:
+        layerIds.length > 0
+          ? { type: 'layer' as const, id: layerIds[layerIds.length - 1], compositionId }
+          : null,
+    }),
+
+  deselectAll: () => set({ selected: [], lastSelected: null, hoveredId: null }),
+
+  clearSelection: () => set({ selected: [], lastSelected: null }),
+
+  selectRange: (fromId, toId, allIds) => {
+    const fromIdx = allIds.indexOf(fromId);
+    const toIdx = allIds.indexOf(toId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const start = Math.min(fromIdx, toIdx);
+    const end = Math.max(fromIdx, toIdx);
+    const rangeIds = allIds.slice(start, end + 1);
+    const lastItem = get().lastSelected;
+    const compId = lastItem?.compositionId ?? '';
+    set({
+      selected: rangeIds.map((id) => ({ type: 'layer' as const, id, compositionId: compId })),
+    });
+  },
+
+  isSelected: (id) => get().selected.some((s) => s.id === id),
+
+  getSelectedIds: () => get().selected.map((s) => s.id),
+
+  getSelectedLayers: () => get().selected.filter((s) => s.type === 'layer'),
+
+  setHovered: (id) => set({ hoveredId: id }),
+
+  replaceSelection: (ids, compositionId) =>
+    set({
+      selected: ids.map((id) => ({ type: 'layer' as const, id, compositionId })),
+      lastSelected:
+        ids.length > 0
+          ? { type: 'layer' as const, id: ids[ids.length - 1], compositionId }
+          : null,
+    }),
+}));
+
+
+===== src\animation\KeyframeEngine.ts =====
+/**
+ * KeyframeEngine â€” stores and evaluates keyframes for animated properties.
+ * Maintains sorted keyframe arrays per (layerId, propertyPath).
+ * Uses binary search for O(log n) lookup during evaluation.
+ */
+import type { Keyframe, InterpolationType, BezierTangent } from '../types/keyframe';
+import { lerp, clamp, cubicBezier } from './Interpolators';
+
+type KeyframeMap = Map<string, Keyframe[]>; // propertyPath â†’ sorted keyframes
+
+export class KeyframeEngine {
+  private _data = new Map<string, KeyframeMap>(); // layerId â†’ propertyMap
+
+  // â”€â”€ Mutation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  addKeyframe(layerId: string, keyframe: Keyframe): void {
+    let propMap = this._data.get(layerId);
+    if (!propMap) {
+      propMap = new Map();
+      this._data.set(layerId, propMap);
+    }
+    const arr = propMap.get(keyframe.property) ?? [];
+    // Remove existing keyframe at same time for same property
+    const filtered = arr.filter((k) => k.time !== keyframe.time);
+    filtered.push(keyframe);
+    filtered.sort((a, b) => a.time - b.time);
+    propMap.set(keyframe.property, filtered);
+  }
+
+  removeKeyframe(keyframeId: string): void {
+    for (const [, propMap] of this._data) {
+      for (const [prop, arr] of propMap) {
+        const filtered = arr.filter((k) => k.id !== keyframeId);
+        if (filtered.length !== arr.length) {
+          if (filtered.length === 0) propMap.delete(prop);
+          else propMap.set(prop, filtered);
+          return;
+        }
+      }
+    }
+  }
+
+  updateKeyframe(keyframeId: string, patch: Partial<Keyframe>): void {
+    for (const [, propMap] of this._data) {
+      for (const [prop, arr] of propMap) {
+        const idx = arr.findIndex((k) => k.id === keyframeId);
+        if (idx !== -1) {
+          const updated = { ...arr[idx], ...patch };
+          // If time changed, re-sort
+          if (patch.time !== undefined && patch.time !== arr[idx].time) {
+            const filtered = arr.filter((k) => k.id !== keyframeId);
+            filtered.push(updated);
+            filtered.sort((a, b) => a.time - b.time);
+            propMap.set(prop, filtered);
+          } else {
+            arr[idx] = updated;
+          }
+          return;
+        }
+      }
+    }
+  }
+
+  moveKeyframe(keyframeId: string, newTime: number): void {
+    this.updateKeyframe(keyframeId, { time: newTime });
+  }
+
+  setInterpolation(keyframeId: string, interpolation: InterpolationType): void {
+    this.updateKeyframe(keyframeId, { interpolation });
+  }
+
+  removeAllForProperty(layerId: string, property: string): void {
+    const propMap = this._data.get(layerId);
+    if (propMap) propMap.delete(property);
+  }
+
+  clearLayer(layerId: string): void {
+    this._data.delete(layerId);
+  }
+
+  // â”€â”€ Query â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  getKeyframesForProperty(layerId: string, property: string): Keyframe[] {
+    return this._data.get(layerId)?.get(property) ?? [];
+  }
+
+  getAllKeyframesForLayer(layerId: string): Keyframe[] {
+    const propMap = this._data.get(layerId);
+    if (!propMap) return [];
+    const result: Keyframe[] = [];
+    for (const arr of propMap.values()) result.push(...arr);
+    return result.sort((a, b) => a.time - b.time);
+  }
+
+  hasAnimation(layerId: string, property: string): boolean {
+    const arr = this._data.get(layerId)?.get(property);
+    return arr !== undefined && arr.length > 0;
+  }
+
+  getAllAnimatedProperties(layerId: string): string[] {
+    const propMap = this._data.get(layerId);
+    return propMap ? Array.from(propMap.keys()) : [];
+  }
+
+  /** Get total keyframe count across all layers */
+  get totalKeyframes(): number {
+    let count = 0;
+    for (const propMap of this._data.values()) {
+      for (const arr of propMap.values()) count += arr.length;
+    }
+    return count;
+  }
+
+  // â”€â”€ Evaluation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  /**
+   * Evaluate a property at a given frame.
+   * Returns { value, inKeyframe } where value is the interpolated value
+   * and inKeyframe is true if this frame exactly matches a keyframe.
+   */
+  evaluate(
+    layerId: string,
+    property: string,
+    frame: number,
+  ): { value: number | number[]; inKeyframe: boolean } {
+    const keyframes = this._data.get(layerId)?.get(property);
+    if (!keyframes || keyframes.length === 0) {
+      return { value: 0, inKeyframe: false };
+    }
+
+    const len = keyframes.length;
+
+    // Before first keyframe â†’ return first value
+    if (frame <= keyframes[0].time) {
+      return { value: keyframes[0].value, inKeyframe: frame === keyframes[0].time };
+    }
+
+    // After last keyframe â†’ return last value
+    if (frame >= keyframes[len - 1].time) {
+      return { value: keyframes[len - 1].value, inKeyframe: frame === keyframes[len - 1].time };
+    }
+
+    // Find surrounding keyframes with binary search
+    let lo = 0, hi = len - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (keyframes[mid].time <= frame) lo = mid;
+      else hi = mid;
+    }
+
+    const prev = keyframes[lo];
+    const next = keyframes[hi];
+
+    // Exact match
+    if (frame === prev.time) return { value: prev.value, inKeyframe: true };
+    if (frame === next.time) return { value: next.value, inKeyframe: true };
+
+    // Hold interpolation
+    if (prev.interpolation === 'hold') {
+      return { value: prev.value, inKeyframe: false };
+    }
+
+    // Linear or bezier interpolation
+    const range = next.time - prev.time;
+    const t = range > 0 ? (frame - prev.time) / range : 0;
+
+    if (prev.interpolation === 'bezier' && prev.outTangent && next.inTangent) {
+      // Cubic bezier interpolation using tangent handles
+      const tAdj = solveBezierTime(prev.outTangent, next.inTangent, t);
+      return { value: interpolateValue(prev.value, next.value, tAdj), inKeyframe: false };
+    }
+
+    // Default: linear
+    return { value: interpolateValue(prev.value, next.value, t), inKeyframe: false };
+  }
+
+  /** Clear all data */
+  clear(): void {
+    this._data.clear();
+  }
+}
+
+// â”€â”€ Pure helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function interpolateValue(a: number | number[], b: number | number[], t: number): number | number[] {
+  if (typeof a === 'number' && typeof b === 'number') {
+    return lerp(a, b, t);
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const maxLen = Math.min(a.length, b.length);
+    const result: number[] = [];
+    for (let i = 0; i < maxLen; i++) result.push(lerp(a[i], b[i], t));
+    return result;
+  }
+  return t < 0.5 ? a : b;
+}
+
+/**
+ * Given a linear t (0-1), adjust using bezier tangents to get the eased t.
+ * This matches AE's bezier interpolation where the curve shape is defined by
+ * the outgoing tangent of the prev keyframe and incoming tangent of the next keyframe.
+ */
+function solveBezierTime(
+  outTangent: BezierTangent,
+  inTangent: BezierTangent,
+  t: number,
+): number {
+  // Map tangent handles from abstract space to control points
+  // outTangent defines the handle leaving (0,0), inTangent defines handle arriving at (1,1)
+  const p1x = outTangent.x;
+  const p1y = outTangent.y;
+  const p2x = 1 - inTangent.x;
+  const p2y = 1 - inTangent.y;
+
+  // Newton-Raphson to find the parameter for this x
+  let guess = t;
+  for (let i = 0; i < 8; i++) {
+    const x = bezierX(guess, p1x, p2x) - t;
+    if (Math.abs(x) < 1e-6) break;
+    const dx = bezierDX(guess, p1x, p2x);
+    if (Math.abs(dx) < 1e-7) break;
+    guess -= x / dx;
+  }
+  guess = clamp(guess, 0, 1);
+  return cubicBezier(guess, p1y, p2y);
+}
+
+function bezierX(t: number, p1x: number, p2x: number): number {
+  const t1 = 1 - t;
+  return 3 * t1 * t1 * t * p1x + 3 * t1 * t * t * p2x + t * t * t;
+}
+
+function bezierDX(t: number, p1x: number, p2x: number): number {
+  const t1 = 1 - t;
+  return 3 * t1 * t1 * p1x + 6 * t1 * t * (p2x - p1x) + 3 * t * t * (1 - p2x);
+}
+
+
+===== src\animation\Interpolators.ts =====
+/**
+ * Interpolators â€” pure math functions for value interpolation.
+ * All functions are deterministic and side-effect-free.
+ */
+
+export type Vec2 = { x: number; y: number };
+
+/** Linear interpolation between two numbers */
+export function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+/** Linear interpolation between two Vec2s */
+export function lerpVec2(a: Vec2, b: Vec2, t: number): Vec2 {
+  return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t) };
+}
+
+/** Clamp a value between min and max */
+export function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/** Convert degrees to radians */
+export function degToRad(degrees: number): number {
+  return degrees * (Math.PI / 180);
+}
+
+/** Convert radians to degrees */
+export function radToDeg(radians: number): number {
+  return radians * (180 / Math.PI);
+}
+
+/**
+ * Cubic bezier evaluation using De Casteljau's algorithm.
+ * p0 and p3 are fixed at (0,0) and (1,1).
+ * p1 and p2 are the control points.
+ */
+export function cubicBezier(t: number, p1y: number, p2y: number): number {
+  const t1 = 1 - t;
+  const t2 = t * t;
+  const t12 = t1 * t1;
+  // Compute y at given t on cubic bezier: B(t) = (1-t)Â³Â·0 + 3(1-t)Â²tÂ·P1 + 3(1-t)tÂ²Â·P2 + tÂ³Â·1
+  return 3 * t12 * t * p1y + 3 * t1 * t2 * p2y + t2 * t;
+}
+
+/**
+ * Given x on a cubic bezier curve, find the corresponding t (parameter) using Newton-Raphson.
+ * This is needed for AE-style time-remapped bezier curves where you have (x,y) control points
+ * and want to find y for a given x (since x advances at a constant rate, not t).
+ */
+export function solveBezierT(
+  p1x: number, p1y: number,
+  p2x: number, p2y: number,
+  targetX: number,
+): number {
+  // Newton-Raphson to find t where bezierX(t) = targetX
+  let t = targetX; // Initial guess
+  for (let i = 0; i < 10; i++) {
+    const x = bezierComponent(t, p1x, p2x) - targetX;
+    if (Math.abs(x) < 1e-7) break;
+    const dx = bezierDerivative(t, p1x, p2x);
+    if (Math.abs(dx) < 1e-7) break;
+    t -= x / dx;
+  }
+  t = clamp(t, 0, 1);
+  // Compute the Y value at this t using the Y control points
+  return cubicBezier(t, p1y, p2y);
+}
+
+function bezierComponent(t: number, p1: number, p2: number): number {
+  const t1 = 1 - t;
+  return 3 * t1 * t1 * t * p1 + 3 * t1 * t * t * p2 + t * t * t;
+}
+
+function bezierDerivative(t: number, p1: number, p2: number): number {
+  const t1 = 1 - t;
+  return 3 * t1 * t1 * p1 + 6 * t1 * t * (p2 - p1) + 3 * t * t * (1 - p2);
+}
+
+/** Interpolate between two hex colors in RGB space */
+export function lerpColor(hexA: string, hexB: string, t: number): string {
+  const r1 = parseInt(hexA.slice(1, 3), 16);
+  const g1 = parseInt(hexA.slice(3, 5), 16);
+  const b1 = parseInt(hexA.slice(5, 7), 16);
+  const r2 = parseInt(hexB.slice(1, 3), 16);
+  const g2 = parseInt(hexB.slice(3, 5), 16);
+  const b2 = parseInt(hexB.slice(5, 7), 16);
+  const r = Math.round(lerp(r1, r2, t));
+  const g = Math.round(lerp(g1, g2, t));
+  const b = Math.round(lerp(b1, b2, t));
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+/** Map a value from one range to another */
+export function mapRange(
+  value: number,
+  inMin: number, inMax: number,
+  outMin: number, outMax: number,
+): number {
+  return outMin + ((value - inMin) / (inMax - inMin)) * (outMax - outMin);
+}
+
+/** Round to a given number of decimal places */
+export function roundTo(value: number, decimals: number): number {
+  const f = Math.pow(10, decimals);
+  return Math.round(value * f) / f;
+}
+
+
+===== src\animation\PropertyBinder.ts =====
+/**
+ * PropertyBinder â€” at each frame, evaluates all animated properties for all layers
+ * and applies the results to the renderer's mesh transforms/uniforms.
+ * This runs every frame the playhead moves â€” must be very fast.
+ */
+import type { KeyframeEngine } from './KeyframeEngine';
+import type { Transform } from '../types/layer';
+import { useCompositionStore } from '../state/compositionStore';
+import { useEffectsStore } from '../state/effectsStore';
+
+/**
+ * Animation property paths map to layer transform/opacity/effect fields.
+ * "transform.position.x" â†’ layer.transform.position.x
+ * "effect.<effectId>.<paramId>" â†’ effectsStore parameter value
+ * "opacity"             â†’ layer.opacity
+ */
+export class PropertyBinder {
+  private engine: KeyframeEngine;
+
+  constructor(engine: KeyframeEngine) {
+    this.engine = engine;
+  }
+
+  /**
+   * Evaluate all animated properties for the active composition at the given frame.
+   * Returns number of properties updated (for perf tracking).
+   */
+  evaluateFrame(compId: string, frame: number): number {
+    const comp = useCompositionStore.getState().compositions.find((c) => c.id === compId);
+    if (!comp) return 0;
+
+    let updated = 0;
+
+    for (const layer of comp.layers) {
+      const paths = this.engine.getAllAnimatedProperties(layer.id);
+      if (paths.length === 0) continue;
+
+      const updates: Record<string, any> = {};
+      const transformUpdate: Partial<Transform> = {};
+      let transformNeedsUpdate = false;
+      let opacityUpdate: number | null = null;
+      // Phase 5: Track effect param updates
+      const effectUpdates: Array<{ effectId: string; paramId: string; value: any }> = [];
+
+      for (const path of paths) {
+        const result = this.engine.evaluate(layer.id, path, frame);
+        const val = result.value;
+
+        // Phase 5: Effect parameter keyframing
+        // propertyPath format: "effect.<effectId>.<paramId>"
+        if (path.startsWith('effect.')) {
+          const parts = path.split('.');
+          if (parts.length >= 3) {
+            const effectId = parts[1];
+            const paramId = parts.slice(2).join('.');
+            effectUpdates.push({ effectId, paramId, value: val });
+          }
+          continue;
+        }
+
+        // Determine which field to update based on path
+        if (path.startsWith('transform.')) {
+          const field = path.slice('transform.'.length);
+          if (field === 'position.x') {
+            transformUpdate.position = { ...layer.transform.position, x: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'position.y') {
+            transformUpdate.position = { ...layer.transform.position, y: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'position' && Array.isArray(val)) {
+            transformUpdate.position = { x: val[0], y: val[1] };
+            transformNeedsUpdate = true;
+          } else if (field === 'scale.x') {
+            transformUpdate.scale = { ...layer.transform.scale, x: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'scale.y') {
+            transformUpdate.scale = { ...layer.transform.scale, y: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'scale' && Array.isArray(val)) {
+            transformUpdate.scale = { x: val[0], y: val[1] };
+            transformNeedsUpdate = true;
+          } else if (field === 'rotation') {
+            transformUpdate.rotation = val as number;
+            transformNeedsUpdate = true;
+          } else if (field === 'anchorPoint.x') {
+            transformUpdate.anchorPoint = { ...layer.transform.anchorPoint, x: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'anchorPoint.y') {
+            transformUpdate.anchorPoint = { ...layer.transform.anchorPoint, y: val as number };
+            transformNeedsUpdate = true;
+          }
+        } else if (path === 'opacity') {
+          opacityUpdate = val as number;
+        }
+      }
+
+      if (transformNeedsUpdate) {
+        const existing = layer.transform;
+        updates.transform = {
+          position: transformUpdate.position ?? existing.position,
+          scale: transformUpdate.scale ?? existing.scale,
+          rotation: transformUpdate.rotation ?? existing.rotation,
+          anchorPoint: transformUpdate.anchorPoint ?? existing.anchorPoint,
+        };
+      }
+      if (opacityUpdate !== null) {
+        updates.opacity = opacityUpdate;
+      }
+
+      // Apply effect param updates
+      for (const eu of effectUpdates) {
+        useEffectsStore.getState().setParameterValue(layer.id, eu.effectId, eu.paramId, eu.value);
+        updated++;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        useCompositionStore.getState().updateLayer(compId, layer.id, updates);
+        updated += Object.keys(updates).length;
+      }
+    }
+
+    return updated;
+  }
+}
+
+
+===== src\animation\AnimationClock.ts =====
+/**
+ * AnimationClock â€” drives frame advancement for playback.
+ * Uses performance.now() for high-resolution timing.
+ * Emits frame-changed events; never triggers React re-renders directly.
+ */
+type Listener<T = unknown> = (data: T) => void;
+
+export type LoopMode = 'none' | 'loop' | 'ping-pong';
+
+export type ClockEventPayloads = {
+  'frame-changed': { frame: number; time: number };
+  'play': { frame: number };
+  'pause': { frame: number };
+  'stop': { frame: number };
+};
+
+export class AnimationClock {
+  private _handlers = new Map<string, Set<Listener>>();
+
+  on<K extends string>(event: K, handler: Listener<ClockEventPayloads[K & keyof ClockEventPayloads]>): void {
+    let set = this._handlers.get(event);
+    if (!set) { set = new Set(); this._handlers.set(event, set); }
+    set.add(handler as Listener);
+  }
+
+  off<K extends string>(event: K, handler: Listener<ClockEventPayloads[K & keyof ClockEventPayloads]>): void {
+    const set = this._handlers.get(event);
+    if (set) { set.delete(handler as Listener); if (set.size === 0) this._handlers.delete(event); }
+  }
+
+  private _emit<K extends string>(event: K, data: ClockEventPayloads[K & keyof ClockEventPayloads]): void {
+    const set = this._handlers.get(event);
+    if (set) { for (const h of set) h(data); }
+  }
+
+  private _isPlaying = false;
+  private _playbackRate = 1;
+  private _loopMode: LoopMode = 'none';
+  private _fps = 30;
+  private _currentFrame = 0;
+  private _totalFrames = 300;
+  private _workAreaStart = 0;
+  private _workAreaEnd = 300;
+  private _useWorkArea = false;
+  private _frameBudget = 33; // ms per frame at 30fps
+  private _lastTimestamp = 0;
+  private _accumulator = 0;
+  private _forward = true;
+  private _rafId: number | null = null;
+
+  /** Start playback */
+  play(): void {
+    if (this._isPlaying) return;
+    this._isPlaying = true;
+    this._forward = true;
+    this._lastTimestamp = performance.now();
+    this._accumulator = 0;
+    this._emit('play', { frame: this._currentFrame });
+    this._tick();
+  }
+
+  /** Pause playback */
+  pause(): void {
+    if (!this._isPlaying) return;
+    this._isPlaying = false;
+    if (this._rafId !== null) {
+      cancelAnimationFrame(this._rafId);
+      this._rafId = null;
+    }
+    this._emit('pause', { frame: this._currentFrame });
+  }
+
+  /** Toggle play/pause */
+  togglePlay(): void {
+    if (this._isPlaying) this.pause();
+    else this.play();
+  }
+
+  /** Stop and reset to start */
+  stop(): void {
+    this.pause();
+    this._currentFrame = this._useWorkArea ? this._workAreaStart : 0;
+    this._emit('stop', { frame: this._currentFrame });
+    this._emit('frame-changed', { frame: this._currentFrame, time: this._currentFrame / this._fps });
+  }
+
+  /** Seek to a specific frame */
+  seekToFrame(frame: number): void {
+    this._currentFrame = Math.max(0, Math.min(this._totalFrames, Math.round(frame)));
+    this._accumulator = 0;
+    this._emit('frame-changed', { frame: this._currentFrame, time: this._currentFrame / this._fps });
+  }
+
+  /** Seek to a specific time in seconds */
+  seekToTime(seconds: number): void {
+    this.seekToFrame(Math.round(seconds * this._fps));
+  }
+
+  // â”€â”€ Setters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  setFps(fps: number): void { this._fps = fps; this._frameBudget = 1000 / fps; }
+  setTotalFrames(n: number): void { this._totalFrames = n; }
+  setPlaybackRate(rate: number): void { this._playbackRate = rate; }
+  setLoopMode(mode: LoopMode): void { this._loopMode = mode; }
+  setWorkArea(start: number, end: number): void { this._workAreaStart = start; this._workAreaEnd = end; }
+  setUseWorkArea(use: boolean): void { this._useWorkArea = use; }
+
+  // â”€â”€ Getters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  get isPlaying(): boolean { return this._isPlaying; }
+  get currentFrame(): number { return this._currentFrame; }
+  get currentTime(): number { return this._currentFrame / this._fps; }
+  get fps(): number { return this._fps; }
+  get totalFrames(): number { return this._totalFrames; }
+  get loopMode(): LoopMode { return this._loopMode; }
+  get playbackRate(): number { return this._playbackRate; }
+
+  /** Step one frame forward (for arrow key frame stepping) */
+  stepForward(): void { this.seekToFrame(this._currentFrame + 1); }
+  stepBackward(): void { this.seekToFrame(this._currentFrame - 1); }
+  jumpForward( frames: number): void { this.seekToFrame(this._currentFrame + frames); }
+  jumpBackward(frames: number): void { this.seekToFrame(this._currentFrame - frames); }
+  goToStart(): void { this.seekToFrame(this._useWorkArea ? this._workAreaStart : 0); }
+  goToEnd(): void { this.seekToFrame(this._useWorkArea ? this._workAreaEnd : this._totalFrames); }
+
+  dispose(): void {
+    this.pause();
+    this._handlers.clear();
+  }
+
+  // â”€â”€ Private â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  private _tick = (): void => {
+    if (!this._isPlaying) return;
+
+    const now = performance.now();
+    const elapsed = now - this._lastTimestamp;
+    this._lastTimestamp = now;
+
+    // Derive direction from playbackRate sign (supports reverse via negative rate)
+    this._forward = this._playbackRate >= 0;
+    const effectiveRate = Math.abs(this._playbackRate);
+
+    // Accumulate time with playback rate
+    this._accumulator += elapsed * effectiveRate;
+
+    // Consume accumulator in frame-sized chunks
+    let consumed = Math.floor(this._accumulator / this._frameBudget);
+    // J4: Cap maximum consumed frames to prevent freezing on large frame skips
+    // (e.g., when tab was backgrounded for several seconds)
+    const MAX_CONSUMED = 10;
+    if (consumed > MAX_CONSUMED) {
+      consumed = MAX_CONSUMED;
+      this._accumulator = 0; // reset accumulator to avoid spiral of death
+    }
+    if (consumed > 0) {
+      this._accumulator -= consumed * this._frameBudget;
+
+      // Apply frame changes
+      for (let i = 0; i < consumed; i++) {
+        if (this._forward) this._currentFrame++;
+        else this._currentFrame--;
+
+        // Boundary checks
+        const boundStart = this._useWorkArea ? this._workAreaStart : 0;
+        const boundEnd = this._useWorkArea ? this._workAreaEnd : this._totalFrames;
+
+        if (this._currentFrame > boundEnd) {
+          if (this._loopMode === 'loop') {
+            this._currentFrame = boundStart;
+          } else if (this._loopMode === 'ping-pong') {
+            this._forward = false;
+            this._currentFrame = boundEnd - 1;
+          } else {
+            this._currentFrame = boundEnd;
+            this.pause();
+            break;
+          }
+        } else if (this._currentFrame < boundStart) {
+          if (this._loopMode === 'loop') {
+            this._currentFrame = boundEnd;
+          } else if (this._loopMode === 'ping-pong') {
+            this._forward = true;
+            this._currentFrame = boundStart + 1;
+          } else {
+            this._currentFrame = boundStart;
+            this.pause();
+            break;
+          }
+        }
+      }
+
+      this._emit('frame-changed', {
+        frame: this._currentFrame,
+        time: this._currentFrame / this._fps,
+      });
+    }
+
+    this._rafId = requestAnimationFrame(this._tick);
+  };
+}
+
+
+

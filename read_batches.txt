@@ -1,0 +1,2900 @@
+﻿===== batch1.txt =====
+===== src\renderer\interaction\ModalTransform.ts =====
+/**
+ * ModalTransform â€” Blender-exact modal transform system.
+ *
+ * STATE MACHINE:
+ *   idle â†’ start(mode) â†’ active(pointerlock) â†’ updateDelta(movementX,movementY) â†’ confirm/cancel â†’ idle
+ *
+ * FEATURES:
+ * - Pointer Lock API (cursor hidden, infinite mouse movement via movementX/movementY)
+ * - Axis lock (X/Y) and axis exclude (Shift+X â†’ "not X")
+ * - Precision mode (Shift held â†’ 10x slower movement)
+ * - Snap mode (Ctrl held â†’ snap to 10px/5Â°/0.1x increments)
+ * - Aspect lock (Alt held during scale â†’ uniform)
+ * - Numeric input (type digits mid-transform for exact values)
+ * - Auto-cancel on pointer lock exit (browser Esc, Alt+Tab, etc.)
+ * - Pivot at median of selected layer positions
+ * - Snapping to comp edges, guides, other layer edges (J6)
+ */
+import type { CameraManager } from '../CameraManager';
+import { useCompositionStore } from '../../state/compositionStore';
+import { useSelectionStore } from '../../state/selectionStore';
+import { useViewportStore } from '../../state/viewportStore';
+import { registerModalActiveCheck } from '../../input/ShortcutRegistry';
+import { Snapping, type SnapTargets } from '../utils/Snapping';
+import type { Layer } from '../../types/layer';
+
+export type TransformMode = 'grab' | 'rotate' | 'scale';
+
+export interface TransformInfo {
+  mode: TransformMode | null;
+  active: boolean;
+  axisLock: 'x' | 'y' | null;
+  axisExclude: 'x' | 'y' | null;
+  deltaX: number;
+  deltaY: number;
+  rotation: number;
+  scaleX: number;
+  scaleY: number;
+  numericBuffer: string;
+  precisionMode: boolean;
+  snapMode: boolean;
+}
+
+interface LayerSnapshot {
+  pos: { x: number; y: number };
+  scale: { x: number; y: number };
+  rotation: number;
+}
+
+/** Extend Document to store last mouse event for keyboard-initiated transforms (M3) */
+declare global {
+  interface Document {
+    _lastMouseEvent?: MouseEvent;
+  }
+}
+
+export class ModalTransform {
+  /** Global static flag: true when ANY ModalTransform instance is active. Checked by ShortcutRegistry to suspend global shortcuts. */
+  static activeAnywhere = false;
+
+  private cameraManager: CameraManager;
+  private snapping: Snapping;
+  private _mode: TransformMode | null = null;
+  private _active = false;
+  private _axisLock: 'x' | 'y' | null = null;
+  private _axisExclude: 'x' | 'y' | null = null;
+  private _accumulatedDelta = { x: 0, y: 0 };
+  private _numericBuffer = '';
+  private _numericActive = false;
+  private _precisionMode = false;
+  private _snapMode = false;
+  private _aspectLock = false;   // J7: Alt held during scale = uniform
+  private _startTransforms = new Map<string, LayerSnapshot>();
+  /** J4: mouse screen position at modal start for pivot-based scale distance calculation */
+  public startMouseScreen = { x: 0, y: 0 };
+  /** L3: For handle-based drag (PowerPoint style), store the pivot world position */
+  private _handlePivotWorld: { x: number; y: number } | null = null;
+  private _compId: string | null = null;
+  private _canvas: HTMLCanvasElement | null = null;
+  private _exitingByChoice = false;
+  private _onStateChange: ((info: TransformInfo) => void) | null = null;
+  private _boundPointerLockChange: (() => void) | null = null;
+  // Cache snap targets per drag session
+  private _cachedSnapTargets: SnapTargets | null = null;
+  // M3: Skip first pointer lock delta (mouse jumps to canvas center)
+  private _pendingFirstDelta = false;
+  /** Snap lines from last evaluation, for overlay rendering */
+  public lastSnapLines: Array<{ type: 'horizontal' | 'vertical'; position: number }> = [];
+
+  constructor(cameraManager: CameraManager, snapping?: Snapping) {
+    this.cameraManager = cameraManager;
+    this.snapping = snapping ?? new Snapping();
+    // Register static active check with ShortcutRegistry (K1)
+    registerModalActiveCheck(() => ModalTransform.activeAnywhere);
+    // M3: Track last mouse event for keyboard-initiated transforms
+    document.addEventListener('mousemove', (e) => { document._lastMouseEvent = e; }, { passive: true });
+  }
+
+  /** Start a modal transform. If canvas is provided, request pointer lock. */
+  start(mode: TransformMode, canvas?: HTMLCanvasElement): void {
+    // M15: Guard against calling start while already active
+    if (this._active) {
+      this.cancel();
+    }
+
+    const layerIds = useSelectionStore.getState().getSelectedIds();
+    if (layerIds.length === 0) return;
+
+    const compState = useCompositionStore.getState();
+    const compId = compState.activeCompositionId;
+    if (!compId) return;
+    const comp = compState.compositions.find((c) => c.id === compId);
+    if (!comp) return;
+
+    // Capture start transforms and compute pivot (median of positions)
+    // M3: Also capture initial mouse screen position for rotation delta calculation
+    const startTransforms = new Map<string, LayerSnapshot>();
+    let px = 0, py = 0, count = 0;
+    for (const id of layerIds) {
+      const layer = comp.layers.find((l) => l.id === id);
+      if (layer) {
+        startTransforms.set(id, {
+          pos: { ...layer.transform.position },
+          scale: { ...layer.transform.scale },
+          rotation: layer.transform.rotation,
+        });
+        px += layer.transform.position.x;
+        py += layer.transform.position.y;
+        count++;
+      }
+    }
+    if (count === 0) return;
+
+    // M15: FULLY reset all state
+    this._mode = mode;
+    this._active = true;
+    ModalTransform.activeAnywhere = true;
+    this._axisLock = null;
+    this._axisExclude = null;
+    this._accumulatedDelta = { x: 0, y: 0 };
+    this._numericBuffer = '';
+    this._numericActive = false;
+    this._precisionMode = false;
+    this._snapMode = false;
+    this._aspectLock = false;
+    this._startTransforms = startTransforms;
+    // Capture current mouse position from document for delta-based transforms (M3)
+    const mouseEv = document._lastMouseEvent;
+    this.startMouseScreen = mouseEv ? { x: mouseEv.clientX, y: mouseEv.clientY } : { x: 0, y: 0 };
+    this._compId = compId;
+    this._exitingByChoice = false;
+    this._cachedSnapTargets = null;
+    this._handlePivotWorld = null;
+    this.lastSnapLines = [];
+    this._pendingFirstDelta = canvas ? true : false;
+
+    // Build snap targets once (J6)
+    this._cachedSnapTargets = this._buildSnapTargets(comp, layerIds);
+
+    // Pointer lock
+    if (canvas) {
+      this._canvas = canvas;
+      this._boundPointerLockChange = this._onPointerLockChange.bind(this);
+      document.addEventListener('pointerlockchange', this._boundPointerLockChange);
+      canvas.requestPointerLock().catch(() => {
+        this._canvas = null;
+      });
+    }
+
+    this._emitState();
+  }
+
+  /** Update from pointer lock movement delta (movementX, movementY) */
+  updateDelta(movementX: number, movementY: number): void {
+    if (!this._active || !this._mode || !this._compId) return;
+    if (useSelectionStore.getState().getSelectedIds().length === 0) { this.cancel(); return; }
+    // M3: Skip first delta after pointer lock (mouse jumps to canvas center)
+    if (this._pendingFirstDelta) {
+      this._pendingFirstDelta = false;
+      // Don't skip entirely - just capture this as the starting position
+      // Instead of accumulating, set the accumulated delta to 0
+      this._accumulatedDelta = { x: 0, y: 0 };
+      this._emitState();
+      return;
+    }
+    this.clearNumeric();
+    // J1: Screen X â†’ world X (same direction). Screen Y â†’ world Y (inverted).
+    this._accumulatedDelta.x += movementX;
+    this._accumulatedDelta.y -= movementY;
+    this._applyTransform();
+    this._emitState();
+  }
+
+  /** Update from direct drag (clientX - lastClientX, clientY - lastClientY) */
+  updateDirectDrag(dx: number, dy: number): void {
+    if (!this._active || !this._mode || !this._compId) return;
+    if (useSelectionStore.getState().getSelectedIds().length === 0) { this.cancel(); return; }
+    this.clearNumeric();
+    // J1: Screen X â†’ world X (same direction). Screen Y â†’ world Y (inverted).
+    this._accumulatedDelta.x += dx;
+    this._accumulatedDelta.y -= dy;
+    this._applyTransform();
+    this._emitState();
+  }
+
+  /** Confirm: keep changes, release pointer lock */
+  confirm(): void {
+    if (!this._active) return;
+    this._releasePointerLock();
+    this._active = false;
+    ModalTransform.activeAnywhere = false;
+    this.lastSnapLines = [];
+    this._cachedSnapTargets = null;
+    this._handlePivotWorld = null;
+    this._emitState();
+  }
+
+  /** Cancel: restore original transforms, release pointer lock */
+  cancel(): void {
+    if (!this._active) return;
+    ModalTransform.activeAnywhere = false;
+    if (this._compId) {
+      for (const [layerId, start] of this._startTransforms) {
+        useCompositionStore.getState().updateLayer(this._compId, layerId, {
+          transform: {
+            position: { ...start.pos },
+            scale: { ...start.scale },
+            rotation: start.rotation,
+            anchorPoint: { x: 0, y: 0 },
+          },
+        });
+      }
+    }
+    this._releasePointerLock();
+    this._active = false;
+    this.lastSnapLines = [];
+    this._cachedSnapTargets = null;
+    this._handlePivotWorld = null;
+    this._emitState();
+  }
+
+  // â”€â”€ Axis constraints (J7) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  setAxisLock(axis: 'x' | 'y' | null): void {
+    this._axisLock = this._axisLock === axis ? null : axis;
+    this._axisExclude = null;
+    this._applyTransform();
+    this._emitState();
+  }
+
+  setAxisExclude(axis: 'x' | 'y' | null): void {
+    this._axisExclude = this._axisExclude === axis ? null : axis;
+    this._axisLock = null;
+    this._applyTransform();
+    this._emitState();
+  }
+
+  // â”€â”€ Modifiers (J7) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  setPrecisionMode(on: boolean): void { this._precisionMode = on; }
+  setSnapMode(on: boolean): void { this._snapMode = on; }
+  setAspectLock(on: boolean): void { this._aspectLock = on; } // J7: Alt during scale
+
+  /** J4: Set initial mouse screen position for pivot-based scale/rotation distance calculation */
+  setStartMouseScreen(x: number, y: number): void { this.startMouseScreen = { x, y }; }
+
+  /** L3: Set a fixed world-space pivot for handle-based scaling/rotation (PowerPoint style).
+   * The pivot is the opposite corner/edge for handles, or layer center for rotation. */
+  setHandlePivotWorld(pivot: { x: number; y: number } | null): void {
+    this._handlePivotWorld = pivot;
+  }
+
+  // â”€â”€ Numeric input â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  pushNumericChar(ch: string): void {
+    if (!this._active) return;
+    if (!/^[0-9.\-]$/.test(ch)) return;
+    this._numericBuffer += ch;
+    this._numericActive = this._numericBuffer.length > 0;
+    const val = parseFloat(this._numericBuffer);
+    if (!isNaN(val) && this._numericBuffer.length > 1) {
+      this._applyTransform();
+      this._syncStartTransformsFromStore();
+      this._accumulatedDelta = { x: 0, y: 0 };
+    }
+    this._emitState();
+  }
+
+  clearNumeric(): void {
+    if (!this._numericActive) return;
+    this._numericBuffer = '';
+    this._numericActive = false;
+  }
+
+  backspaceNumeric(): void {
+    if (!this._active) return;
+    this._numericBuffer = this._numericBuffer.slice(0, -1);
+    this._numericActive = this._numericBuffer.length > 0;
+    this._applyTransform();
+    this._emitState();
+  }
+
+  // â”€â”€ Getters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  get active(): boolean { return this._active; }
+  get mode(): TransformMode | null { return this._mode; }
+  get axisLock(): 'x' | 'y' | null { return this._axisLock; }
+  get axisExclude(): 'x' | 'y' | null { return this._axisExclude; }
+
+  getTransformInfo(): TransformInfo {
+    let rotation = 0, scaleX = 1, scaleY = 1;
+    const deltaX = this._accumulatedDelta.x;
+    const deltaY = this._accumulatedDelta.y;
+
+    if (this._active && this._mode && this._compId) {
+      if (this._numericActive) {
+        const val = parseFloat(this._numericBuffer) || 0;
+        if (this._mode === 'grab') {
+          // Numeric overrides â€” handled in _applyTransform
+        } else if (this._mode === 'scale') {
+          scaleX = (this._axisLock === 'y' || this._axisExclude === 'x') ? 1 : val / 100;
+          scaleY = (this._axisLock === 'x' || this._axisExclude === 'y') ? 1 : val / 100;
+        } else {
+          rotation = val;
+        }
+      } else {
+        if (this._mode === 'grab') {
+          // Apply constraints (worldDx/worldDy already computed)
+          // The returned deltaX/deltaY just reflect the raw accumulated delta for HUD display
+          // The actual applied values use worldDx/worldDy but those need axis constraints too
+          // We return the world-space deltas for HUD:
+          if (this._axisLock === 'x' || this._axisExclude === 'x') { /* worldDy would be 0 */ }
+          if (this._axisLock === 'y' || this._axisExclude === 'y') { /* worldDx would be 0 */ }
+        } else if (this._mode === 'scale') {
+          // J4: Multiplicative scale based on distance from pivot
+          const dist = Math.hypot(deltaX, deltaY);
+          const startDist = Math.hypot(this.startMouseScreen.x || 1, this.startMouseScreen.y || 1);
+          const factor = startDist > 1 ? dist / startDist : 1 + dist * 0.005;
+          const f = this._precisionMode ? 0.1 : 1;
+          const rawFactor = 1 + (factor - 1) * f;
+          scaleX = Math.max(0.01, rawFactor);
+          scaleY = Math.max(0.01, rawFactor);
+          if (this._axisLock === 'y' || this._axisExclude === 'x') scaleY = 1;
+          if (this._axisLock === 'x' || this._axisExclude === 'y') scaleX = 1;
+          if (this._snapMode) {
+            scaleX = Math.round(scaleX * 10) / 10;
+            scaleY = Math.round(scaleY * 10) / 10;
+          }
+        } else {
+          // rotate
+          const f = this._precisionMode ? 0.05 : 0.5;
+          rotation = deltaX * f;
+          if (this._snapMode) rotation = Math.round(rotation / 5) * 5;
+        }
+      }
+    }
+
+    return {
+      mode: this._mode, active: this._active,
+      axisLock: this._axisLock, axisExclude: this._axisExclude,
+      deltaX: this._accumulatedDelta.x, deltaY: this._accumulatedDelta.y,
+      rotation, scaleX, scaleY,
+      numericBuffer: this._numericBuffer,
+      precisionMode: this._precisionMode, snapMode: this._snapMode,
+    };
+  }
+
+  setOnStateChange(cb: (info: TransformInfo) => void): void { this._onStateChange = cb; }
+
+  // â”€â”€ Private helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  private _applyTransform(): void {
+    if (!this._mode || !this._compId) return;
+    const {
+      _compId, _mode, _accumulatedDelta: delta,
+      _axisLock, _axisExclude,
+      _numericBuffer, _numericActive,
+      _precisionMode, _snapMode, _aspectLock,
+      _startTransforms, _cachedSnapTargets,
+    } = this;
+    const zoom = this.cameraManager.zoom;
+    const store = useCompositionStore.getState();
+
+    // J1: Compute world-space delta
+    // accumulatedDelta stores: x = screen-X (positive = right), y = already inverted (positive = world up)
+    // worldDx = delta.x * zoom (screen right = world right) âœ…
+    // worldDy = delta.y * zoom (screen down â†’ accum.y negative â†’ world.y negative = down) âœ…
+    const worldDx = delta.x * zoom;
+    const worldDy = delta.y * zoom;
+
+    // Snap integration (J6) â€” triggered by Ctrl key OR global snapping toggle
+    const globalSnap = useViewportStore.getState().settings.snappingEnabled;
+    let useSnap = (_snapMode || globalSnap) && _mode === 'grab' && _cachedSnapTargets;
+
+    if (_numericActive) {
+      // Numeric overrides everything
+      const val = parseFloat(_numericBuffer) || 0;
+      for (const [layerId, start] of _startTransforms) {
+        if (_mode === 'grab') {
+          const nx = (_axisLock === 'y' || _axisExclude === 'x') ? start.pos.x : start.pos.x + val;
+          const ny = (_axisLock === 'x' || _axisExclude === 'y') ? start.pos.y : (_axisLock === 'y' ? start.pos.y + val : start.pos.y);
+          store.updateLayer(_compId, layerId, {
+            transform: { position: { x: nx, y: ny }, scale: start.scale, rotation: start.rotation, anchorPoint: { x: 0, y: 0 } },
+          });
+        } else if (_mode === 'rotate') {
+          const angle = val;
+          const snapped = _snapMode ? Math.round(angle / 5) * 5 : angle;
+          store.updateLayer(_compId, layerId, {
+            transform: { position: start.pos, scale: start.scale, rotation: start.rotation + snapped, anchorPoint: { x: 0, y: 0 } },
+          });
+        } else if (_mode === 'scale') {
+          const v = val / 100;
+          const sx = (_axisLock === 'y' || _axisExclude === 'x') ? start.scale.x : start.scale.x * v;
+          const sy = (_axisLock === 'x' || _axisExclude === 'y') ? start.scale.y : start.scale.y * v;
+          store.updateLayer(_compId, layerId, {
+            transform: { position: start.pos, scale: { x: Math.max(0.01, sx), y: Math.max(0.01, sy) }, rotation: start.rotation, anchorPoint: { x: 0, y: 0 } },
+          });
+        }
+      }
+      return;
+    }
+
+    switch (_mode) {
+      case 'grab': {
+        let gx = worldDx, gy = worldDy;
+
+        // Axis constraints
+        if (_axisLock === 'x' || _axisExclude === 'x') gy = 0;
+        if (_axisLock === 'y' || _axisExclude === 'y') gx = 0;
+
+        // Precision
+        if (_precisionMode) { gx *= 0.1; gy *= 0.1; }
+
+        // Snap (J6)
+        if (useSnap) {
+          // Compute what the new position would be for the first selected layer
+          const firstLayerId = _startTransforms.keys().next().value;
+          if (firstLayerId) {
+            const start = _startTransforms.get(firstLayerId);
+            if (start) {
+              const testX = start.pos.x + gx;
+              const testY = start.pos.y + gy;
+              const snapped = this.snapping.snapPoint(testX, testY, _cachedSnapTargets!, 6);
+              if (snapped.snapped) {
+                const dx = snapped.x - testX;
+                const dy = snapped.y - testY;
+                // Apply the snap delta to all layers
+                gx += dx;
+                gy += dy;
+                this.lastSnapLines = snapped.lines;
+              } else {
+                this.lastSnapLines = [];
+              }
+            }
+          }
+        } else {
+          this.lastSnapLines = [];
+        }
+
+        // Apply to all selected layers
+        for (const [layerId, start] of _startTransforms) {
+          store.updateLayer(_compId, layerId, {
+            transform: {
+              position: { x: start.pos.x + gx, y: start.pos.y + gy },
+              scale: start.scale, rotation: start.rotation,
+              anchorPoint: { x: 0, y: 0 },
+            },
+          });
+        }
+        break;
+      }
+
+      case 'rotate': {
+        // L3: When a handle pivot is set, use angle-based rotation (PowerPoint style)
+        let rawAngle: number;
+        if (this._handlePivotWorld) {
+          // Compute angle from pivot to current mouse position vs start mouse position
+          const startWorld = this.cameraManager.screenToWorld(this.startMouseScreen.x, this.startMouseScreen.y);
+          const currentScreenX = this.startMouseScreen.x + delta.x;
+          const currentScreenY = this.startMouseScreen.y + delta.y;
+          const currentWorld = this.cameraManager.screenToWorld(currentScreenX, currentScreenY);
+          const pivot = this._handlePivotWorld;
+          const startAngle = Math.atan2(startWorld.y - pivot.y, startWorld.x - pivot.x);
+          const currentAngle = Math.atan2(currentWorld.y - pivot.y, currentWorld.x - pivot.x);
+          rawAngle = (currentAngle - startAngle) * (180 / Math.PI);
+        } else {
+          rawAngle = delta.x * (_precisionMode ? 0.05 : 0.5);
+        }
+        const snappedAngle = _snapMode ? Math.round(rawAngle / 5) * 5 : rawAngle;
+        for (const [layerId, start] of _startTransforms) {
+          store.updateLayer(_compId, layerId, {
+            transform: {
+              position: start.pos, scale: start.scale,
+              rotation: start.rotation + snappedAngle,
+              anchorPoint: { x: 0, y: 0 },
+            },
+          });
+        }
+        break;
+      }
+
+      case 'scale': {
+        // M2: Unified distance-from-pivot scale for both handle and free transform
+        // For handle drags: pivot is the opposite corner/edge
+        // For free transform (G/R/S keyboard): pivot is the layer center
+        let factorX = 1, factorY = 1;
+        if (this._handlePivotWorld) {
+          // L3: Handle-based scale uses world-space distance from pivot
+          const pivot = this._handlePivotWorld;
+          const startWorld = this.cameraManager.screenToWorld(this.startMouseScreen.x, this.startMouseScreen.y);
+          const currentScreenX = this.startMouseScreen.x + delta.x;
+          const currentScreenY = this.startMouseScreen.y + delta.y;
+          const currentWorld = this.cameraManager.screenToWorld(currentScreenX, currentScreenY);
+          // M2: Use per-axis distance from pivot for correct X/Y scaling
+          const startDistX = Math.abs(startWorld.x - pivot.x);
+          const startDistY = Math.abs(startWorld.y - pivot.y);
+          const curDistX = Math.abs(currentWorld.x - pivot.x);
+          const curDistY = Math.abs(currentWorld.y - pivot.y);
+          factorX = startDistX > 0.001 ? curDistX / startDistX : 1;
+          factorY = startDistY > 0.001 ? curDistY / startDistY : 1;
+          // Clamp to prevent negative/zero scale
+          factorX = Math.max(0.01, factorX);
+          factorY = Math.max(0.01, factorY);
+        } else {
+          // Free transform: use Euclidean distance from screen center as uniform factor
+          const startDist = Math.hypot(this.startMouseScreen.x || 1, this.startMouseScreen.y || 1);
+          const curDist = Math.hypot(delta.x, delta.y);
+          let factor: number;
+          if (startDist > 5) {
+            factor = Math.max(0.01, curDist / startDist);
+          } else {
+            factor = 1 + Math.hypot(delta.x, delta.y) * 0.005;
+          }
+          factorX = factor;
+          factorY = factor;
+        }
+        // Precision reduces factor change
+        if (_precisionMode) { factorX = 1 + (factorX - 1) * 0.1; factorY = 1 + (factorY - 1) * 0.1; }
+
+        let sx = factorX, sy = factorY;
+        // Axis constraints
+        if (_axisLock === 'y' || _axisExclude === 'x') sy = 1;
+        if (_axisLock === 'x' || _axisExclude === 'y') sx = 1;
+        // Aspect lock (J7: Alt during scale â†’ uniform)
+        if (_aspectLock) {
+          const uniform = Math.max(sx, sy);
+          sx = uniform;
+          sy = uniform;
+        }
+        // Snap
+        if (_snapMode) {
+          sx = Math.round(sx * 10) / 10;
+          sy = Math.round(sy * 10) / 10;
+        }
+        sx = Math.max(0.01, sx);
+        sy = Math.max(0.01, sy);
+
+        for (const [layerId, start] of _startTransforms) {
+          store.updateLayer(_compId, layerId, {
+            transform: {
+              position: start.pos,
+              scale: { x: start.scale.x * sx, y: start.scale.y * sy },
+              rotation: start.rotation,
+              anchorPoint: { x: 0, y: 0 },
+            },
+          });
+        }
+        break;
+      }
+    }
+  }
+
+  private _releasePointerLock(): void {
+    if (this._boundPointerLockChange) {
+      document.removeEventListener('pointerlockchange', this._boundPointerLockChange);
+      this._boundPointerLockChange = null;
+    }
+    this._exitingByChoice = true;
+    if (document.pointerLockElement === this._canvas) {
+      document.exitPointerLock();
+    }
+    this._canvas = null;
+  }
+
+  private _onPointerLockChange(): void {
+    if (!document.pointerLockElement && this._active && !this._exitingByChoice) {
+      this.cancel();
+    }
+    this._exitingByChoice = false;
+  }
+
+  /** Sync _startTransforms to current layer positions from the store */
+  private _syncStartTransformsFromStore(): void {
+    if (!this._compId) return;
+    const comp = useCompositionStore.getState().compositions.find((c) => c.id === this._compId);
+    if (!comp) return;
+    for (const [id, start] of this._startTransforms) {
+      const layer = comp.layers.find((l) => l.id === id);
+      if (layer) {
+        start.pos = { ...layer.transform.position };
+        start.scale = { ...layer.transform.scale };
+        start.rotation = layer.transform.rotation;
+      }
+    }
+  }
+
+  /** Build snap targets from composition and other layers (J6) */
+  private _buildSnapTargets(comp: { id: string; width: number; height: number; layers: Layer[] }, excludeLayerIds: string[]): SnapTargets {
+    const halfW = comp.width / 2;
+    const halfH = comp.height / 2;
+
+    return {
+      compLeft: -halfW,
+      compRight: halfW,
+      compTop: halfH,
+      compBottom: -halfH,
+      compCenterX: 0,
+      compCenterY: 0,
+      guidesH: [],  // Could be populated from viewportStore guides
+      guidesV: [],
+      layers: comp.layers
+        .filter((l) => l.visible && !excludeLayerIds.includes(l.id))
+        .map((l) => {
+          const t = l.transform;
+          const halfWl = 50; // approximate half-width based on scale
+          const halfHl = 50;
+          return {
+            id: l.id,
+            left: t.position.x - halfWl * (t.scale.x / 100),
+            right: t.position.x + halfWl * (t.scale.x / 100),
+            top: t.position.y + halfHl * (t.scale.y / 100),
+            bottom: t.position.y - halfHl * (t.scale.y / 100),
+            centerX: t.position.x,
+            centerY: t.position.y,
+          };
+        }),
+    };
+  }
+
+  private _emitState(): void {
+    this._onStateChange?.(this.getTransformInfo());
+  }
+}
+
+
+===== src\renderer\interaction\HitTest.ts =====
+/**
+ * HitTester â€” raycasts into the scene to find which layer mesh is under a screen-space cursor.
+ * Must call scene.updateMatrixWorld(true) before each intersection so that
+ * group transforms (position/rotation/scale) are baked into world space.
+ */
+import * as THREE from 'three';
+import type { CameraManager } from '../CameraManager';
+import type { SceneManager } from '../SceneManager';
+
+export interface HitResult {
+  layerId: string;
+  point: THREE.Vector3;
+  distance: number;
+}
+
+export class HitTester {
+  private raycaster = new THREE.Raycaster();
+  private sceneManager: SceneManager;
+  private cameraManager: CameraManager;
+
+  constructor(sceneManager: SceneManager, cameraManager: CameraManager) {
+    this.sceneManager = sceneManager;
+    this.cameraManager = cameraManager;
+  }
+
+  hitTest(screenX: number, screenY: number, layerIds: string[]): HitResult | null {
+    const ndcX = (screenX / this.cameraManager.viewportWidth) * 2 - 1;
+    const ndcY = -(screenY / this.cameraManager.viewportHeight) * 2 + 1;
+
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.cameraManager.camera);
+
+    // CRITICAL: Update all world matrices so group transforms are baked
+    this.sceneManager.scene.updateMatrixWorld(true);
+
+    // Collect meshes by iterating layer groups (groups are named by layerId).
+    // Iterate in reverse order so topmost (last drawn) is tested first.
+    const meshes: THREE.Mesh[] = [];
+    for (let i = layerIds.length - 1; i >= 0; i--) {
+      const id = layerIds[i];
+      const group = this.sceneManager.layerGroup.getObjectByName(id);
+      if (group) {
+        const mesh = group.getObjectByName(`${id}_mesh`);
+        if (mesh instanceof THREE.Mesh && mesh.visible && mesh.parent?.visible !== false) {
+          meshes.push(mesh);
+        }
+      }
+    }
+
+    if (meshes.length === 0) return null;
+
+    // Use recursive=true so raycaster traverses into children (it won't since meshes are direct children)
+    const intersects = this.raycaster.intersectObjects(meshes, false);
+    if (intersects.length === 0) return null;
+
+    const hit = intersects[0];
+    const name = hit.object.name;
+    const layerId = name.endsWith('_mesh') ? name.slice(0, -5) : name;
+
+    return {
+      layerId,
+      point: hit.point.clone(),
+      distance: hit.distance,
+    };
+  }
+
+  dispose(): void {}
+}
+
+
+===== src\renderer\interaction\SelectionOverlay.ts =====
+/**
+ * SelectionOverlay â€” draws selection outline + PowerPoint-style bounding box handles + Blender gizmo.
+ *
+ * LAYER STACK (bottom to top):
+ * 1. Selection polygon (rotated rectangle outline) â€” always shown
+ * 2. Bounding box handles (8 corner/edge + rotation) â€” always shown when selected (hidden during modal)
+ * 3. Blender gizmo (colored arrows/rings) â€” shown only when Move/Rotate/Scale tool active
+ * 4. Anchor crosshair â€” always shown
+ *
+ * L1-L6: Handles use data-handle and data-layer-id attributes for interaction in useViewportInput.
+ * Bounding box handles are white squares with subtle border (PowerPoint/Avnac style).
+ */
+import * as THREE from 'three';
+import type { CameraManager } from '../CameraManager';
+import type { BaseLayerRenderer } from '../layers/BaseLayerRenderer';
+
+export type GizmoMode = 'move' | 'rotate' | 'scale' | null;
+
+const NS = 'http://www.w3.org/2000/svg';
+
+interface ScreenCorner { x: number; y: number; }
+
+/** Corner/edge handle positions relative to bounding box */
+type HandlePos = 'tl' | 'tr' | 'br' | 'bl' | 'top' | 'right' | 'bottom' | 'left';
+
+export class SelectionOverlay {
+  private container: HTMLElement;
+  private cameraManager: CameraManager;
+  private svg: SVGSVGElement | null = null;
+  private _visible = false;
+  private _gizmoMode: GizmoMode = null;
+  /** L4: Hide bounding box handles during modal transform */
+  private _hideHandles = false;
+
+  constructor(container: HTMLElement, cameraManager: CameraManager) {
+    this.container = container;
+    this.cameraManager = cameraManager;
+  }
+
+  set gizmoMode(mode: GizmoMode) { this._gizmoMode = mode; }
+  get gizmoMode(): GizmoMode { return this._gizmoMode; }
+
+  /** L4: Toggle handle visibility (hidden during modal transform) */
+  set hideHandles(v: boolean) { this._hideHandles = v; }
+  get hideHandles(): boolean { return this._hideHandles; }
+
+  mount(): void {
+    if (this.svg) return;
+    const svg = document.createElementNS(NS, 'svg');
+    svg.style.position = 'absolute';
+    svg.style.inset = '0';
+    svg.style.pointerEvents = 'none';
+    svg.style.zIndex = '25';
+    svg.style.width = '100%';
+    svg.style.height = '100%';
+    this.container.appendChild(svg);
+    this.svg = svg;
+  }
+
+  unmount(): void {
+    if (this.svg && this.svg.parentElement) this.svg.parentElement.removeChild(this.svg);
+    this.svg = null;
+  }
+
+  update(renderers: BaseLayerRenderer[]): void {
+    if (!this.svg) return;
+    this.svg.innerHTML = '';
+    if (renderers.length === 0 || !this._visible) return;
+
+    const accent = 'var(--color-accent)';
+    const white = '#ffffff';
+    const handleSize = 8; // corner handle size
+    const edgeSize = 6;  // edge handle size
+
+    let allCorners: ScreenCorner[] = [];
+    let worldCenterX = 0, worldCenterY = 0, centerCount = 0;
+
+    for (const r of renderers) {
+      const corners = this._getWorldCorners(r);
+      if (corners.length < 4) continue;
+
+      // â”€â”€ 1. Selection polygon (rotated rectangle outline) â”€â”€
+      const pts = corners.map((c) => `${c.x},${c.y}`).join(' ');
+      const poly = document.createElementNS(NS, 'polygon');
+      poly.setAttribute('points', pts);
+      poly.setAttribute('fill', 'none');
+      poly.setAttribute('stroke', renderers.length > 1 ? 'rgba(71,114,179,0.5)' : accent);
+      poly.setAttribute('stroke-width', '1.5');
+      this.svg.appendChild(poly);
+
+      allCorners = allCorners.concat(corners);
+
+      // World center for gizmo + anchor
+      const worldPos = new THREE.Vector3();
+      r.group.getWorldPosition(worldPos);
+      worldCenterX += worldPos.x;
+      worldCenterY += worldPos.y;
+      centerCount++;
+
+      // â”€â”€ 2. Bounding box handles (unless hidden) â”€â”€
+      if (!this._hideHandles) {
+        this._drawBoundingBoxHandles(corners, r.mesh, handleSize, edgeSize, white, accent);
+      }
+
+      // â”€â”€ 5. Anchor crosshair â”€â”€
+      this._drawAnchor(worldPos.x, worldPos.y);
+    }
+
+    if (allCorners.length === 0) return;
+
+    // Compute union bounding box of all screen corners
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const c of allCorners) {
+      minX = Math.min(minX, c.x);
+      maxX = Math.max(maxX, c.x);
+      minY = Math.min(minY, c.y);
+      maxY = Math.max(maxY, c.y);
+    }
+    if (!isFinite(minX)) return;
+
+    const gizmoCx = worldCenterX / centerCount;
+    const gizmoCy = worldCenterY / centerCount;
+    const gizmoScreen = this.cameraManager.worldToScreen(gizmoCx, gizmoCy);
+    const gx = gizmoScreen.x, gy = gizmoScreen.y;
+
+    // â”€â”€ 3. Blender gizmo (L5: only when Move/Rotate/Scale tool active) â”€â”€
+    switch (this._gizmoMode) {
+      case 'move':    this._drawMoveGizmo(gx, gy, accent, white); break;
+      case 'rotate':  this._drawRotateGizmo(gx, gy, accent, white); break;
+      case 'scale':   this._drawScaleGizmo(gx, gy, accent, white); break;
+    }
+  }
+
+  // â”€â”€ L2: PowerPoint-style bounding box handles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  private _drawBoundingBoxHandles(
+    corners: ScreenCorner[], _mesh: THREE.Mesh,
+    handleSize: number, edgeSize: number,
+    white: string, accent: string,
+  ): void {
+    // Corners: TL, TR, BR, BL
+    const handlePositions: { pos: HandlePos; cx: number; cy: number }[] = [
+      { pos: 'tl', cx: corners[0].x, cy: corners[0].y },
+      { pos: 'tr', cx: corners[1].x, cy: corners[1].y },
+      { pos: 'br', cx: corners[2].x, cy: corners[2].y },
+      { pos: 'bl', cx: corners[3].x, cy: corners[3].y },
+    ];
+
+    // Edges: midpoint between each pair of corners
+    const edgePositions: { pos: HandlePos; cx: number; cy: number }[] = [
+      { pos: 'top',    cx: (corners[0].x + corners[1].x) / 2, cy: (corners[0].y + corners[1].y) / 2 },
+      { pos: 'right',  cx: (corners[1].x + corners[2].x) / 2, cy: (corners[1].y + corners[2].y) / 2 },
+      { pos: 'bottom', cx: (corners[2].x + corners[3].x) / 2, cy: (corners[2].y + corners[3].y) / 2 },
+      { pos: 'left',   cx: (corners[3].x + corners[0].x) / 2, cy: (corners[3].y + corners[0].y) / 2 },
+    ];
+
+    // Corner handles (10x10 white squares)
+    for (const h of handlePositions) {
+      const hEl = this._rect(
+        h.cx - handleSize / 2, h.cy - handleSize / 2,
+        handleSize, handleSize, accent, 1, white,
+      );
+      hEl.setAttribute('data-handle', h.pos);
+      hEl.style.pointerEvents = 'all';
+      hEl.style.cursor = this._cursorForHandle(h.pos, 0);
+      hEl.style.boxShadow = '0 1px 3px rgba(0,0,0,0.4)';
+      this.svg!.appendChild(hEl);
+    }
+
+    // Edge handles (8x8 white squares)
+    for (const h of edgePositions) {
+      const eEl = this._rect(
+        h.cx - edgeSize / 2, h.cy - edgeSize / 2,
+        edgeSize, edgeSize, accent, 1, white,
+      );
+      eEl.setAttribute('data-handle', h.pos);
+      eEl.style.pointerEvents = 'all';
+      eEl.style.cursor = this._cursorForHandle(h.pos, 0);
+      eEl.style.boxShadow = '0 1px 3px rgba(0,0,0,0.4)';
+      this.svg!.appendChild(eEl);
+    }
+
+    // Rotation handle: a circle above the top edge, connected by a thin line
+    const topCenterX = (corners[0].x + corners[1].x) / 2;
+    const topCenterY = (corners[0].y + corners[1].y) / 2;
+    // Direction from TL to TR gives us the "top edge" normal
+    const edgeDx = corners[1].x - corners[0].x;
+    const edgeDy = corners[1].y - corners[0].y;
+    const edgeLen = Math.hypot(edgeDx, edgeDy) || 1;
+    // Normal pointing outward (perpendicular to top edge, pointing away from center)
+    const nx = -edgeDy / edgeLen;
+    const ny = edgeDx / edgeLen;
+    const offset = 24; // pixels above the top edge
+    const rotX = topCenterX + nx * offset;
+    const rotY = topCenterY + ny * offset;
+
+    // Connector line
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('x1', String(topCenterX));
+    line.setAttribute('y1', String(topCenterY));
+    line.setAttribute('x2', String(rotX));
+    line.setAttribute('y2', String(rotY));
+    line.setAttribute('stroke', accent);
+    line.setAttribute('stroke-width', '1');
+    line.setAttribute('stroke-dasharray', '3 2');
+    line.style.pointerEvents = 'none';
+    this.svg!.appendChild(line);
+
+    // Rotation handle circle (12x12)
+    const rotHandle = document.createElementNS(NS, 'circle');
+    rotHandle.setAttribute('cx', String(rotX));
+    rotHandle.setAttribute('cy', String(rotY));
+    rotHandle.setAttribute('r', '6');
+    rotHandle.setAttribute('fill', white);
+    rotHandle.setAttribute('stroke', accent);
+    rotHandle.setAttribute('stroke-width', '1.5');
+    rotHandle.setAttribute('data-handle', 'rotate');
+    rotHandle.style.pointerEvents = 'all';
+    rotHandle.style.cursor = 'grab';
+    rotHandle.style.boxShadow = '0 1px 3px rgba(0,0,0,0.4)';
+    this.svg!.appendChild(rotHandle);
+
+    // Small curved arrow icon inside rotation handle
+    const arrow = document.createElementNS(NS, 'path');
+    arrow.setAttribute('d', `M ${rotX - 2} ${rotY - 1} A 3 3 0 1 1 ${rotX + 2} ${rotY + 1}`);
+    arrow.setAttribute('fill', 'none');
+    arrow.setAttribute('stroke', accent);
+    arrow.setAttribute('stroke-width', '1');
+    arrow.style.pointerEvents = 'none';
+    this.svg!.appendChild(arrow);
+    const arrowHead = document.createElementNS(NS, 'polygon');
+    arrowHead.setAttribute('points', `${rotX + 3},${rotY + 1} ${rotX + 1},${rotY + 0} ${rotX + 1},${rotY + 2}`);
+    arrowHead.setAttribute('fill', accent);
+    arrowHead.style.pointerEvents = 'none';
+    this.svg!.appendChild(arrowHead);
+  }
+
+  /** Get cursor for a handle position */
+  private _cursorForHandle(pos: HandlePos, _rotationDeg: number): string {
+    // L6: For now use static cursors. Extension: rotate cursor based on layer rotation.
+    const cursors: Record<HandlePos, string> = {
+      tl: 'nwse-resize', tr: 'nesw-resize',
+      br: 'nwse-resize', bl: 'nesw-resize',
+      top: 'ns-resize', bottom: 'ns-resize',
+      left: 'ew-resize', right: 'ew-resize',
+    };
+    return cursors[pos] || 'default';
+  }
+
+  // â”€â”€ Compute 4 world-space corners â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  private _getWorldCorners(renderer: BaseLayerRenderer): ScreenCorner[] {
+    renderer.mesh.updateMatrixWorld(true);
+    const geo = renderer.mesh.geometry;
+    geo.computeBoundingBox();
+    const bbox = geo.boundingBox;
+    if (!bbox) return [];
+
+    const localCorners = [
+      new THREE.Vector3(bbox.min.x, bbox.min.y, 0),
+      new THREE.Vector3(bbox.max.x, bbox.min.y, 0),
+      new THREE.Vector3(bbox.max.x, bbox.max.y, 0),
+      new THREE.Vector3(bbox.min.x, bbox.max.y, 0),
+    ];
+
+    const matrix = renderer.mesh.matrixWorld;
+    return localCorners.map((c) => {
+      const world = c.clone().applyMatrix4(matrix);
+      return this.cameraManager.worldToScreen(world.x, world.y);
+    });
+  }
+
+  // â”€â”€ MOVE GIZMO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  private _drawMoveGizmo(cx: number, cy: number, accent: string, white: string): void {
+    const len = 40;
+    const headSize = 8;
+    this._arrow(cx, cy, cx + len, cy, headSize, '#ff3355', white, 'move-x');
+    this._arrow(cx, cy, cx, cy - len, headSize, '#55dd33', white, 'move-y');
+    this._compassRose(cx, cy, 8, accent, white);
+    const sq = 7;
+    const sqEl = this._rect(cx + sq, cy - sq * 1.5, sq, sq, '#ffdd44', 1, '#ffdd44');
+    sqEl.setAttribute('data-gizmo', 'move-xy');
+    sqEl.style.pointerEvents = 'all';
+    sqEl.style.cursor = 'move';
+    this.svg!.appendChild(sqEl);
+  }
+
+  // â”€â”€ ROTATE GIZMO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  private _drawRotateGizmo(cx: number, cy: number, accent: string, white: string): void {
+    const ringRadius = 50;
+    const outerRadius = 65;
+    const zRing = document.createElementNS(NS, 'circle');
+    zRing.setAttribute('cx', String(cx));
+    zRing.setAttribute('cy', String(cy));
+    zRing.setAttribute('r', String(ringRadius));
+    zRing.setAttribute('fill', 'none');
+    zRing.setAttribute('stroke', '#3388ff');
+    zRing.setAttribute('stroke-width', '2');
+    zRing.setAttribute('data-gizmo', 'rotate-z');
+    zRing.style.pointerEvents = 'all';
+    zRing.style.cursor = 'grab';
+    this.svg!.appendChild(zRing);
+
+    const outerRing = document.createElementNS(NS, 'circle');
+    outerRing.setAttribute('cx', String(cx));
+    outerRing.setAttribute('cy', String(cy));
+    outerRing.setAttribute('r', String(outerRadius));
+    outerRing.setAttribute('fill', 'none');
+    outerRing.setAttribute('stroke', 'rgba(255,255,255,0.3)');
+    outerRing.setAttribute('stroke-width', '1');
+    outerRing.setAttribute('stroke-dasharray', '4 3');
+    outerRing.setAttribute('data-gizmo', 'rotate-free');
+    outerRing.style.pointerEvents = 'all';
+    outerRing.style.cursor = 'grab';
+    this.svg!.appendChild(outerRing);
+
+    this._dot(cx, cy, 4, white, accent);
+    this._compassRose(cx, cy, 6, accent, white);
+  }
+
+  // â”€â”€ SCALE GIZMO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  private _drawScaleGizmo(cx: number, cy: number, accent: string, white: string): void {
+    const len = 40;
+    const tipSize = 9;
+    this._arrowSquare(cx, cy, cx + len, cy, tipSize, '#ff3355', white, 'scale-x');
+    this._arrowSquare(cx, cy, cx, cy - len, tipSize, '#55dd33', white, 'scale-y');
+
+    const uSize = 11;
+    const uEl = this._rect(cx - uSize / 2, cy - uSize / 2, uSize, uSize, '#ffffff', 1.5, 'rgba(255,255,255,0.15)');
+    uEl.setAttribute('data-gizmo', 'scale-uniform');
+    uEl.style.pointerEvents = 'all';
+    uEl.style.cursor = 'nwse-resize';
+    this.svg!.appendChild(uEl);
+
+    this._compassRose(cx, cy, 6, accent, white);
+  }
+
+  // â”€â”€ Anchor crosshair â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  private _drawAnchor(worldX: number, worldY: number): void {
+    const screen = this.cameraManager.worldToScreen(worldX, worldY);
+    const cs = 6;
+    const accent = 'var(--color-accent)';
+    this.svg!.appendChild(this._line(screen.x - cs, screen.y, screen.x + cs, screen.y, accent, 1));
+    this.svg!.appendChild(this._line(screen.x, screen.y - cs, screen.x, screen.y + cs, accent, 1));
+    this._dot(screen.x, screen.y, 2, accent, 'none');
+  }
+
+  // â”€â”€ SVG helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  private _rect(x: number, y: number, w: number, h: number,
+                stroke: string, sw: number, fill: string): SVGRectElement {
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', String(x));
+    r.setAttribute('y', String(y));
+    r.setAttribute('width', String(w));
+    r.setAttribute('height', String(h));
+    r.setAttribute('stroke', stroke);
+    r.setAttribute('stroke-width', String(sw));
+    r.setAttribute('fill', fill);
+    return r;
+  }
+
+  private _line(x1: number, y1: number, x2: number, y2: number,
+                stroke: string, sw: number): SVGLineElement {
+    const l = document.createElementNS(NS, 'line');
+    l.setAttribute('x1', String(x1));
+    l.setAttribute('y1', String(y1));
+    l.setAttribute('x2', String(x2));
+    l.setAttribute('y2', String(y2));
+    l.setAttribute('stroke', stroke);
+    l.setAttribute('stroke-width', String(sw));
+    return l;
+  }
+
+  private _dot(cx: number, cy: number, r: number, fill: string, stroke: string): void {
+    const d = document.createElementNS(NS, 'circle');
+    d.setAttribute('cx', String(cx));
+    d.setAttribute('cy', String(cy));
+    d.setAttribute('r', String(r));
+    d.setAttribute('fill', fill);
+    if (stroke !== 'none') {
+      d.setAttribute('stroke', stroke);
+      d.setAttribute('stroke-width', '0.5');
+    }
+    this.svg!.appendChild(d);
+  }
+
+  private _arrow(x1: number, y1: number, x2: number, y2: number,
+                 headSize: number, color: string, stroke: string, dataAttr: string): void {
+    const line = this._line(x1, y1, x2, y2, color, 2);
+    line.style.pointerEvents = 'all';
+    line.style.cursor = 'pointer';
+    line.setAttribute('data-gizmo', dataAttr);
+    this.svg!.appendChild(line);
+
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const tip = document.createElementNS(NS, 'polygon');
+    const px = x2, py = y2;
+    const points = [
+      px + headSize * Math.cos(angle),
+      py + headSize * Math.sin(angle),
+      px + headSize * 0.5 * Math.cos(angle + Math.PI * 0.7),
+      py + headSize * 0.5 * Math.sin(angle + Math.PI * 0.7),
+      px + headSize * 0.5 * Math.cos(angle - Math.PI * 0.7),
+      py + headSize * 0.5 * Math.sin(angle - Math.PI * 0.7),
+    ];
+    tip.setAttribute('points', points.join(' '));
+    tip.setAttribute('fill', color);
+    tip.setAttribute('stroke', stroke);
+    tip.setAttribute('stroke-width', '0.5');
+    tip.setAttribute('data-gizmo', dataAttr);
+    tip.style.pointerEvents = 'all';
+    tip.style.cursor = 'pointer';
+    this.svg!.appendChild(tip);
+  }
+
+  private _arrowSquare(x1: number, y1: number, x2: number, y2: number,
+                       tipSize: number, color: string, stroke: string, dataAttr: string): void {
+    const line = this._line(x1, y1, x2, y2, color, 2);
+    line.style.pointerEvents = 'all';
+    line.style.cursor = 'pointer';
+    line.setAttribute('data-gizmo', dataAttr);
+    this.svg!.appendChild(line);
+
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const sq = document.createElementNS(NS, 'rect');
+    const px = x2 + tipSize * Math.cos(angle) * 0.7;
+    const py = y2 + tipSize * Math.sin(angle) * 0.7;
+    sq.setAttribute('x', String(px - tipSize / 2));
+    sq.setAttribute('y', String(py - tipSize / 2));
+    sq.setAttribute('width', String(tipSize));
+    sq.setAttribute('height', String(tipSize));
+    sq.setAttribute('fill', color);
+    sq.setAttribute('stroke', stroke);
+    sq.setAttribute('stroke-width', '0.5');
+    sq.setAttribute('data-gizmo', dataAttr);
+    sq.style.pointerEvents = 'all';
+    sq.style.cursor = 'pointer';
+    this.svg!.appendChild(sq);
+  }
+
+  private _compassRose(cx: number, cy: number, radius: number, accent: string, white: string): void {
+    const circle = document.createElementNS(NS, 'circle');
+    circle.setAttribute('cx', String(cx));
+    circle.setAttribute('cy', String(cy));
+    circle.setAttribute('r', String(radius * 0.5));
+    circle.setAttribute('fill', accent);
+    circle.setAttribute('stroke', white);
+    circle.setAttribute('stroke-width', '0.5');
+    circle.setAttribute('data-gizmo', 'pivot');
+    circle.style.pointerEvents = 'all';
+    circle.style.cursor = 'move';
+    this.svg!.appendChild(circle);
+
+    for (let i = 0; i < 8; i++) {
+      const a = (Math.PI * 2 * i) / 8 - Math.PI / 2;
+      const tipX = cx + radius * Math.cos(a);
+      const tipY = cy + radius * Math.sin(a);
+      const baseDist = radius * 0.6;
+      const b1a = a + Math.PI * 0.25;
+      const b2a = a - Math.PI * 0.25;
+      const tri = document.createElementNS(NS, 'polygon');
+      tri.setAttribute('points', [
+        tipX, tipY,
+        cx + baseDist * Math.cos(b1a), cy + baseDist * Math.sin(b1a),
+        cx + baseDist * Math.cos(b2a), cy + baseDist * Math.sin(b2a),
+      ].join(' '));
+      tri.setAttribute('fill', accent);
+      tri.setAttribute('stroke', white);
+      tri.setAttribute('stroke-width', '0.3');
+      this.svg!.appendChild(tri);
+    }
+  }
+
+  // â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  show(): void { this._visible = true; }
+  hide(): void { this._visible = false; this.update([]); }
+  get visible(): boolean { return this._visible; }
+
+  dispose(): void { this.unmount(); }
+}
+
+
+===== src\renderer\Renderer.ts =====
+import * as THREE from 'three';
+import { SceneManager } from './SceneManager';
+import { CameraManager } from './CameraManager';
+import { RenderLoop, type FrameStats } from './RenderLoop';
+import { ResizeHandler } from './ResizeHandler';
+import { Snapping } from './utils/Snapping';
+import { LayerSync } from './sync/LayerSync';
+import { HitTester } from './interaction/HitTest';
+import { SelectionOverlay } from './interaction/SelectionOverlay';
+import { ModalTransform } from './interaction/ModalTransform';
+import { EffectsRenderer } from './effects/EffectsRenderer';
+import type { Composition } from '../types/composition';
+
+export interface RendererState {
+  fps: number;
+  zoom: number;
+  frameCount: number;
+}
+
+export class Renderer {
+  public readonly renderer: THREE.WebGLRenderer;
+  public readonly sceneManager: SceneManager;
+  public readonly cameraManager: CameraManager;
+  public readonly renderLoop: RenderLoop;
+  public readonly resizeHandler: ResizeHandler;
+  public readonly snapping: Snapping;
+  public readonly layerSync: LayerSync;
+  public readonly hitTester: HitTester;
+  public readonly selectionOverlay: SelectionOverlay;
+  public readonly modalTransform: ModalTransform;
+  public readonly effectsRenderer: EffectsRenderer;
+
+  private _state: RendererState = { fps: 0, zoom: 1, frameCount: 0 };
+  private _onStateChange?: (state: RendererState) => void;
+  private _composition: Composition | null = null;
+
+  constructor(container: HTMLElement) {
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    this.renderer.setClearColor(0x1a1a1a, 1);
+    this.renderer.domElement.style.display = 'block';
+    this.renderer.domElement.style.width = '100%';
+    this.renderer.domElement.style.height = '100%';
+    container.appendChild(this.renderer.domElement);
+
+    this.sceneManager = new SceneManager();
+    this.cameraManager = new CameraManager();
+    this.snapping = new Snapping();
+    this.layerSync = new LayerSync(this.sceneManager);
+    this.hitTester = new HitTester(this.sceneManager, this.cameraManager);
+    this.selectionOverlay = new SelectionOverlay(container, this.cameraManager);
+    this.modalTransform = new ModalTransform(this.cameraManager);
+    this.effectsRenderer = new EffectsRenderer(this.renderer);
+
+    // Mount the selection overlay SVG
+    this.selectionOverlay.mount();
+
+    this.renderLoop = new RenderLoop(
+      this.renderer, this.sceneManager.scene, this.cameraManager.camera,
+    );
+
+    this.resizeHandler = new ResizeHandler(this.renderer, this.cameraManager, this.renderLoop);
+
+    // Wire CameraManager changes to trigger real-time viewport updates (M1)
+    this.cameraManager.onChanged = () => this.renderLoop.requestRender();
+
+    // Wire EffectsRenderer into the pre-render pipeline
+    this.renderLoop.beforeRender = () => this._processEffects();
+
+    this.renderLoop.onFrame = (stats: FrameStats) => {
+      const vp = this.cameraManager.getViewportTransform();
+      this._state = { fps: stats.fps, zoom: vp.zoom, frameCount: stats.frameCount };
+      this._onStateChange?.(this._state);
+    };
+
+    this.resizeHandler.observe(container);
+    this.renderLoop.start();
+  }
+
+  applyComposition(comp: Composition): void {
+    this._composition = comp;
+    this.sceneManager.applyComposition(comp.width, comp.height, comp.backgroundColor);
+    this.cameraManager.setCompositionSize(comp.width, comp.height);
+    // K3: Don't auto-fit camera to composition. Let user control zoom/pan.
+    // this.cameraManager.fitToComposition();
+    // Layer sync is handled by the dedicated layerSync effect in useRenderer
+    // â€” don't sync here to avoid double-sync conflicts.
+    this.renderLoop.requestRender();
+  }
+
+  get composition(): Composition | null { return this._composition; }
+
+  setGridVisible(visible: boolean): void {
+    if (visible) this.sceneManager.grid.show();
+    else this.sceneManager.grid.hide();
+    this.renderLoop.requestRender();
+  }
+
+  setSafeZonesVisible(visible: boolean): void {
+    if (visible) this.sceneManager.safeZones.show();
+    else this.sceneManager.safeZones.hide();
+    this.renderLoop.requestRender();
+  }
+
+  setSnappingEnabled(enabled: boolean): void {
+    this.snapping.enabled = enabled;
+  }
+
+  getState(): RendererState { return { ...this._state }; }
+
+  set onStateChange(cb: ((state: RendererState) => void) | undefined) {
+    this._onStateChange = cb;
+  }
+
+  /** Process effects for all layers before each frame render */
+  private _processEffects(): void {
+    const layerIds: string[] = [];
+    for (const child of this.sceneManager.layerGroup.children) {
+      const renderer = this.layerSync.getRenderer(child.name);
+      if (renderer) {
+        layerIds.push(renderer.id);
+        // Hide original mesh if effects are active (effect quad replaces it)
+        const hasFx = this.effectsRenderer.hasEffects(renderer.id);
+        this._toggleOriginalMesh(renderer, !hasFx);
+      }
+    }
+    this.effectsRenderer.prepareFrame(layerIds);
+
+    for (const child of this.sceneManager.layerGroup.children) {
+      const renderer = this.layerSync.getRenderer(child.name);
+      if (renderer && this.effectsRenderer.hasEffects(renderer.id)) {
+        const gn = (renderer as any).geometryWidth();
+        const gh = (renderer as any).geometryHeight();
+        this.effectsRenderer.renderLayer(
+          renderer.id, renderer.mesh, gn, gh,
+          renderer.group,
+        );
+      }
+    }
+  }
+
+  /** Toggle original mesh visibility (hide when effects active) */
+  private _toggleOriginalMesh(layerRenderer: { mesh: THREE.Mesh; group: THREE.Group }, visible: boolean): void {
+    if (layerRenderer.mesh.visible === visible) return;
+    layerRenderer.mesh.visible = visible;
+  }
+
+  get canvas(): HTMLCanvasElement { return this.renderer.domElement; }
+
+  dispose(): void {
+    this.renderLoop.dispose();
+    this.resizeHandler.dispose();
+    this.sceneManager.dispose();
+    this.cameraManager.dispose();
+    this.layerSync.clear();
+    this.effectsRenderer.dispose();
+    this.selectionOverlay.dispose();
+    this.renderer.dispose();
+    if (this.renderer.domElement.parentElement) {
+      this.renderer.domElement.parentElement.removeChild(this.renderer.domElement);
+    }
+  }
+}
+
+
+===== src\renderer\RenderLoop.ts =====
+/**
+ * RenderLoop â€” manages the requestAnimationFrame render cycle.
+ * Tracks frame time and can pause/resume.
+ * IDLE PAUSE: pauses the loop after 500ms of no render requests to save CPU/GPU.
+ */
+import * as THREE from 'three';
+import { VIEWPORT_CONFIG } from '../config/viewportConfig';
+
+export interface FrameStats {
+  deltaMs: number;
+  fps: number;
+  frameCount: number;
+}
+
+export class RenderLoop {
+  private renderer: THREE.WebGLRenderer;
+  private scene: THREE.Scene;
+  private camera: THREE.Camera;
+  private animFrameId: number | null = null;
+  private lastTime = 0;
+  private frameCount = 0;
+  private fpsAccumulator = 0;
+  private fpsFrames = 0;
+  private _currentFps = 0;
+  private running = false;
+  private _onFrame?: (stats: FrameStats) => void;
+
+  // Idle pause
+  private idleTimeout: ReturnType<typeof setTimeout> | null = null;
+  private needsRender = false;
+  private _idlePaused = false;
+
+  constructor(
+    renderer: THREE.WebGLRenderer,
+    scene: THREE.Scene,
+    camera: THREE.Camera,
+  ) {
+    this.renderer = renderer;
+    this.scene = scene;
+    this.camera = camera;
+  }
+
+  /** Optional callback fired BEFORE each frame render (for effects processing) */
+  public beforeRender: (() => void) | null = null;
+
+  /** Optional callback fired each frame with stats */
+  set onFrame(cb: ((stats: FrameStats) => void) | undefined) {
+    this._onFrame = cb;
+  }
+
+  /** Request a render. Wakes up the loop if idle-paused. */
+  requestRender(): void {
+    this.needsRender = true;
+    if (this.idleTimeout) {
+      clearTimeout(this.idleTimeout);
+      this.idleTimeout = null;
+    }
+    if (this._idlePaused && this.running) {
+      this._idlePaused = false;
+      this.lastTime = performance.now();
+      this.tick(this.lastTime);
+    }
+  }
+
+  /** Start the render loop */
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    this._idlePaused = false;
+    this.lastTime = performance.now();
+    this.tick(this.lastTime);
+  }
+
+  /** Stop the render loop */
+  stop(): void {
+    this.running = false;
+    this._idlePaused = false;
+    if (this.animFrameId !== null) {
+      cancelAnimationFrame(this.animFrameId);
+      this.animFrameId = null;
+    }
+    if (this.idleTimeout) {
+      clearTimeout(this.idleTimeout);
+      this.idleTimeout = null;
+    }
+  }
+
+  /** Single render call (for manual stepping) */
+  render(): void {
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  get isRunning(): boolean {
+    return this.running;
+  }
+
+  get currentFps(): number {
+    return this._currentFps;
+  }
+
+  get idlePaused(): boolean {
+    return this._idlePaused;
+  }
+
+  /** The main tick function */
+  private tick = (now: number): void => {
+    if (!this.running) return;
+
+    // Check if we should enter idle pause
+    if (!this.needsRender) {
+      if (!this.idleTimeout) {
+        this.idleTimeout = setTimeout(() => {
+          this._idlePaused = true;
+          this.idleTimeout = null;
+          // Don't cancel the anim frame â€” just stop scheduling new ones
+        }, VIEWPORT_CONFIG.IDLE_PAUSE_MS);
+      }
+
+      // If idle-paused, leave the animFrameId as-is but don't schedule next frame
+      if (this._idlePaused) {
+        this.animFrameId = null;
+        return;
+      }
+    }
+
+    this.needsRender = false;
+
+    const deltaMs = now - this.lastTime;
+    this.lastTime = now;
+    this.frameCount++;
+
+    // Update FPS averaging
+    this.fpsAccumulator += deltaMs;
+    this.fpsFrames++;
+    if (this.fpsAccumulator >= 1000) {
+      this._currentFps = Math.round((this.fpsFrames * 1000) / this.fpsAccumulator);
+      this.fpsAccumulator = 0;
+      this.fpsFrames = 0;
+    }
+
+    // Fire before-render callback (effects processing, etc.)
+    this.beforeRender?.();
+
+    // Render the scene
+    this.renderer.render(this.scene, this.camera);
+
+    // Fire frame callback
+    this._onFrame?.({
+      deltaMs,
+      fps: this._currentFps,
+      frameCount: this.frameCount,
+    });
+
+    // Schedule next frame
+    this.animFrameId = requestAnimationFrame(this.tick);
+  };
+
+  dispose(): void {
+    this.stop();
+  }
+}
+
+
+===== src\renderer\SceneManager.ts =====
+/**
+ * SceneManager â€” manages the Three.js Scene and all renderable content.
+ * RENDER ORDER: compBounds (bg quad, dim outside) renders FIRST, then
+ * grid, then layers, then safeZones on top. This ensures layers appear
+ * inside the composition area and above the background.
+ */
+import * as THREE from 'three';
+import { GridOverlay } from './overlays/Grid';
+import { SafeZonesOverlay } from './overlays/SafeZones';
+import { CompBoundsOverlay } from './overlays/CompBounds';
+
+export class SceneManager {
+  public readonly scene: THREE.Scene;
+  public readonly layerGroup: THREE.Group;
+  public readonly grid: GridOverlay;
+  public readonly safeZones: SafeZonesOverlay;
+  public readonly compBounds: CompBoundsOverlay;
+
+  private compWidth = 1920;
+  private compHeight = 1080;
+
+  constructor() {
+    this.scene = new THREE.Scene();
+    this.scene.background = null;
+
+    // Render order via renderOrder to ensure correct layering.
+    // Since all materials use depthTest: false, THREE.js renders
+    // objects in ascending renderOrder regardless of scene add order.
+    // Order: compBounds bgQuad (-20) â†’ darkOutside (-15) â†’ border (-10)
+    //        â†’ grid (-5) â†’ layers (0) â†’ safeZones (5)
+    // CRITICAL: layers MUST have higher renderOrder than grid so they
+    // render ON TOP, preventing grid from showing through opaque meshes.
+    this.compBounds = new CompBoundsOverlay();
+    this.compBounds.group.renderOrder = -20;
+    this.scene.add(this.compBounds.group);
+
+    this.grid = new GridOverlay();
+    this.grid.group.renderOrder = -5;
+    this.scene.add(this.grid.group);
+
+    // Layer group renders on top of grid
+    this.layerGroup = new THREE.Group();
+    this.layerGroup.name = 'layers';
+    this.layerGroup.renderOrder = 0;
+    this.scene.add(this.layerGroup);
+
+    // Safe zones on top of everything
+    this.safeZones = new SafeZonesOverlay();
+    this.safeZones.group.renderOrder = 5;
+    this.scene.add(this.safeZones.group);
+
+    // Solid background so CSS grid patterns don't show through transparent canvas
+    this.scene.background = new THREE.Color('#1a1a1a');
+  }
+
+  applyComposition(width: number, height: number, bgColor: string): void {
+    this.compWidth = width;
+    this.compHeight = height;
+    this.grid.update(width, height, 1);
+    this.compBounds.update(width, height, bgColor);
+    this.safeZones.update(width, height);
+  }
+
+  updateGrid(zoom: number): void {
+    this.grid.update(this.compWidth, this.compHeight, zoom);
+  }
+
+  addLayer(mesh: THREE.Mesh): void {
+    this.layerGroup.add(mesh);
+  }
+
+  removeLayer(id: string): void {
+    const child = this.layerGroup.getObjectByName(id);
+    if (child instanceof THREE.Mesh) {
+      this.layerGroup.remove(child);
+      child.geometry.dispose();
+      if (child.material instanceof THREE.Material) child.material.dispose();
+    }
+  }
+
+  clearLayers(): void {
+    for (let i = this.layerGroup.children.length - 1; i >= 0; i--) {
+      const child = this.layerGroup.children[i];
+      this.layerGroup.remove(child);
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        if (child.material instanceof THREE.Material) child.material.dispose();
+      }
+    }
+  }
+
+  dispose(): void {
+    this.grid.dispose();
+    this.safeZones.dispose();
+    this.compBounds.dispose();
+    this.clearLayers();
+  }
+}
+
+
+===== src\renderer\CameraManager.ts =====
+/**
+ * CameraManager â€” manages an OrthographicCamera for 2D viewport.
+ * Supports pan (middle-mouse drag), zoom (scroll toward cursor),
+ * fit-to-composition, and screenâ†”world coordinate conversion.
+ * Y-UP coordinate system (Blender-style).
+ */
+import * as THREE from 'three';
+import { VIEWPORT_CONFIG } from '../config/viewportConfig';
+
+export interface ViewportTransform {
+  panX: number;
+  panY: number;
+  zoom: number;
+}
+
+export class CameraManager {
+  public readonly camera: THREE.OrthographicCamera;
+  /** Viewport dimensions in CSS pixels (public for HitTest) */
+  public viewportWidth = 1;
+  public viewportHeight = 1;
+
+  private _zoom = 1;
+  private _panX = 0;
+  private _panY = 0;
+  private compWidth = 1920;
+  private compHeight = 1080;
+  /** Callback fired after every zoom/pan change for real-time viewport updates */
+  public onChanged: (() => void) | null = null;
+
+  constructor() {
+    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 1000);
+    this.camera.position.set(0, 0, 500);
+    this.camera.lookAt(0, 0, 0);
+  }
+
+  setCompositionSize(width: number, height: number): void {
+    this.compWidth = width;
+    this.compHeight = height;
+    this.updateProjection();
+  }
+
+  setViewportSize(width: number, height: number): void {
+    this.viewportWidth = width;
+    this.viewportHeight = height;
+    this.updateProjection();
+  }
+
+  private updateProjection(): void {
+    const aspect = this.viewportWidth / this.viewportHeight;
+    const compAspect = this.compWidth / this.compHeight;
+
+    let halfW: number;
+    let halfH: number;
+
+    if (aspect > compAspect) {
+      halfH = (this.compHeight / 2) * this._zoom;
+      halfW = halfH * aspect;
+    } else {
+      halfW = (this.compWidth / 2) * this._zoom;
+      halfH = halfW / aspect;
+    }
+
+    this.camera.left = -halfW + this._panX;
+    this.camera.right = halfW + this._panX;
+    this.camera.top = halfH + this._panY;
+    this.camera.bottom = -halfH + this._panY;
+    this.camera.updateProjectionMatrix();
+    this.onChanged?.();
+  }
+
+  get zoom(): number { return this._zoom; }
+
+  setZoom(zoom: number): void {
+    this._zoom = Math.max(VIEWPORT_CONFIG.MIN_ZOOM, Math.min(VIEWPORT_CONFIG.MAX_ZOOM, zoom));
+    this.updateProjection();
+  }
+
+  zoomIn(factor = 1.25): void { this.setZoom(this._zoom / factor); }
+  zoomOut(factor = 1.25): void { this.setZoom(this._zoom * factor); }
+
+  fitToComposition(): void {
+    this._zoom = 1;
+    this._panX = 0;
+    this._panY = 0;
+    this.updateProjection();
+  }
+
+  zoomTo100Percent(): void {
+    const zoomX = this.viewportWidth / this.compWidth;
+    const zoomY = this.viewportHeight / this.compHeight;
+    this.setZoom(Math.min(zoomX, zoomY));
+  }
+
+  pan(deltaX: number, deltaY: number): void {
+    this._panX += deltaX;
+    this._panY += deltaY;
+    this.updateProjection();
+  }
+
+  setPan(x: number, y: number): void {
+    this._panX = x;
+    this._panY = y;
+    this.updateProjection();
+  }
+
+  get panX(): number { return this._panX; }
+  get panY(): number { return this._panY; }
+
+  getViewportTransform(): ViewportTransform {
+    return { panX: this._panX, panY: this._panY, zoom: this._zoom };
+  }
+
+  screenToWorld(screenX: number, screenY: number): THREE.Vector2 {
+    const ndcX = (screenX / this.viewportWidth) * 2 - 1;
+    const ndcY = -(screenY / this.viewportHeight) * 2 + 1;
+    const w = this.camera.right - this.camera.left;
+    const h = this.camera.top - this.camera.bottom;
+    const cx = (this.camera.left + this.camera.right) / 2;
+    const cy = (this.camera.top + this.camera.bottom) / 2;
+    return new THREE.Vector2(ndcX * (w / 2) + cx, ndcY * (h / 2) + cy);
+  }
+
+  worldToScreen(worldX: number, worldY: number): THREE.Vector2 {
+    const w = this.camera.right - this.camera.left;
+    const h = this.camera.top - this.camera.bottom;
+    const cx = (this.camera.left + this.camera.right) / 2;
+    const cy = (this.camera.top + this.camera.bottom) / 2;
+    const ndcX = (worldX - cx) / (w / 2);
+    const ndcY = (worldY - cy) / (h / 2);
+    const screenX = (ndcX + 1) / 2 * this.viewportWidth;
+    const screenY = -(ndcY - 1) / 2 * this.viewportHeight;
+    return new THREE.Vector2(screenX, screenY);
+  }
+
+  dispose(): void {
+    this.camera.projectionMatrix.identity();
+  }
+}
+
+
+===== src\renderer\sync\LayerSync.ts =====
+import type { Layer } from '../../types/layer';
+import type { SceneManager } from '../SceneManager';
+import { LayerFactory } from '../layers/LayerFactory';
+import type { BaseLayerRenderer } from '../layers/BaseLayerRenderer';
+
+export class LayerSync {
+  private factory: LayerFactory;
+  private renderers = new Map<string, BaseLayerRenderer>();
+  private prevLayers: Layer[] = [];
+
+  constructor(sceneManager: SceneManager) {
+    this.factory = new LayerFactory(sceneManager);
+  }
+
+  sync(layers: Layer[]): void {
+    const prevMap = new Map<string, Layer>();
+    for (const l of this.prevLayers) prevMap.set(l.id, l);
+
+    const nextMap = new Map<string, Layer>();
+    for (const l of layers) nextMap.set(l.id, l);
+
+    // Removed
+    for (const [id] of prevMap) {
+      if (!nextMap.has(id)) {
+        const renderer = this.renderers.get(id);
+        if (renderer) {
+          this.factory.remove(renderer);
+          this.renderers.delete(id);
+        }
+      }
+    }
+
+    // Added/updated
+    for (const layer of layers) {
+      const prev = prevMap.get(layer.id);
+      if (!prev) {
+        const renderer = this.factory.create(layer);
+        this.renderers.set(layer.id, renderer);
+      } else {
+        this.updateRenderer(layer.id, prev, layer);
+      }
+    }
+
+    this.updateZOrder(layers);
+    this.prevLayers = [...layers];
+  }
+
+  clear(): void {
+    for (const renderer of this.renderers.values()) renderer.dispose();
+    this.renderers.clear();
+    this.prevLayers = [];
+    this.factory.clearAll();
+  }
+
+  getRenderer(layerId: string): BaseLayerRenderer | undefined {
+    return this.renderers.get(layerId);
+  }
+
+  getAllRenderers(): Map<string, BaseLayerRenderer> {
+    return this.renderers;
+  }
+
+  private updateRenderer(layerId: string, prev: Layer, next: Layer): void {
+    const renderer = this.renderers.get(layerId);
+    if (!renderer) return;
+
+    if (this.transformChanged(prev.transform, next.transform)) renderer.updateTransform(next.transform);
+    if (prev.opacity !== next.opacity) renderer.updateOpacity(next.opacity / 100);
+    if (prev.visible !== next.visible) renderer.setVisible(next.visible);
+
+    const dataChanged = prev.data !== next.data;
+    if (!dataChanged) return;
+
+    if (next.type === 'solid') {
+      const sr = renderer as any;
+      const nd = next.data as any;
+      if (sr.setColor && nd.color !== undefined) sr.setColor(nd.color);
+      if (sr.setSize && (nd.width !== undefined || nd.height !== undefined)) {
+        sr.setSize(nd.width, nd.height);
+      }
+    }
+    if (next.type === 'shape') {
+      const sr = renderer as any;
+      const nd = next.data as any;
+      if (sr.setFillColor && nd.fillColor !== undefined) sr.setFillColor(nd.fillColor);
+      // For dimension changes on shapes, we need to recreate geometry
+      if (sr.setSize) {
+        const w = 'width' in nd ? nd.width : ('radiusX' in nd ? nd.radiusX * 2 : nd.radius * 2);
+        const h = 'height' in nd ? nd.height : ('radiusY' in nd ? nd.radiusY * 2 : nd.radius * 2);
+        sr.setSize(w, h);
+      }
+    }
+    if (next.type === 'text') {
+      const tr = renderer as any;
+      if (tr.setText && next.data) tr.setText(next.data);
+    }
+  }
+
+  private transformChanged(a: Layer['transform'], b: Layer['transform']): boolean {
+    return a.position.x !== b.position.x || a.position.y !== b.position.y ||
+      a.scale.x !== b.scale.x || a.scale.y !== b.scale.y ||
+      a.rotation !== b.rotation ||
+      a.anchorPoint.x !== b.anchorPoint.x || a.anchorPoint.y !== b.anchorPoint.y;
+  }
+
+  private updateZOrder(layers: Layer[]): void {
+    layers.forEach((layer, index) => {
+      const renderer = this.renderers.get(layer.id);
+      if (renderer) renderer.group.position.z = -(index * 0.001) || 0;
+    });
+  }
+}
+
+
+
+
+
+===== batch2.txt =====
+===== src\state\keyframeStore.ts =====
+/**
+ * keyframeStore â€” Zustand store for keyframe state.
+ * Manages keyframes by (layerId, propertyPath) and selection.
+ */
+import { create } from 'zustand';
+import { KeyframeEngine } from '../animation/KeyframeEngine';
+import type { Keyframe, InterpolationType } from '../types/keyframe';
+
+export interface KeyframeState {
+  /** The engine instance that holds and evaluates keyframes */
+  engine: KeyframeEngine;
+  /** Selected keyframe IDs */
+  selectedKeyframeIds: Set<string>;
+  /** Which properties have animation enabled (stopwatch on) per layer */
+  animatedProperties: Map<string, Set<string>>; // layerId â†’ Set<propertyPath>
+
+  // Actions
+  addKeyframe: (layerId: string, keyframe: Keyframe) => void;
+  removeKeyframe: (keyframeId: string) => void;
+  updateKeyframe: (keyframeId: string, patch: Partial<Keyframe>) => void;
+  moveKeyframe: (keyframeId: string, newTime: number) => void;
+  setInterpolation: (keyframeId: string, interpolation: InterpolationType) => void;
+  deleteSelectedKeyframes: () => void;
+  toggleKeyframeSelection: (id: string) => void;
+  selectKeyframe: (id: string, addToSelection?: boolean) => void;
+  deselectKeyframe: (id: string) => void;
+  clearKeyframeSelection: () => void;
+  getKeyframeIdsForLayer: (layerId: string) => string[];
+  toggleAnimatedProperty: (layerId: string, property: string) => void;
+  isPropertyAnimated: (layerId: string, property: string) => boolean;
+}
+
+export const useKeyframeStore = create<KeyframeState>((set, get) => ({
+  engine: new KeyframeEngine(),
+  selectedKeyframeIds: new Set(),
+  animatedProperties: new Map(),
+
+  addKeyframe: (layerId, keyframe) => {
+    get().engine.addKeyframe(layerId, keyframe);
+    set({ engine: get().engine }); // Trigger re-render by replacing reference
+  },
+
+  removeKeyframe: (keyframeId) => {
+    get().engine.removeKeyframe(keyframeId);
+    set((s) => {
+      const next = new Set(s.selectedKeyframeIds);
+      next.delete(keyframeId);
+      return { selectedKeyframeIds: next };
+    });
+  },
+
+  updateKeyframe: (keyframeId, patch) => {
+    get().engine.updateKeyframe(keyframeId, patch);
+  },
+
+  moveKeyframe: (keyframeId, newTime) => {
+    get().engine.moveKeyframe(keyframeId, newTime);
+  },
+
+  setInterpolation: (keyframeId, interpolation) => {
+    get().engine.setInterpolation(keyframeId, interpolation);
+  },
+
+  deleteSelectedKeyframes: () => {
+    const ids = get().selectedKeyframeIds;
+    for (const id of ids) get().engine.removeKeyframe(id);
+    set({ selectedKeyframeIds: new Set() });
+  },
+
+  toggleKeyframeSelection: (id) => {
+    set((s) => {
+      const next = new Set(s.selectedKeyframeIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { selectedKeyframeIds: next };
+    });
+  },
+
+  selectKeyframe: (id, addToSelection) => {
+    set((s) => {
+      const next = addToSelection ? new Set(s.selectedKeyframeIds) : new Set<string>();
+      next.add(id);
+      return { selectedKeyframeIds: next };
+    });
+  },
+
+  deselectKeyframe: (id) => {
+    set((s) => {
+      const next = new Set(s.selectedKeyframeIds);
+      next.delete(id);
+      return { selectedKeyframeIds: next };
+    });
+  },
+
+  clearKeyframeSelection: () => set({ selectedKeyframeIds: new Set() }),
+
+  getKeyframeIdsForLayer: (layerId) => {
+    return get().engine.getAllKeyframesForLayer(layerId).map((k) => k.id);
+  },
+
+  toggleAnimatedProperty: (layerId, property) => {
+    set((s) => {
+      const next = new Map(s.animatedProperties);
+      const existing = next.get(layerId);
+      if (existing?.has(property)) {
+        existing.delete(property);
+        if (existing.size === 0) next.delete(layerId);
+        else next.set(layerId, existing);
+        // Remove all keyframes for this property
+        s.engine.removeAllForProperty(layerId, property);
+      } else {
+        const props = existing ? new Set(existing) : new Set<string>();
+        props.add(property);
+        next.set(layerId, props);
+      }
+      return { animatedProperties: next };
+    });
+  },
+
+  isPropertyAnimated: (layerId, property) => {
+    return get().animatedProperties.get(layerId)?.has(property) ?? false;
+  },
+}));
+
+
+===== src\state\compositionStore.ts =====
+import { create } from 'zustand';
+import type { Composition } from '../types/composition';
+import type { Layer } from '../types/layer';
+import { DEFAULT_COMPOSITION } from '../config/defaults';
+
+function genId():string{return `comp_${Date.now()}_${Math.random().toString(36).slice(2,9)}`}
+
+export interface CompositionState{
+  compositions:Composition[]; activeCompositionId:string|null;
+  addComposition:(overrides?:Partial<Composition>)=>Composition;
+  removeComposition:(id:string)=>void;
+  setActiveComposition:(id:string)=>void;
+  updateComposition:(id:string,updates:Partial<Composition>)=>void;
+  addLayer:(compId:string,layer:Layer)=>void;
+  removeLayer:(compId:string,layerId:string)=>void;
+  updateLayer:(compId:string,layerId:string,updates:Partial<Layer>)=>void;
+  reorderLayers:(compId:string,from:number,to:number)=>void;
+  setCurrentTime:(compId:string,time:number)=>void;
+  getActiveComposition:()=>Composition|null;
+}
+
+export const useCompositionStore = create<CompositionState>((set,get)=>({
+  compositions:[], activeCompositionId:null,
+  addComposition:(overrides)=>{
+    const c:Composition={...DEFAULT_COMPOSITION,id:genId(),name:`Comp ${get().compositions.length+1}`,...overrides};
+    set(s=>({compositions:[...s.compositions,c],activeCompositionId:s.activeCompositionId??c.id}));
+    return c;
+  },
+  removeComposition:(id)=>set(s=>({compositions:s.compositions.filter(c=>c.id!==id),activeCompositionId:s.activeCompositionId===id?s.compositions.find(c=>c.id!==id)?.id??null:s.activeCompositionId})),
+  setActiveComposition:(id)=>set({activeCompositionId:id}),
+  updateComposition:(id,updates)=>set(s=>({compositions:s.compositions.map(c=>c.id===id?{...c,...updates}:c)})),
+  addLayer:(compId,layer)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,layers:[...c.layers,layer]}:c)})),
+  removeLayer:(compId,layerId)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,layers:c.layers.filter(l=>l.id!==layerId)}:c)})),
+  updateLayer:(compId,layerId,updates)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,layers:c.layers.map(l=>l.id===layerId?{...l,...updates}:l)}:c)})),
+  reorderLayers:(compId,from,to)=>set(s=>({compositions:s.compositions.map(c=>{if(c.id!==compId)return c;const layers=[...c.layers];const[m]=layers.splice(from,1);m&&layers.splice(to,0,m);return{...c,layers}})})),
+  setCurrentTime:(compId,time)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,currentTime:time}:c)})),
+  getActiveComposition:()=>{const s=get();return s.activeCompositionId?s.compositions.find(c=>c.id===s.activeCompositionId)??null:null},
+}));
+
+
+===== src\state\timelineStore.ts =====
+import { create } from 'zustand';
+import { TIME_DISPLAY } from '../config/constants';
+
+export type TimeDisplayMode = typeof TIME_DISPLAY[keyof typeof TIME_DISPLAY];
+export type PlaybackState = 'stopped'|'playing'|'paused';
+export type TrackHeight = 'compact'|'normal'|'expanded';
+
+export interface TimelineState{
+  playbackState:PlaybackState; timeDisplay:TimeDisplayMode;
+  zoom:number; scrollX:number; scrollY:number;
+  snapping:boolean; autoScroll:boolean; loop:boolean;
+  // Phase 4 spec #7 additions
+  workAreaStart:number; workAreaEnd:number;
+  visibleTrackHeight:TrackHeight; snapKeyframes:boolean;
+  playbackRate:number;
+  setPlaybackState:(s:PlaybackState)=>void;
+  play:()=>void; pause:()=>void; stop:()=>void;
+  togglePlayback:()=>void;
+  setTimeDisplay:(m:TimeDisplayMode)=>void;
+  setZoom:(z:number)=>void; setScrollX:(x:number)=>void; setScrollY:(y:number)=>void;
+  setSnapping:(s:boolean)=>void; setAutoScroll:(s:boolean)=>void; setLoop:(l:boolean)=>void;
+  zoomIn:()=>void; zoomOut:()=>void; zoomToFit:()=>void;
+  // Phase 4 spec #7 action additions
+  setWorkArea:(start:number,end:number)=>void;
+  setVisibleTrackHeight:(h:TrackHeight)=>void;
+  setSnapKeyframes:(s:boolean)=>void;
+  setPlaybackRate:(r:number)=>void;
+}
+
+const DEFAULT_ZOOM=30;
+
+export const useTimelineStore = create<TimelineState>((set)=>({
+  playbackState:'stopped', timeDisplay:TIME_DISPLAY.FRAMES as TimeDisplayMode,
+  zoom:DEFAULT_ZOOM, scrollX:0, scrollY:0,
+  snapping:true, autoScroll:true, loop:false,
+  // Phase 4 defaults
+  workAreaStart:0, workAreaEnd:300,
+  visibleTrackHeight:'normal', snapKeyframes:true, playbackRate:1,
+  setPlaybackState:(s)=>set({playbackState:s}),
+  play:()=>set({playbackState:'playing'}),
+  pause:()=>set({playbackState:'paused'}),
+  stop:()=>set({playbackState:'stopped'}),
+  togglePlayback:()=>set(s=>({playbackState:s.playbackState==='playing'?'paused':'playing'})),
+  setTimeDisplay:(m)=>set({timeDisplay:m}),
+  setZoom:(z)=>set({zoom:Math.max(1,Math.min(1000,z))}),
+  setScrollX:(x)=>set({scrollX:x}),
+  setScrollY:(y)=>set({scrollY:y}),
+  setSnapping:(snapping)=>set({snapping}),
+  setAutoScroll:(s)=>set({autoScroll:s}),
+  setLoop:(l)=>set({loop:l}),
+  zoomIn:()=>set(s=>({zoom:Math.min(1000,s.zoom*1.25)})),
+  zoomOut:()=>set(s=>({zoom:Math.max(1,s.zoom/1.25)})),
+  zoomToFit:()=>set({zoom:DEFAULT_ZOOM}),
+  // Phase 4 actions
+  setWorkArea:(start,end)=>set({workAreaStart:start,workAreaEnd:end}),
+  setVisibleTrackHeight:(h)=>set({visibleTrackHeight:h}),
+  setSnapKeyframes:(s)=>set({snapKeyframes:s}),
+  setPlaybackRate:(r)=>set({playbackRate:r}),
+}));
+
+
+===== src\state\selectionStore.ts =====
+import { create } from 'zustand';
+
+export type SelectableType = 'layer' | 'keyframe' | 'effect' | 'mask' | 'point';
+
+export interface SelectionItem {
+  type: SelectableType;
+  id: string;
+  compositionId: string;
+  parentId?: string;
+}
+
+export interface SelectionState {
+  selected: SelectionItem[];
+  lastSelected: SelectionItem | null;
+  hoveredId: string | null;
+
+  select: (item: SelectionItem, addToSelection?: boolean) => void;
+  deselect: (id: string) => void;
+  toggleSelection: (item: SelectionItem) => void;
+  selectAll: (compositionId: string, layerIds: string[]) => void;
+  deselectAll: () => void;
+  clearSelection: () => void;
+  selectRange: (fromId: string, toId: string, allIds: string[]) => void;
+  isSelected: (id: string) => boolean;
+  getSelectedIds: () => string[];
+  getSelectedLayers: () => SelectionItem[];
+  setHovered: (id: string | null) => void;
+  replaceSelection: (ids: string[], compositionId: string) => void;
+}
+
+export const useSelectionStore = create<SelectionState>((set, get) => ({
+  selected: [],
+  lastSelected: null,
+  hoveredId: null,
+
+  select: (item, addToSelection = false) =>
+    set((s) => ({
+      selected: addToSelection
+        ? s.selected.some((x) => x.id === item.id)
+          ? s.selected
+          : [...s.selected, item]
+        : [item],
+      lastSelected: item,
+    })),
+
+  deselect: (id) =>
+    set((s) => ({
+      selected: s.selected.filter((x) => x.id !== id),
+      lastSelected: s.lastSelected?.id === id
+        ? (s.selected.find((x) => x.id !== id) ?? null)
+        : s.lastSelected,
+    })),
+
+  toggleSelection: (item) => {
+    const s = get();
+    if (s.isSelected(item.id)) {
+      s.deselect(item.id);
+    } else {
+      s.select(item, true);
+    }
+  },
+
+  selectAll: (compositionId, layerIds) =>
+    set({
+      selected: layerIds.map((id) => ({ type: 'layer' as const, id, compositionId })),
+      lastSelected:
+        layerIds.length > 0
+          ? { type: 'layer' as const, id: layerIds[layerIds.length - 1], compositionId }
+          : null,
+    }),
+
+  deselectAll: () => set({ selected: [], lastSelected: null, hoveredId: null }),
+
+  clearSelection: () => set({ selected: [], lastSelected: null }),
+
+  selectRange: (fromId, toId, allIds) => {
+    const fromIdx = allIds.indexOf(fromId);
+    const toIdx = allIds.indexOf(toId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const start = Math.min(fromIdx, toIdx);
+    const end = Math.max(fromIdx, toIdx);
+    const rangeIds = allIds.slice(start, end + 1);
+    const lastItem = get().lastSelected;
+    const compId = lastItem?.compositionId ?? '';
+    set({
+      selected: rangeIds.map((id) => ({ type: 'layer' as const, id, compositionId: compId })),
+    });
+  },
+
+  isSelected: (id) => get().selected.some((s) => s.id === id),
+
+  getSelectedIds: () => get().selected.map((s) => s.id),
+
+  getSelectedLayers: () => get().selected.filter((s) => s.type === 'layer'),
+
+  setHovered: (id) => set({ hoveredId: id }),
+
+  replaceSelection: (ids, compositionId) =>
+    set({
+      selected: ids.map((id) => ({ type: 'layer' as const, id, compositionId })),
+      lastSelected:
+        ids.length > 0
+          ? { type: 'layer' as const, id: ids[ids.length - 1], compositionId }
+          : null,
+    }),
+}));
+
+
+===== src\animation\KeyframeEngine.ts =====
+/**
+ * KeyframeEngine â€” stores and evaluates keyframes for animated properties.
+ * Maintains sorted keyframe arrays per (layerId, propertyPath).
+ * Uses binary search for O(log n) lookup during evaluation.
+ */
+import type { Keyframe, InterpolationType, BezierTangent } from '../types/keyframe';
+import { lerp, clamp, cubicBezier } from './Interpolators';
+
+type KeyframeMap = Map<string, Keyframe[]>; // propertyPath â†’ sorted keyframes
+
+export class KeyframeEngine {
+  private _data = new Map<string, KeyframeMap>(); // layerId â†’ propertyMap
+
+  // â”€â”€ Mutation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  addKeyframe(layerId: string, keyframe: Keyframe): void {
+    let propMap = this._data.get(layerId);
+    if (!propMap) {
+      propMap = new Map();
+      this._data.set(layerId, propMap);
+    }
+    const arr = propMap.get(keyframe.property) ?? [];
+    // Remove existing keyframe at same time for same property
+    const filtered = arr.filter((k) => k.time !== keyframe.time);
+    filtered.push(keyframe);
+    filtered.sort((a, b) => a.time - b.time);
+    propMap.set(keyframe.property, filtered);
+  }
+
+  removeKeyframe(keyframeId: string): void {
+    for (const [, propMap] of this._data) {
+      for (const [prop, arr] of propMap) {
+        const filtered = arr.filter((k) => k.id !== keyframeId);
+        if (filtered.length !== arr.length) {
+          if (filtered.length === 0) propMap.delete(prop);
+          else propMap.set(prop, filtered);
+          return;
+        }
+      }
+    }
+  }
+
+  updateKeyframe(keyframeId: string, patch: Partial<Keyframe>): void {
+    for (const [, propMap] of this._data) {
+      for (const [prop, arr] of propMap) {
+        const idx = arr.findIndex((k) => k.id === keyframeId);
+        if (idx !== -1) {
+          const updated = { ...arr[idx], ...patch };
+          // If time changed, re-sort
+          if (patch.time !== undefined && patch.time !== arr[idx].time) {
+            const filtered = arr.filter((k) => k.id !== keyframeId);
+            filtered.push(updated);
+            filtered.sort((a, b) => a.time - b.time);
+            propMap.set(prop, filtered);
+          } else {
+            arr[idx] = updated;
+          }
+          return;
+        }
+      }
+    }
+  }
+
+  moveKeyframe(keyframeId: string, newTime: number): void {
+    this.updateKeyframe(keyframeId, { time: newTime });
+  }
+
+  setInterpolation(keyframeId: string, interpolation: InterpolationType): void {
+    this.updateKeyframe(keyframeId, { interpolation });
+  }
+
+  removeAllForProperty(layerId: string, property: string): void {
+    const propMap = this._data.get(layerId);
+    if (propMap) propMap.delete(property);
+  }
+
+  clearLayer(layerId: string): void {
+    this._data.delete(layerId);
+  }
+
+  // â”€â”€ Query â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  getKeyframesForProperty(layerId: string, property: string): Keyframe[] {
+    return this._data.get(layerId)?.get(property) ?? [];
+  }
+
+  getAllKeyframesForLayer(layerId: string): Keyframe[] {
+    const propMap = this._data.get(layerId);
+    if (!propMap) return [];
+    const result: Keyframe[] = [];
+    for (const arr of propMap.values()) result.push(...arr);
+    return result.sort((a, b) => a.time - b.time);
+  }
+
+  hasAnimation(layerId: string, property: string): boolean {
+    const arr = this._data.get(layerId)?.get(property);
+    return arr !== undefined && arr.length > 0;
+  }
+
+  getAllAnimatedProperties(layerId: string): string[] {
+    const propMap = this._data.get(layerId);
+    return propMap ? Array.from(propMap.keys()) : [];
+  }
+
+  /** Get total keyframe count across all layers */
+  get totalKeyframes(): number {
+    let count = 0;
+    for (const propMap of this._data.values()) {
+      for (const arr of propMap.values()) count += arr.length;
+    }
+    return count;
+  }
+
+  // â”€â”€ Evaluation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  /**
+   * Evaluate a property at a given frame.
+   * Returns { value, inKeyframe } where value is the interpolated value
+   * and inKeyframe is true if this frame exactly matches a keyframe.
+   */
+  evaluate(
+    layerId: string,
+    property: string,
+    frame: number,
+  ): { value: number | number[]; inKeyframe: boolean } {
+    const keyframes = this._data.get(layerId)?.get(property);
+    if (!keyframes || keyframes.length === 0) {
+      return { value: 0, inKeyframe: false };
+    }
+
+    const len = keyframes.length;
+
+    // Before first keyframe â†’ return first value
+    if (frame <= keyframes[0].time) {
+      return { value: keyframes[0].value, inKeyframe: frame === keyframes[0].time };
+    }
+
+    // After last keyframe â†’ return last value
+    if (frame >= keyframes[len - 1].time) {
+      return { value: keyframes[len - 1].value, inKeyframe: frame === keyframes[len - 1].time };
+    }
+
+    // Find surrounding keyframes with binary search
+    let lo = 0, hi = len - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (keyframes[mid].time <= frame) lo = mid;
+      else hi = mid;
+    }
+
+    const prev = keyframes[lo];
+    const next = keyframes[hi];
+
+    // Exact match
+    if (frame === prev.time) return { value: prev.value, inKeyframe: true };
+    if (frame === next.time) return { value: next.value, inKeyframe: true };
+
+    // Hold interpolation
+    if (prev.interpolation === 'hold') {
+      return { value: prev.value, inKeyframe: false };
+    }
+
+    // Linear or bezier interpolation
+    const range = next.time - prev.time;
+    const t = range > 0 ? (frame - prev.time) / range : 0;
+
+    if (prev.interpolation === 'bezier' && prev.outTangent && next.inTangent) {
+      // Cubic bezier interpolation using tangent handles
+      const tAdj = solveBezierTime(prev.outTangent, next.inTangent, t);
+      return { value: interpolateValue(prev.value, next.value, tAdj), inKeyframe: false };
+    }
+
+    // Default: linear
+    return { value: interpolateValue(prev.value, next.value, t), inKeyframe: false };
+  }
+
+  /** Clear all data */
+  clear(): void {
+    this._data.clear();
+  }
+}
+
+// â”€â”€ Pure helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function interpolateValue(a: number | number[], b: number | number[], t: number): number | number[] {
+  if (typeof a === 'number' && typeof b === 'number') {
+    return lerp(a, b, t);
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const maxLen = Math.min(a.length, b.length);
+    const result: number[] = [];
+    for (let i = 0; i < maxLen; i++) result.push(lerp(a[i], b[i], t));
+    return result;
+  }
+  return t < 0.5 ? a : b;
+}
+
+/**
+ * Given a linear t (0-1), adjust using bezier tangents to get the eased t.
+ * This matches AE's bezier interpolation where the curve shape is defined by
+ * the outgoing tangent of the prev keyframe and incoming tangent of the next keyframe.
+ */
+function solveBezierTime(
+  outTangent: BezierTangent,
+  inTangent: BezierTangent,
+  t: number,
+): number {
+  // Map tangent handles from abstract space to control points
+  // outTangent defines the handle leaving (0,0), inTangent defines handle arriving at (1,1)
+  const p1x = outTangent.x;
+  const p1y = outTangent.y;
+  const p2x = 1 - inTangent.x;
+  const p2y = 1 - inTangent.y;
+
+  // Newton-Raphson to find the parameter for this x
+  let guess = t;
+  for (let i = 0; i < 8; i++) {
+    const x = bezierX(guess, p1x, p2x) - t;
+    if (Math.abs(x) < 1e-6) break;
+    const dx = bezierDX(guess, p1x, p2x);
+    if (Math.abs(dx) < 1e-7) break;
+    guess -= x / dx;
+  }
+  guess = clamp(guess, 0, 1);
+  return cubicBezier(guess, p1y, p2y);
+}
+
+function bezierX(t: number, p1x: number, p2x: number): number {
+  const t1 = 1 - t;
+  return 3 * t1 * t1 * t * p1x + 3 * t1 * t * t * p2x + t * t * t;
+}
+
+function bezierDX(t: number, p1x: number, p2x: number): number {
+  const t1 = 1 - t;
+  return 3 * t1 * t1 * p1x + 6 * t1 * t * (p2x - p1x) + 3 * t * t * (1 - p2x);
+}
+
+
+===== src\animation\Interpolators.ts =====
+/**
+ * Interpolators â€” pure math functions for value interpolation.
+ * All functions are deterministic and side-effect-free.
+ */
+
+export type Vec2 = { x: number; y: number };
+
+/** Linear interpolation between two numbers */
+export function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+/** Linear interpolation between two Vec2s */
+export function lerpVec2(a: Vec2, b: Vec2, t: number): Vec2 {
+  return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t) };
+}
+
+/** Clamp a value between min and max */
+export function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/** Convert degrees to radians */
+export function degToRad(degrees: number): number {
+  return degrees * (Math.PI / 180);
+}
+
+/** Convert radians to degrees */
+export function radToDeg(radians: number): number {
+  return radians * (180 / Math.PI);
+}
+
+/**
+ * Cubic bezier evaluation using De Casteljau's algorithm.
+ * p0 and p3 are fixed at (0,0) and (1,1).
+ * p1 and p2 are the control points.
+ */
+export function cubicBezier(t: number, p1y: number, p2y: number): number {
+  const t1 = 1 - t;
+  const t2 = t * t;
+  const t12 = t1 * t1;
+  // Compute y at given t on cubic bezier: B(t) = (1-t)Â³Â·0 + 3(1-t)Â²tÂ·P1 + 3(1-t)tÂ²Â·P2 + tÂ³Â·1
+  return 3 * t12 * t * p1y + 3 * t1 * t2 * p2y + t2 * t;
+}
+
+/**
+ * Given x on a cubic bezier curve, find the corresponding t (parameter) using Newton-Raphson.
+ * This is needed for AE-style time-remapped bezier curves where you have (x,y) control points
+ * and want to find y for a given x (since x advances at a constant rate, not t).
+ */
+export function solveBezierT(
+  p1x: number, p1y: number,
+  p2x: number, p2y: number,
+  targetX: number,
+): number {
+  // Newton-Raphson to find t where bezierX(t) = targetX
+  let t = targetX; // Initial guess
+  for (let i = 0; i < 10; i++) {
+    const x = bezierComponent(t, p1x, p2x) - targetX;
+    if (Math.abs(x) < 1e-7) break;
+    const dx = bezierDerivative(t, p1x, p2x);
+    if (Math.abs(dx) < 1e-7) break;
+    t -= x / dx;
+  }
+  t = clamp(t, 0, 1);
+  // Compute the Y value at this t using the Y control points
+  return cubicBezier(t, p1y, p2y);
+}
+
+function bezierComponent(t: number, p1: number, p2: number): number {
+  const t1 = 1 - t;
+  return 3 * t1 * t1 * t * p1 + 3 * t1 * t * t * p2 + t * t * t;
+}
+
+function bezierDerivative(t: number, p1: number, p2: number): number {
+  const t1 = 1 - t;
+  return 3 * t1 * t1 * p1 + 6 * t1 * t * (p2 - p1) + 3 * t * t * (1 - p2);
+}
+
+/** Interpolate between two hex colors in RGB space */
+export function lerpColor(hexA: string, hexB: string, t: number): string {
+  const r1 = parseInt(hexA.slice(1, 3), 16);
+  const g1 = parseInt(hexA.slice(3, 5), 16);
+  const b1 = parseInt(hexA.slice(5, 7), 16);
+  const r2 = parseInt(hexB.slice(1, 3), 16);
+  const g2 = parseInt(hexB.slice(3, 5), 16);
+  const b2 = parseInt(hexB.slice(5, 7), 16);
+  const r = Math.round(lerp(r1, r2, t));
+  const g = Math.round(lerp(g1, g2, t));
+  const b = Math.round(lerp(b1, b2, t));
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+/** Map a value from one range to another */
+export function mapRange(
+  value: number,
+  inMin: number, inMax: number,
+  outMin: number, outMax: number,
+): number {
+  return outMin + ((value - inMin) / (inMax - inMin)) * (outMax - outMin);
+}
+
+/** Round to a given number of decimal places */
+export function roundTo(value: number, decimals: number): number {
+  const f = Math.pow(10, decimals);
+  return Math.round(value * f) / f;
+}
+
+
+===== src\animation\PropertyBinder.ts =====
+/**
+ * PropertyBinder â€” at each frame, evaluates all animated properties for all layers
+ * and applies the results to the renderer's mesh transforms/uniforms.
+ * This runs every frame the playhead moves â€” must be very fast.
+ */
+import type { KeyframeEngine } from './KeyframeEngine';
+import type { Transform } from '../types/layer';
+import { useCompositionStore } from '../state/compositionStore';
+import { useEffectsStore } from '../state/effectsStore';
+
+/**
+ * Animation property paths map to layer transform/opacity/effect fields.
+ * "transform.position.x" â†’ layer.transform.position.x
+ * "effect.<effectId>.<paramId>" â†’ effectsStore parameter value
+ * "opacity"             â†’ layer.opacity
+ */
+export class PropertyBinder {
+  private engine: KeyframeEngine;
+
+  constructor(engine: KeyframeEngine) {
+    this.engine = engine;
+  }
+
+  /**
+   * Evaluate all animated properties for the active composition at the given frame.
+   * Returns number of properties updated (for perf tracking).
+   */
+  evaluateFrame(compId: string, frame: number): number {
+    const comp = useCompositionStore.getState().compositions.find((c) => c.id === compId);
+    if (!comp) return 0;
+
+    let updated = 0;
+
+    for (const layer of comp.layers) {
+      const paths = this.engine.getAllAnimatedProperties(layer.id);
+      if (paths.length === 0) continue;
+
+      const updates: Record<string, any> = {};
+      const transformUpdate: Partial<Transform> = {};
+      let transformNeedsUpdate = false;
+      let opacityUpdate: number | null = null;
+      // Phase 5: Track effect param updates
+      const effectUpdates: Array<{ effectId: string; paramId: string; value: any }> = [];
+
+      for (const path of paths) {
+        const result = this.engine.evaluate(layer.id, path, frame);
+        const val = result.value;
+
+        // Phase 5: Effect parameter keyframing
+        // propertyPath format: "effect.<effectId>.<paramId>"
+        if (path.startsWith('effect.')) {
+          const parts = path.split('.');
+          if (parts.length >= 3) {
+            const effectId = parts[1];
+            const paramId = parts.slice(2).join('.');
+            effectUpdates.push({ effectId, paramId, value: val });
+          }
+          continue;
+        }
+
+        // Determine which field to update based on path
+        if (path.startsWith('transform.')) {
+          const field = path.slice('transform.'.length);
+          if (field === 'position.x') {
+            transformUpdate.position = { ...layer.transform.position, x: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'position.y') {
+            transformUpdate.position = { ...layer.transform.position, y: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'position' && Array.isArray(val)) {
+            transformUpdate.position = { x: val[0], y: val[1] };
+            transformNeedsUpdate = true;
+          } else if (field === 'scale.x') {
+            transformUpdate.scale = { ...layer.transform.scale, x: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'scale.y') {
+            transformUpdate.scale = { ...layer.transform.scale, y: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'scale' && Array.isArray(val)) {
+            transformUpdate.scale = { x: val[0], y: val[1] };
+            transformNeedsUpdate = true;
+          } else if (field === 'rotation') {
+            transformUpdate.rotation = val as number;
+            transformNeedsUpdate = true;
+          } else if (field === 'anchorPoint.x') {
+            transformUpdate.anchorPoint = { ...layer.transform.anchorPoint, x: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'anchorPoint.y') {
+            transformUpdate.anchorPoint = { ...layer.transform.anchorPoint, y: val as number };
+            transformNeedsUpdate = true;
+          }
+        } else if (path === 'opacity') {
+          opacityUpdate = val as number;
+        }
+      }
+
+      if (transformNeedsUpdate) {
+        const existing = layer.transform;
+        updates.transform = {
+          position: transformUpdate.position ?? existing.position,
+          scale: transformUpdate.scale ?? existing.scale,
+          rotation: transformUpdate.rotation ?? existing.rotation,
+          anchorPoint: transformUpdate.anchorPoint ?? existing.anchorPoint,
+        };
+      }
+      if (opacityUpdate !== null) {
+        updates.opacity = opacityUpdate;
+      }
+
+      // Apply effect param updates
+      for (const eu of effectUpdates) {
+        useEffectsStore.getState().setParameterValue(layer.id, eu.effectId, eu.paramId, eu.value);
+        updated++;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        useCompositionStore.getState().updateLayer(compId, layer.id, updates);
+        updated += Object.keys(updates).length;
+      }
+    }
+
+    return updated;
+  }
+}
+
+
+===== src\animation\AnimationClock.ts =====
+/**
+ * AnimationClock â€” drives frame advancement for playback.
+ * Uses performance.now() for high-resolution timing.
+ * Emits frame-changed events; never triggers React re-renders directly.
+ */
+type Listener<T = unknown> = (data: T) => void;
+
+export type LoopMode = 'none' | 'loop' | 'ping-pong';
+
+export type ClockEventPayloads = {
+  'frame-changed': { frame: number; time: number };
+  'play': { frame: number };
+  'pause': { frame: number };
+  'stop': { frame: number };
+};
+
+export class AnimationClock {
+  private _handlers = new Map<string, Set<Listener>>();
+
+  on<K extends string>(event: K, handler: Listener<ClockEventPayloads[K & keyof ClockEventPayloads]>): void {
+    let set = this._handlers.get(event);
+    if (!set) { set = new Set(); this._handlers.set(event, set); }
+    set.add(handler as Listener);
+  }
+
+  off<K extends string>(event: K, handler: Listener<ClockEventPayloads[K & keyof ClockEventPayloads]>): void {
+    const set = this._handlers.get(event);
+    if (set) { set.delete(handler as Listener); if (set.size === 0) this._handlers.delete(event); }
+  }
+
+  private _emit<K extends string>(event: K, data: ClockEventPayloads[K & keyof ClockEventPayloads]): void {
+    const set = this._handlers.get(event);
+    if (set) { for (const h of set) h(data); }
+  }
+
+  private _isPlaying = false;
+  private _playbackRate = 1;
+  private _loopMode: LoopMode = 'none';
+  private _fps = 30;
+  private _currentFrame = 0;
+  private _totalFrames = 300;
+  private _workAreaStart = 0;
+  private _workAreaEnd = 300;
+  private _useWorkArea = false;
+  private _frameBudget = 33; // ms per frame at 30fps
+  private _lastTimestamp = 0;
+  private _accumulator = 0;
+  private _forward = true;
+  private _rafId: number | null = null;
+
+  /** Start playback */
+  play(): void {
+    if (this._isPlaying) return;
+    this._isPlaying = true;
+    this._forward = true;
+    this._lastTimestamp = performance.now();
+    this._accumulator = 0;
+    this._emit('play', { frame: this._currentFrame });
+    this._tick();
+  }
+
+  /** Pause playback */
+  pause(): void {
+    if (!this._isPlaying) return;
+    this._isPlaying = false;
+    if (this._rafId !== null) {
+      cancelAnimationFrame(this._rafId);
+      this._rafId = null;
+    }
+    this._emit('pause', { frame: this._currentFrame });
+  }
+
+  /** Toggle play/pause */
+  togglePlay(): void {
+    if (this._isPlaying) this.pause();
+    else this.play();
+  }
+
+  /** Stop and reset to start */
+  stop(): void {
+    this.pause();
+    this._currentFrame = this._useWorkArea ? this._workAreaStart : 0;
+    this._emit('stop', { frame: this._currentFrame });
+    this._emit('frame-changed', { frame: this._currentFrame, time: this._currentFrame / this._fps });
+  }
+
+  /** Seek to a specific frame */
+  seekToFrame(frame: number): void {
+    this._currentFrame = Math.max(0, Math.min(this._totalFrames, Math.round(frame)));
+    this._accumulator = 0;
+    this._emit('frame-changed', { frame: this._currentFrame, time: this._currentFrame / this._fps });
+  }
+
+  /** Seek to a specific time in seconds */
+  seekToTime(seconds: number): void {
+    this.seekToFrame(Math.round(seconds * this._fps));
+  }
+
+  // â”€â”€ Setters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  setFps(fps: number): void { this._fps = fps; this._frameBudget = 1000 / fps; }
+  setTotalFrames(n: number): void { this._totalFrames = n; }
+  setPlaybackRate(rate: number): void { this._playbackRate = rate; }
+  setLoopMode(mode: LoopMode): void { this._loopMode = mode; }
+  setWorkArea(start: number, end: number): void { this._workAreaStart = start; this._workAreaEnd = end; }
+  setUseWorkArea(use: boolean): void { this._useWorkArea = use; }
+
+  // â”€â”€ Getters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  get isPlaying(): boolean { return this._isPlaying; }
+  get currentFrame(): number { return this._currentFrame; }
+  get currentTime(): number { return this._currentFrame / this._fps; }
+  get fps(): number { return this._fps; }
+  get totalFrames(): number { return this._totalFrames; }
+  get loopMode(): LoopMode { return this._loopMode; }
+  get playbackRate(): number { return this._playbackRate; }
+
+  /** Step one frame forward (for arrow key frame stepping) */
+  stepForward(): void { this.seekToFrame(this._currentFrame + 1); }
+  stepBackward(): void { this.seekToFrame(this._currentFrame - 1); }
+  jumpForward( frames: number): void { this.seekToFrame(this._currentFrame + frames); }
+  jumpBackward(frames: number): void { this.seekToFrame(this._currentFrame - frames); }
+  goToStart(): void { this.seekToFrame(this._useWorkArea ? this._workAreaStart : 0); }
+  goToEnd(): void { this.seekToFrame(this._useWorkArea ? this._workAreaEnd : this._totalFrames); }
+
+  dispose(): void {
+    this.pause();
+    this._handlers.clear();
+  }
+
+  // â”€â”€ Private â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  private _tick = (): void => {
+    if (!this._isPlaying) return;
+
+    const now = performance.now();
+    const elapsed = now - this._lastTimestamp;
+    this._lastTimestamp = now;
+
+    // Derive direction from playbackRate sign (supports reverse via negative rate)
+    this._forward = this._playbackRate >= 0;
+    const effectiveRate = Math.abs(this._playbackRate);
+
+    // Accumulate time with playback rate
+    this._accumulator += elapsed * effectiveRate;
+
+    // Consume accumulator in frame-sized chunks
+    let consumed = Math.floor(this._accumulator / this._frameBudget);
+    // J4: Cap maximum consumed frames to prevent freezing on large frame skips
+    // (e.g., when tab was backgrounded for several seconds)
+    const MAX_CONSUMED = 10;
+    if (consumed > MAX_CONSUMED) {
+      consumed = MAX_CONSUMED;
+      this._accumulator = 0; // reset accumulator to avoid spiral of death
+    }
+    if (consumed > 0) {
+      this._accumulator -= consumed * this._frameBudget;
+
+      // Apply frame changes
+      for (let i = 0; i < consumed; i++) {
+        if (this._forward) this._currentFrame++;
+        else this._currentFrame--;
+
+        // Boundary checks
+        const boundStart = this._useWorkArea ? this._workAreaStart : 0;
+        const boundEnd = this._useWorkArea ? this._workAreaEnd : this._totalFrames;
+
+        if (this._currentFrame > boundEnd) {
+          if (this._loopMode === 'loop') {
+            this._currentFrame = boundStart;
+          } else if (this._loopMode === 'ping-pong') {
+            this._forward = false;
+            this._currentFrame = boundEnd - 1;
+          } else {
+            this._currentFrame = boundEnd;
+            this.pause();
+            break;
+          }
+        } else if (this._currentFrame < boundStart) {
+          if (this._loopMode === 'loop') {
+            this._currentFrame = boundEnd;
+          } else if (this._loopMode === 'ping-pong') {
+            this._forward = true;
+            this._currentFrame = boundStart + 1;
+          } else {
+            this._currentFrame = boundStart;
+            this.pause();
+            break;
+          }
+        }
+      }
+
+      this._emit('frame-changed', {
+        frame: this._currentFrame,
+        time: this._currentFrame / this._fps,
+      });
+    }
+
+    this._rafId = requestAnimationFrame(this._tick);
+  };
+}
+
+
+
+
+
+

@@ -61,6 +61,9 @@ export class Renderer {
 
     this.resizeHandler = new ResizeHandler(this.renderer, this.cameraManager, this.renderLoop);
 
+    // Wire CameraManager changes to trigger real-time viewport updates (M1)
+    this.cameraManager.onChanged = () => this.renderLoop.requestRender();
+
     // Wire EffectsRenderer into the pre-render pipeline
     this.renderLoop.beforeRender = () => this._processEffects();
 

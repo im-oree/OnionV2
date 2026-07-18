@@ -34,44 +34,20 @@ function PlusIcon({ size = 12 }: { size?: number }) {
   );
 }
 
-function SquareIcon({ size = 12, className }: { size?: number; className?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
-      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-    </svg>
-  );
+function SquareIcon({ size = 12 }: { size?: number }) {
+  return (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /></svg>);
 }
-
-function TriangleIcon({ size = 12, className }: { size?: number; className?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
-      <polygon points="12,3 3,21 21,21" />
-    </svg>
-  );
+function TriangleIcon({ size = 12 }: { size?: number }) {
+  return (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12,3 3,21 21,21" /></svg>);
 }
-
-function TypeIcon({ size = 12, className }: { size?: number; className?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
-      <polyline points="4,7 4,4 20,4 20,7" /><line x1="9" y1="20" x2="15" y2="20" /><line x1="12" y1="4" x2="12" y2="20" />
-    </svg>
-  );
+function TypeIcon({ size = 12 }: { size?: number }) {
+  return (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="4,7 4,4 20,4 20,7" /><line x1="9" y1="20" x2="15" y2="20" /><line x1="12" y1="4" x2="12" y2="20" /></svg>);
 }
-
-function ImageIcon({ size = 12, className }: { size?: number; className?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
-      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21,15 16,10 5,21" />
-    </svg>
-  );
+function ImageIcon({ size = 12 }: { size?: number }) {
+  return (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21,15 16,10 5,21" /></svg>);
 }
-
-function FilmIcon({ size = 12, className }: { size?: number; className?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
-      <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" /><line x1="7" y1="2" x2="7" y2="22" /><line x1="17" y1="2" x2="17" y2="22" /><line x1="2" y1="12" x2="22" y2="12" /><line x1="2" y1="7" x2="7" y2="7" /><line x1="2" y1="17" x2="7" y2="17" /><line x1="17" y1="7" x2="22" y2="7" /><line x1="17" y1="17" x2="22" y2="17" />
-    </svg>
-  );
+function FilmIcon({ size = 12 }: { size?: number }) {
+  return (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" /><line x1="7" y1="2" x2="7" y2="22" /><line x1="17" y1="2" x2="17" y2="22" /><line x1="2" y1="12" x2="22" y2="12" /></svg>);
 }
 
 export const OutlinerPanel: React.FC = () => {
@@ -97,11 +73,8 @@ export const OutlinerPanel: React.FC = () => {
       selectRange(selectedIds[selectedIds.length - 1], id, comp.layers.map((l) => l.id));
     } else if (ctrl) {
       const item = { type: 'layer' as const, id, compositionId: comp.id };
-      if (selectedIds.includes(id)) {
-        useSelectionStore.getState().deselect(id);
-      } else {
-        useSelectionStore.getState().select(item, true);
-      }
+      if (selectedIds.includes(id)) useSelectionStore.getState().deselect(id);
+      else useSelectionStore.getState().select(item, true);
     } else {
       select({ type: 'layer', id, compositionId: comp.id });
     }
@@ -181,10 +154,9 @@ export const OutlinerPanel: React.FC = () => {
     return comp.layers.filter((l) => l.name.toLowerCase().includes(q));
   }, [comp, search]);
 
-  /** Recursively compute nesting depth by walking parent chain */
   const getDepth = useCallback((layerId: string, visited = new Set<string>()): number => {
     if (!comp) return 0;
-    if (visited.has(layerId)) return 0; // cycle guard
+    if (visited.has(layerId)) return 0;
     visited.add(layerId);
     const layer = comp.layers.find((l) => l.id === layerId);
     if (!layer || !layer.parentId) return 0;
@@ -196,7 +168,6 @@ export const OutlinerPanel: React.FC = () => {
     return filteredLayers.map((l) => ({ layer: l, depth: getDepth(l.id) }));
   }, [filteredLayers, getDepth]);
 
-  // F2 rename handler — listen for the custom event dispatched by KeyboardManager
   const [renameLayerId, setRenameLayerId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -208,11 +179,7 @@ export const OutlinerPanel: React.FC = () => {
     const renameHandler = () => {
       const selected = useSelectionStore.getState().selected.find((x) => x.type === 'layer');
       if (selected) {
-        setRenameLayerId((prev) => {
-          // Toggle to force re-trigger if same layer double-F2'd
-          if (prev === selected.id) return null;
-          return selected.id;
-        });
+        setRenameLayerId(selected.id);
         setTimeout(() => setRenameLayerId(null), 100);
       }
     };
@@ -224,14 +191,6 @@ export const OutlinerPanel: React.FC = () => {
     };
   }, [handleDeleteSelected]);
 
-  // Clear rename trigger after it's been consumed
-  React.useEffect(() => {
-    if (renameLayerId) {
-      const timer = setTimeout(() => setRenameLayerId(null), 50);
-      return () => clearTimeout(timer);
-    }
-  }, [renameLayerId]);
-
   if (!comp) {
     return (
       <div className="flex flex-col h-full">
@@ -242,23 +201,31 @@ export const OutlinerPanel: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-1 px-2 py-1 border-b border-border-light bg-surface-alt flex-shrink-0">
+      {/* Header — 28px height to match TimelineRuler */}
+      <div className="flex items-center gap-1 px-2 border-b border-border bg-surface-alt flex-shrink-0" style={{ height: 28 }}>
         <div className="flex-1 relative">
-          <input type="search" placeholder="Search layers..." value={search}
+          <input
+            type="search"
+            placeholder="Search layers..."
+            value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full h-[18px] text-ui-xs px-1 bg-surface border border-border rounded-sm text-text-primary outline-none focus:border-accent"
           />
         </div>
         <div className="relative">
-          <button className="flex items-center justify-center w-[18px] h-[18px] border-0 bg-transparent text-text-secondary rounded-sm cursor-pointer hover:bg-panel-hover"
-            onClick={() => setShowAddMenu(!showAddMenu)} title="Add layer"
+          <button
+            className="flex items-center justify-center w-[18px] h-[18px] border-0 bg-transparent text-text-secondary rounded-sm cursor-pointer hover:bg-panel-hover"
+            onClick={() => setShowAddMenu(!showAddMenu)}
+            title="Add layer"
           >
             <PlusIcon size={12} />
           </button>
           {showAddMenu && (
             <div className="absolute top-full right-0 mt-1 min-w-[140px] bg-panel border border-border rounded-md shadow-dropdown z-50 py-1">
               {(['solid', 'shape', 'text'] as const).map((type) => (
-                <button key={type} className="w-full text-left px-3 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer flex items-center gap-2"
+                <button
+                  key={type}
+                  className="w-full text-left px-3 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer flex items-center gap-2"
                   onClick={() => handleAddLayer(type)}
                 >
                   {type === 'solid' ? <SquareIcon size={12} /> : type === 'shape' ? <TriangleIcon size={12} /> : <TypeIcon size={12} />}
@@ -267,7 +234,9 @@ export const OutlinerPanel: React.FC = () => {
               ))}
               <div className="border-t border-border my-1" />
               {(['image', 'video'] as const).map((type) => (
-                <button key={type} className="w-full text-left px-3 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer flex items-center gap-2"
+                <button
+                  key={type}
+                  className="w-full text-left px-3 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer flex items-center gap-2"
                   onClick={() => handleAddLayer(type)}
                 >
                   {type === 'image' ? <ImageIcon size={12} /> : <FilmIcon size={12} />}
@@ -279,6 +248,7 @@ export const OutlinerPanel: React.FC = () => {
         </div>
       </div>
 
+      {/* Layer list — each row is 24px, matching timeline TRACK_HEIGHT */}
       <div className="flex-1 overflow-auto">
         {rootLayers.length === 0 ? (
           <div className="text-ui-xs text-text-disabled text-center py-4">
@@ -286,7 +256,10 @@ export const OutlinerPanel: React.FC = () => {
           </div>
         ) : (
           rootLayers.map(({ layer, depth }) => (
-            <LayerRow key={layer.id} layer={layer} depth={depth}
+            <LayerRow
+              key={layer.id}
+              layer={layer}
+              depth={depth}
               isSelected={selectedIds.includes(layer.id)}
               onSelect={handleSelect}
               onToggleVisibility={handleToggleVisibility}

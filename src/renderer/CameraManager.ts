@@ -1,9 +1,3 @@
-/**
- * CameraManager — manages an OrthographicCamera for 2D viewport.
- * Supports pan (middle-mouse drag), zoom (scroll toward cursor),
- * fit-to-composition, and screen↔world coordinate conversion.
- * Y-UP coordinate system (Blender-style).
- */
 import * as THREE from 'three';
 import { VIEWPORT_CONFIG } from '../config/viewportConfig';
 
@@ -15,7 +9,6 @@ export interface ViewportTransform {
 
 export class CameraManager {
   public readonly camera: THREE.OrthographicCamera;
-  /** Viewport dimensions in CSS pixels (public for HitTest) */
   public viewportWidth = 1;
   public viewportHeight = 1;
 
@@ -24,6 +17,7 @@ export class CameraManager {
   private _panY = 0;
   private compWidth = 1920;
   private compHeight = 1080;
+  public onChanged: (() => void) | null = null;
 
   constructor() {
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 1000);
@@ -38,8 +32,8 @@ export class CameraManager {
   }
 
   setViewportSize(width: number, height: number): void {
-    this.viewportWidth = width;
-    this.viewportHeight = height;
+    this.viewportWidth = Math.max(1, width);
+    this.viewportHeight = Math.max(1, height);
     this.updateProjection();
   }
 
@@ -51,10 +45,10 @@ export class CameraManager {
     let halfH: number;
 
     if (aspect > compAspect) {
-      halfH = (this.compHeight / 2) * this._zoom;
+      halfH = (this.compHeight / 2) / this._zoom;
       halfW = halfH * aspect;
     } else {
-      halfW = (this.compWidth / 2) * this._zoom;
+      halfW = (this.compWidth / 2) / this._zoom;
       halfH = halfW / aspect;
     }
 
@@ -63,6 +57,7 @@ export class CameraManager {
     this.camera.top = halfH + this._panY;
     this.camera.bottom = -halfH + this._panY;
     this.camera.updateProjectionMatrix();
+    this.onChanged?.();
   }
 
   get zoom(): number { return this._zoom; }
@@ -72,8 +67,8 @@ export class CameraManager {
     this.updateProjection();
   }
 
-  zoomIn(factor = 1.25): void { this.setZoom(this._zoom / factor); }
-  zoomOut(factor = 1.25): void { this.setZoom(this._zoom * factor); }
+  zoomIn(factor = 1.25): void { this.setZoom(this._zoom * factor); }
+  zoomOut(factor = 1.25): void { this.setZoom(this._zoom / factor); }
 
   fitToComposition(): void {
     this._zoom = 1;
@@ -110,26 +105,27 @@ export class CameraManager {
   screenToWorld(screenX: number, screenY: number): THREE.Vector2 {
     const ndcX = (screenX / this.viewportWidth) * 2 - 1;
     const ndcY = -(screenY / this.viewportHeight) * 2 + 1;
-    const w = this.camera.right - this.camera.left;
-    const h = this.camera.top - this.camera.bottom;
+    const halfW = (this.camera.right - this.camera.left) / 2;
+    const halfH = (this.camera.top - this.camera.bottom) / 2;
     const cx = (this.camera.left + this.camera.right) / 2;
     const cy = (this.camera.top + this.camera.bottom) / 2;
-    return new THREE.Vector2(ndcX * (w / 2) + cx, ndcY * (h / 2) + cy);
+    return new THREE.Vector2(ndcX * halfW + cx, ndcY * halfH + cy);
   }
 
   worldToScreen(worldX: number, worldY: number): THREE.Vector2 {
-    const w = this.camera.right - this.camera.left;
-    const h = this.camera.top - this.camera.bottom;
+    const halfW = (this.camera.right - this.camera.left) / 2;
+    const halfH = (this.camera.top - this.camera.bottom) / 2;
     const cx = (this.camera.left + this.camera.right) / 2;
     const cy = (this.camera.top + this.camera.bottom) / 2;
-    const ndcX = (worldX - cx) / (w / 2);
-    const ndcY = (worldY - cy) / (h / 2);
+    // FIX: NDC x = (worldX - cx) / halfW, NDC y = (worldY - cy) / halfH
+    // screen x = (ndcX + 1) / 2 * width
+    // screen y = (1 - ndcY) / 2 * height  <-- Y is flipped: NDC +Y is screen top
+    const ndcX = (worldX - cx) / halfW;
+    const ndcY = (worldY - cy) / halfH;
     const screenX = (ndcX + 1) / 2 * this.viewportWidth;
-    const screenY = -(ndcY - 1) / 2 * this.viewportHeight;
+    const screenY = (1 - ndcY) / 2 * this.viewportHeight;
     return new THREE.Vector2(screenX, screenY);
   }
 
-  dispose(): void {
-    this.camera.projectionMatrix.identity();
-  }
+  dispose(): void {}
 }

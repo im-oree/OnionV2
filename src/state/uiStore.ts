@@ -1,82 +1,81 @@
 import { create } from 'zustand';
 import { PANEL_TYPES, WORKSPACES } from '../config/constants';
 
-/** Panel type for header switcher */
 export type PanelType = typeof PANEL_TYPES[keyof typeof PANEL_TYPES];
 export type WorkspaceType = typeof WORKSPACES[keyof typeof WORKSPACES];
 
-/** Layout node types for PanelManager (kept for future dynamic splitting) */
-export interface PanelLayout { id:string; type:PanelType; label:string }
-export type SplitDirection = 'horizontal'|'vertical';
+export type RightSidebarTab = 'properties' | 'effects' | 'align' | 'info' | 'render' | 'character';
+
+export interface PanelLayout { id: string; type: PanelType; label: string }
+export type SplitDirection = 'horizontal' | 'vertical';
 export type PanelNode =
-  | { type:'leaf'; id:string; panel:PanelLayout }
-  | { type:'split'; id:string; direction:SplitDirection; children:[PanelNode,PanelNode]; sizes:number[] };
+  | { type: 'leaf'; id: string; panel: PanelLayout }
+  | { type: 'split'; id: string; direction: SplitDirection; children: [PanelNode, PanelNode]; sizes: number[] };
 
 export interface UIState {
-  /** CSS Grid layout state */
+  leftPanelWidth: number;
   rightPanelWidth: number;
   timelineHeight: number;
   windowSize: { width: number; height: number };
   activeWorkspace: string;
+  activeRightTab: RightSidebarTab;
+  showLeftPanel: boolean;
+  showRightPanel: boolean;
+  showTimeline: boolean;
   panelVisibility: Record<string, boolean>;
-
-  /** Layout tree for PanelManager (kept for future dynamic splitting) */
   layoutTree: PanelNode;
 
-  // Actions
+  setLeftPanelWidth: (w: number) => void;
   setRightPanelWidth: (w: number) => void;
   setTimelineHeight: (h: number) => void;
   setWindowSize: (s: { width: number; height: number }) => void;
   setActiveWorkspace: (w: string) => void;
+  setActiveRightTab: (t: RightSidebarTab) => void;
+  toggleLeftPanel: () => void;
+  toggleRightPanel: () => void;
+  toggleTimeline: () => void;
   togglePanelVisibility: (id: string) => void;
   setLayoutTree: (tree: PanelNode) => void;
-  /** Request the current renderer to redraw one frame (used during animation playback) */
   requestRendererRender: () => void;
 }
 
-// Global render callback — set by useRenderer when a Renderer instance is created
 let _requestRender: (() => void) | null = null;
-/** Register a function to request a render frame (called by useRenderer) */
 export function setRequestRender(fn: () => void): void {
   _requestRender = fn;
 }
-
 export function triggerRequestRender(): void {
   _requestRender?.();
 }
 
 function createDefaultLayoutTree(): PanelNode {
   return {
-    type:'split', id:'root', direction:'horizontal', sizes:[1,320],
-    children:[
-      { type:'split', id:'center-area', direction:'vertical', sizes:[1,150],
-        children:[
-          { type:'leaf', id:'viewport', panel:{id:'viewport', type:PANEL_TYPES.VIEWPORT, label:'Viewport'} },
-          { type:'leaf', id:'timeline', panel:{id:'timeline', type:PANEL_TYPES.TIMELINE, label:'Timeline'} },
-        ]},
-      { type:'split', id:'right-area', direction:'vertical', sizes:[0.4,0.6],
-        children:[
-          { type:'leaf', id:'outliner', panel:{id:'outliner', type:PANEL_TYPES.OUTLINER, label:'Outliner'} },
-          { type:'leaf', id:'properties', panel:{id:'properties', type:PANEL_TYPES.PROPERTIES, label:'Properties'} },
-        ]},
-    ],
+    type: 'leaf', id: 'viewport',
+    panel: { id: 'viewport', type: PANEL_TYPES.VIEWPORT, label: 'Viewport' },
   };
 }
 
 export const useUIStore = create<UIState>((set) => ({
-  // Layout state
+  leftPanelWidth: 260,
   rightPanelWidth: 320,
-  timelineHeight: 200,
+  timelineHeight: 220,
   windowSize: { width: window.innerWidth, height: window.innerHeight },
   activeWorkspace: 'layout',
+  activeRightTab: 'properties',
+  showLeftPanel: true,
+  showRightPanel: true,
+  showTimeline: true,
   panelVisibility: {},
   layoutTree: createDefaultLayoutTree(),
 
-  // Layout actions
+  setLeftPanelWidth: (w) => set({ leftPanelWidth: w }),
   setRightPanelWidth: (w) => set({ rightPanelWidth: w }),
   setTimelineHeight: (h) => set({ timelineHeight: h }),
   setWindowSize: (s) => set({ windowSize: s }),
   setActiveWorkspace: (w) => set({ activeWorkspace: w }),
+  setActiveRightTab: (t) => set({ activeRightTab: t }),
+  toggleLeftPanel: () => set((s) => ({ showLeftPanel: !s.showLeftPanel })),
+  toggleRightPanel: () => set((s) => ({ showRightPanel: !s.showRightPanel })),
+  toggleTimeline: () => set((s) => ({ showTimeline: !s.showTimeline })),
   togglePanelVisibility: (id) =>
     set((s) => ({ panelVisibility: { ...s.panelVisibility, [id]: !s.panelVisibility[id] } })),
   setLayoutTree: (tree) => set({ layoutTree: tree }),

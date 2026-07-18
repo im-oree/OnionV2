@@ -1,0 +1,580 @@
+﻿===== src\renderer\layers\ShapeLayerRenderer.ts =====
+import * as THREE from 'three';
+import { BaseLayerRenderer } from './BaseLayerRenderer';
+import type { ShapeData } from '../../types/layer';
+
+export class ShapeLayerRenderer extends BaseLayerRenderer {
+  private _width: number;
+  private _height: number;
+
+  constructor(id: string, data: ShapeData, fillColor = '#ffffff') {
+    const w = 'width' in data ? data.width : ('radiusX' in data ? data.radiusX * 2 : data.radius * 2);
+    const h = 'height' in data ? data.height : ('radiusY' in data ? data.radiusY * 2 : data.radius * 2);
+    const geo = new THREE.PlaneGeometry(w, h);
+    const mat = new THREE.MeshBasicMaterial({
+      color: fillColor,
+      depthTest: false,
+      transparent: false,
+      opacity: 1,
+      side: THREE.DoubleSide,
+    });
+    super(id, geo, mat);
+    this._width = w;
+    this._height = h;
+  }
+
+  setFillColor(color: string): void {
+    (this.material as THREE.MeshBasicMaterial).color.set(color);
+  }
+
+  setSize(width: number, height: number): void {
+    this._width = width;
+    this._height = height;
+    this.geometry.dispose();
+    const newGeo = new THREE.PlaneGeometry(width, height);
+    this.mesh.geometry = newGeo;
+    (this as any).geometry = newGeo;
+  }
+
+  protected geometryWidth(): number { return this._width; }
+  protected geometryHeight(): number { return this._height; }
+}
+
+
+===== src\renderer\layers\SolidLayerRenderer.ts =====
+/**
+ * SolidLayerRenderer â€” flat color quad layer.
+ */
+import * as THREE from 'three';
+import { BaseLayerRenderer } from './BaseLayerRenderer';
+import type { SolidData } from '../../types/layer';
+
+export class SolidLayerRenderer extends BaseLayerRenderer {
+  private _width: number;
+  private _height: number;
+
+  constructor(id: string, data: SolidData) {
+    const geo = new THREE.PlaneGeometry(data.width, data.height);
+    const mat = new THREE.MeshBasicMaterial({
+      color: data.color,
+      depthTest: false,
+      transparent: false,
+      opacity: 1,
+      side: THREE.DoubleSide,
+    });
+    super(id, geo, mat);
+    this._width = data.width;
+    this._height = data.height;
+  }
+
+  /** Update the solid color */
+  setColor(color: string): void {
+    (this.material as THREE.MeshBasicMaterial).color.set(color);
+  }
+
+  /** Resize the solid geometry */
+  setSize(width: number, height: number): void {
+    this._width = width;
+    this._height = height;
+    this.geometry.dispose();
+    const newGeo = new THREE.PlaneGeometry(width, height);
+    this.mesh.geometry = newGeo;
+    // Update geometry reference
+    (this as any).geometry = newGeo;
+  }
+
+  protected geometryWidth(): number {
+    return this._width;
+  }
+  protected geometryHeight(): number {
+    return this._height;
+  }
+}
+
+
+===== src\renderer\layers\BaseLayerRenderer.ts =====
+import * as THREE from 'three';
+import type { Transform } from '../../types/layer';
+
+export abstract class BaseLayerRenderer {
+  public readonly group: THREE.Group;
+  public readonly mesh: THREE.Mesh;
+  public readonly id: string;
+
+  protected geometry: THREE.BufferGeometry;
+  protected material: THREE.Material;
+
+  constructor(id: string, geometry: THREE.BufferGeometry, material: THREE.Material) {
+    this.id = id;
+    this.geometry = geometry;
+    this.material = material;
+
+    this.group = new THREE.Group();
+    this.group.name = id;
+
+    this.mesh = new THREE.Mesh(geometry, material);
+    this.mesh.name = `${id}_mesh`;
+    this.mesh.renderOrder = 1; // J5: render on top of grid (renderOrder=0)
+    this.group.add(this.mesh);
+  }
+
+  updateTransform(transform: Transform): void {
+    this.group.position.set(transform.position.x, transform.position.y, 0);
+    this.group.rotation.z = THREE.MathUtils.degToRad(transform.rotation);
+    this.mesh.scale.set(transform.scale.x / 100, transform.scale.y / 100, 1);
+    this.updateAnchorOffset(transform.anchorPoint);
+  }
+
+  protected updateAnchorOffset(anchor: { x: number; y: number }): void {
+    this.mesh.position.set(-anchor.x, -anchor.y, 0);
+  }
+
+  protected abstract geometryWidth(): number;
+  protected abstract geometryHeight(): number;
+
+  updateOpacity(opacity: number): void {
+    const mat = this.material as THREE.MeshBasicMaterial;
+    if (mat.transparent !== undefined) {
+      mat.transparent = opacity < 1;
+      mat.opacity = opacity;
+    }
+  }
+
+  setVisible(visible: boolean): void {
+    this.group.visible = visible;
+  }
+
+  dispose(): void {
+    this.group.remove(this.mesh);
+    this.geometry.dispose();
+    this.material.dispose();
+  }
+}
+
+
+===== src\renderer\layers\LayerFactory.ts =====
+import type { Layer, SolidData, ShapeData, TextData, ImageData, VideoData } from '../../types/layer';
+import type { SceneManager } from '../SceneManager';
+import type { BaseLayerRenderer } from './BaseLayerRenderer';
+import { SolidLayerRenderer } from './SolidLayerRenderer';
+import { ShapeLayerRenderer } from './ShapeLayerRenderer';
+import { TextLayerRenderer } from './TextLayerRenderer';
+import { ImageLayerRenderer } from './ImageLayerRenderer';
+import { VideoLayerRenderer } from './VideoLayerRenderer';
+
+export class LayerFactory {
+  private sceneManager: SceneManager;
+
+  constructor(sceneManager: SceneManager) {
+    this.sceneManager = sceneManager;
+  }
+
+  create(layer: Layer): BaseLayerRenderer {
+    let renderer: BaseLayerRenderer;
+
+    switch (layer.type) {
+      case 'solid': {
+        const data = layer.data as SolidData;
+        renderer = new SolidLayerRenderer(layer.id, data);
+        break;
+      }
+      case 'shape': {
+        const data = layer.data as ShapeData;
+        renderer = new ShapeLayerRenderer(layer.id, data);
+        break;
+      }
+      case 'text': {
+        const data = layer.data as TextData;
+        renderer = new TextLayerRenderer(layer.id, data);
+        break;
+      }
+      case 'image': {
+        const data = layer.data as ImageData;
+        renderer = new ImageLayerRenderer(layer.id, data.assetId, data.naturalWidth, data.naturalHeight);
+        break;
+      }
+      case 'video': {
+        const data = layer.data as VideoData;
+        renderer = new VideoLayerRenderer(layer.id, data.assetId, data.naturalWidth, data.naturalHeight);
+        break;
+      }
+      default:
+        renderer = new SolidLayerRenderer(layer.id, { color: '#000000', width: 100, height: 100 });
+        renderer.setVisible(false);
+        break;
+    }
+
+    // Apply initial state
+    renderer.updateTransform(layer.transform);
+    renderer.updateOpacity(layer.opacity / 100);
+    renderer.setVisible(layer.visible);
+    renderer.group.position.z = -(layer.zIndex * 0.001) || 0;
+
+    // Add the group (which contains the mesh) to the scene's layer group
+    this.sceneManager.layerGroup.add(renderer.group);
+
+    return renderer;
+  }
+
+  remove(renderer: BaseLayerRenderer): void {
+    this.sceneManager.layerGroup.remove(renderer.group);
+    renderer.dispose();
+  }
+
+  clearAll(): void {
+    this.sceneManager.clearLayers();
+  }
+}
+
+
+===== src\types\layer.ts =====
+import type { EffectInstance } from './effect';
+
+export type LayerType =
+  | 'solid' | 'shape' | 'text' | 'image' | 'video' | 'null' | 'adjustment';
+
+export type BlendMode =
+  | 'normal'|'multiply'|'screen'|'overlay'|'darken'|'lighten'
+  | 'colorDodge'|'colorBurn'|'hardLight'|'softLight'
+  | 'difference'|'exclusion'|'hue'|'saturation'|'color'|'luminosity';
+
+export interface Transform {
+  position: { x: number; y: number };
+  scale: { x: number; y: number };
+  rotation: number;
+  anchorPoint: { x: number; y: number };
+}
+
+/** Shape-specific data */
+export interface ShapeRectangle {
+  type: 'rectangle';
+  width: number;
+  height: number;
+  borderRadius: number;
+}
+export interface ShapeEllipse {
+  type: 'ellipse';
+  radiusX: number;
+  radiusY: number;
+}
+export interface ShapePolygon {
+  type: 'polygon';
+  sides: number;
+  radius: number;
+  roundness: number;
+}
+export interface ShapeStar {
+  type: 'star';
+  points: number;
+  radius: number;
+  innerRadius: number;
+  roundness: number;
+}
+export type ShapeData = ShapeRectangle | ShapeEllipse | ShapePolygon | ShapeStar;
+
+export interface SolidData { color: string; width: number; height: number }
+export interface ImageData { assetId: string; naturalWidth: number; naturalHeight: number }
+export interface VideoData { assetId: string; naturalWidth: number; naturalHeight: number; duration: number; muted: boolean; volume: number; playbackRate: number }
+export interface TextData { text: string; fontFamily: string; fontSize: number; fontWeight: number; color: string; lineHeight: number; letterSpacing: number; alignment: 'left'|'center'|'right' }
+
+export type LayerPayload = SolidData | ShapeData | ImageData | VideoData | TextData | Record<string, never>;
+
+export interface Mask {
+  id: string; points: Array<{ x: number; y: number }>; inverted: boolean; feather: number;
+  opacity: number; expansion: number; mode: 'add'|'subtract'|'intersect'|'difference';
+}
+
+export interface BaseLayer {
+  id: string;
+  type: LayerType;
+  name: string;
+  visible: boolean;
+  locked: boolean;
+  soloed: boolean;
+  shy: boolean;
+  parentId: string | null;
+  blendMode: BlendMode;
+  opacity: number;
+  startFrame: number;
+  endFrame: number;
+  transform: Transform;
+  zIndex: number;
+  effects: EffectInstance[];
+  masks: Mask[];
+  data?: LayerPayload;
+}
+
+export type Layer = BaseLayer;
+
+/** Helper to create a default transform */
+export function defaultTransform(): Transform {
+  return {
+    position: { x: 0, y: 0 },
+    scale: { x: 100, y: 100 },
+    rotation: 0,
+    anchorPoint: { x: 0, y: 0 },
+  };
+}
+
+
+===== src\types\keyframe.ts =====
+export type InterpolationType = 'linear' | 'bezier' | 'hold';
+
+export interface BezierTangent { x:number; y:number }
+
+export interface Keyframe {
+  id:string;
+  property: string;
+  layerId: string;
+  time:number;
+  value:number|number[];
+  interpolation:InterpolationType;
+  inTangent?:BezierTangent; outTangent?:BezierTangent;
+  autoBezier?:boolean; hold?:boolean; easing?:string;
+  selected?: boolean;
+}
+
+export interface AnimatedProperty {
+  path:string;
+  defaultValue:number|number[];
+  keyframes:Keyframe[];
+  animated:boolean;
+}
+
+export type AnimatedProperties = Record<string, AnimatedProperty>;
+export interface EvaluatedProperties { [propertyPath:string]: number|number[] }
+
+
+===== src\types\composition.ts =====
+import type { Layer } from './layer';
+
+export interface WorkArea { start: number; end: number; enabled: boolean }
+
+export interface Composition {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  fps: number;
+  duration: number;
+  backgroundColor: string;
+  layers: Layer[];
+  currentTime: number;
+  workAreaStart: number;
+  workAreaEnd: number;
+  pixelAspect: number;
+}
+
+
+===== src\state\toolStore.ts =====
+import { create } from 'zustand';
+import { TOOLS } from '../config/constants';
+
+export type ToolId = typeof TOOLS[keyof typeof TOOLS];
+
+export interface ToolSettings {
+  polygonSides:number; starRatio:number;
+  snapToGrid:boolean; bezierHandles:boolean;
+}
+
+export interface ToolState{
+  activeTool:ToolId; previousTool:ToolId|null;
+  toolSettings:ToolSettings;
+  isTransforming:boolean; transformMode:'grab'|'rotate'|'scale'|null;
+  setActiveTool:(t:ToolId)=>void;
+  setPreviousTool:(t:ToolId|null)=>void;
+  restorePreviousTool:()=>void;
+  updateToolSettings:(s:Partial<ToolSettings>)=>void;
+  setTransformMode:(m:'grab'|'rotate'|'scale'|null)=>void;
+  setIsTransforming:(t:boolean)=>void;
+}
+
+export const useToolStore = create<ToolState>((set,get)=>({
+  activeTool:TOOLS.SELECT as ToolId, previousTool:null,
+  toolSettings:{polygonSides:6,starRatio:0.5,snapToGrid:true,bezierHandles:true},
+  isTransforming:false, transformMode:null,
+  setActiveTool:(tool)=>set({activeTool:tool}),
+  setPreviousTool:(tool)=>set({previousTool:tool}),
+  restorePreviousTool:()=>{const p=get().previousTool;p&&set({activeTool:p,previousTool:null})},
+  updateToolSettings:(settings)=>set(s=>({toolSettings:{...s.toolSettings,...settings}})),
+  setTransformMode:(mode)=>set({transformMode:mode}),
+  setIsTransforming:(transforming)=>set({isTransforming:transforming}),
+}));
+
+
+===== src\state\viewportStore.ts =====
+/**
+ * ViewportStore â€” per-composition viewport settings.
+ * Stores grid, rulers, guides, safe zones, and stats visibility toggles.
+ */
+import { create } from 'zustand';
+
+export interface Guide {
+  id: string;
+  type: 'horizontal' | 'vertical';
+  /** World-space position */
+  position: number;
+  locked: boolean;
+}
+
+export interface ViewportSettings {
+  showGrid: boolean;
+  showRulers: boolean;
+  showGuides: boolean;
+  showSafeZones: boolean;
+  showStats: boolean;
+  guidesLocked: boolean;
+  snappingEnabled: boolean;
+  /** List of guide lines per composition */
+  guides: Guide[];
+  /** Zoom level stored per composition */
+  zoom: number;
+  /** Pan offsets stored per composition */
+  panX: number;
+  panY: number;
+}
+
+export interface ViewportStoreState {
+  settings: ViewportSettings;
+  // Actions
+  setShowGrid: (v: boolean) => void;
+  toggleGrid: () => void;
+  setShowRulers: (v: boolean) => void;
+  toggleRulers: () => void;
+  setShowGuides: (v: boolean) => void;
+  toggleGuides: () => void;
+  setShowSafeZones: (v: boolean) => void;
+  toggleSafeZones: () => void;
+  setShowStats: (v: boolean) => void;
+  toggleStats: () => void;
+  setGuidesLocked: (v: boolean) => void;
+  setSnappingEnabled: (v: boolean) => void;
+  toggleSnapping: () => void;
+  addGuide: (type: 'horizontal' | 'vertical', position: number) => void;
+  removeGuide: (id: string) => void;
+  moveGuide: (id: string, position: number) => void;
+  clearGuides: () => void;
+  setZoom: (zoom: number) => void;
+  setPan: (x: number, y: number) => void;
+}
+
+function genId(): string {
+  return `guide_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+const DEFAULT_SETTINGS: ViewportSettings = {
+  showGrid: true,
+  showRulers: true,
+  showGuides: true,
+  showSafeZones: false,
+  showStats: false,
+  guidesLocked: false,
+  snappingEnabled: true,
+  guides: [],
+  zoom: 1,
+  panX: 0,
+  panY: 0,
+};
+
+export const useViewportStore = create<ViewportStoreState>((set) => ({
+  settings: { ...DEFAULT_SETTINGS },
+
+  setShowGrid: (v) => set((s) => ({ settings: { ...s.settings, showGrid: v } })),
+  toggleGrid: () => set((s) => ({ settings: { ...s.settings, showGrid: !s.settings.showGrid } })),
+  setShowRulers: (v) => set((s) => ({ settings: { ...s.settings, showRulers: v } })),
+  toggleRulers: () => set((s) => ({ settings: { ...s.settings, showRulers: !s.settings.showRulers } })),
+  setShowGuides: (v) => set((s) => ({ settings: { ...s.settings, showGuides: v } })),
+  toggleGuides: () => set((s) => ({ settings: { ...s.settings, showGuides: !s.settings.showGuides } })),
+  setShowSafeZones: (v) => set((s) => ({ settings: { ...s.settings, showSafeZones: v } })),
+  toggleSafeZones: () => set((s) => ({ settings: { ...s.settings, showSafeZones: !s.settings.showSafeZones } })),
+  setShowStats: (v) => set((s) => ({ settings: { ...s.settings, showStats: v } })),
+  toggleStats: () => set((s) => ({ settings: { ...s.settings, showStats: !s.settings.showStats } })),
+  setGuidesLocked: (v) => set((s) => ({ settings: { ...s.settings, guidesLocked: v } })),
+  setSnappingEnabled: (v) => set((s) => ({ settings: { ...s.settings, snappingEnabled: v } })),
+  toggleSnapping: () => set((s) => ({ settings: { ...s.settings, snappingEnabled: !s.settings.snappingEnabled } })),
+
+  addGuide: (type, position) =>
+    set((s) => ({
+      settings: {
+        ...s.settings,
+        guides: [...s.settings.guides, { id: genId(), type, position, locked: false }],
+      },
+    })),
+
+  removeGuide: (id) =>
+    set((s) => ({
+      settings: { ...s.settings, guides: s.settings.guides.filter((g) => g.id !== id) },
+    })),
+
+  moveGuide: (id, position) =>
+    set((s) => ({
+      settings: {
+        ...s.settings,
+        guides: s.settings.guides.map((g) => (g.id === id ? { ...g, position } : g)),
+      },
+    })),
+
+  clearGuides: () => set((s) => ({ settings: { ...s.settings, guides: [] } })),
+
+  setZoom: (zoom) => set((s) => ({ settings: { ...s.settings, zoom } })),
+  setPan: (panX, panY) => set((s) => ({ settings: { ...s.settings, panX: panX, panY: panY } })),
+}));
+
+
+===== src\utils\createLayerInstance.ts =====
+/**
+ * createLayerInstance â€” shared factory for creating layer instances.
+ * Used by menus, keyboard shortcuts, toolbar tools, and outliner.
+ * Deduplicates the layer-creation logic that was copy-pasted everywhere.
+ */
+import type { Layer, LayerType, SolidData, ShapeData, TextData } from '../types/layer';
+import type { Composition } from '../types/composition';
+import { createDefaultLayer } from '../config/defaults';
+import { capitalize } from './string';
+
+function genId(): string {
+  return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+export function createLayerInstance(type: LayerType, comp: Composition, overrides?: Partial<Layer>): Layer {
+  const count = comp.layers.filter((l) => l.type === type).length + 1;
+  const base = createDefaultLayer(type, `${capitalize(type)} ${count}`);
+  const layer: Layer = {
+    ...base,
+    id: genId(),
+    zIndex: comp.layers.length + 1,
+    transform: { position: { x: 0, y: 0 }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
+    ...overrides,
+  };
+
+  if (!overrides?.data) {
+    switch (type) {
+      case 'solid':
+        (layer as any).data = { color: '#4772b3', width: comp.width, height: comp.height } satisfies SolidData;
+        break;
+      case 'shape':
+        (layer as any).data = { type: 'rectangle', width: 200, height: 150, borderRadius: 0 } satisfies ShapeData;
+        break;
+      case 'text':
+        (layer as any).data = {
+          text: 'Text', fontFamily: 'Inter', fontSize: 48, fontWeight: 400,
+          color: '#ffffff', lineHeight: 1.2, letterSpacing: 0, alignment: 'center',
+        } satisfies TextData;
+        break;
+      case 'image':
+        (layer as any).data = { assetId: '', naturalWidth: 100, naturalHeight: 100 };
+        break;
+      case 'video':
+        (layer as any).data = { assetId: '', naturalWidth: 100, naturalHeight: 100, duration: 10, muted: false, volume: 1, playbackRate: 1 };
+        break;
+      case 'adjustment':
+        (layer as any).data = {};
+        break;
+    }
+  }
+
+  return layer;
+}
+
+
+

@@ -2,8 +2,11 @@ import React from 'react';
 import type { Layer } from '../../../types/layer';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { animationClock } from './PlaybackControls';
+import { useLayerBarDrag } from './useLayerBarDrag';
+import { useKeyframeDrag } from './useKeyframeDrag';
+import type { Keyframe } from '../../../types/keyframe';
 
-interface KeyframeAreaProps {
+interface Props {
   layers: Layer[];
   expandedLayers: Set<string>;
   propertyPaths: { path: string; label: string }[];
@@ -16,38 +19,29 @@ interface KeyframeAreaProps {
 const TRACK_HEIGHT = 24;
 const PROP_TRACK_HEIGHT = 20;
 
-export const KeyframeArea: React.FC<KeyframeAreaProps> = ({
-  layers, expandedLayers, propertyPaths, currentFrame: _cf, zoom, totalFrames, compId,
+export const KeyframeArea: React.FC<Props> = ({
+  layers, expandedLayers, propertyPaths, zoom, totalFrames, compId,
 }) => {
-  const engine = useKeyframeStore((s) => s.engine);
-
+  const engine = useKeyframeStore(s => { void s.revision; return s.engine; });
+  const kfDrag = useKeyframeDrag(zoom, totalFrames);
   const sortedLayers = [...layers].sort((a, b) => b.zIndex - a.zIndex);
 
   return (
-    <div className="relative" style={{ paddingTop: 0 }}>
-      {sortedLayers.map((layer) => {
+    <div className="relative">
+      {sortedLayers.map(layer => {
         const isExpanded = expandedLayers.has(layer.id);
-        const keyframes = engine.getAllKeyframesForLayer(layer.id);
-
+        const allKfs = engine.getAllKeyframesForLayer(layer.id);
         return (
           <div key={layer.id}>
-            {/* Layer track bar */}
             <LayerTrackBar
-              layer={layer}
-              zoom={zoom}
-              compId={compId}
-              onSeek={(f) => animationClock.seekToFrame(f)}
+              layer={layer} zoom={zoom} compId={compId} totalFrames={totalFrames}
             />
-
-            {/* Property keyframe tracks (when expanded) */}
-            {isExpanded && propertyPaths.map((prop) => {
-              const propKfs = keyframes.filter((k) => k.property === prop.path);
+            {isExpanded && propertyPaths.map(prop => {
+              const propKfs = allKfs.filter(k => k.property === prop.path);
               return (
                 <PropertyKeyframeTrack
-                  key={prop.path}
-                  keyframes={propKfs}
-                  zoom={zoom}
-                  totalFrames={totalFrames}
+                  key={prop.path} keyframes={propKfs} zoom={zoom}
+                  totalFrames={totalFrames} onKfDown={kfDrag.onDown}
                 />
               );
             })}
@@ -58,81 +52,83 @@ export const KeyframeArea: React.FC<KeyframeAreaProps> = ({
   );
 };
 
-/** Layer bar showing in-point/out-point, draggable */
 const LayerTrackBar: React.FC<{
-  layer: Layer; zoom: number; compId: string; onSeek: (f: number) => void;
-}> = ({ layer, zoom, onSeek }) => (
-  <div
-    className="relative cursor-pointer border-b border-border/20 hover:bg-panel-hover"
-    style={{ height: TRACK_HEIGHT }}
-    onClick={() => onSeek(layer.startFrame)}
-  >
-    {/* In-point → out-point bar */}
-    <div
-      className="absolute top-1/2 -translate-y-1/2 h-[14px] rounded-sm bg-accent/40 border border-accent/60 cursor-grab"
-      style={{
-        left: layer.startFrame * zoom,
-        width: Math.max(4, (layer.endFrame - layer.startFrame) * zoom),
-      }}
-    >
-      {/* In-point handle */}
-      <div className="absolute left-0 top-0 bottom-0 w-[4px] cursor-ew-resize bg-accent rounded-l-sm" />
-      {/* Out-point handle */}
-      <div className="absolute right-0 top-0 bottom-0 w-[4px] cursor-ew-resize bg-accent rounded-r-sm" />
-    </div>
-  </div>
-);
-
-/** Property track showing keyframe diamonds */
-const PropertyKeyframeTrack: React.FC<{
-  keyframes: any[]; zoom: number; totalFrames: number;
-}> = ({ keyframes, zoom, totalFrames }) => (
-  <div
-    className="relative border-b border-border/10"
-    style={{ height: PROP_TRACK_HEIGHT }}
-  >
-    {/* Grid lines (every 10 frames) */}
-    {Array.from({ length: Math.floor(totalFrames / 10) + 1 }, (_, i) => (
-      <div key={i} className="absolute top-0 bottom-0 w-px bg-border/20"
-        style={{ left: i * 10 * zoom }}
-      />
-    ))}
-
-    {/* Keyframe diamonds */}
-    {keyframes.map((kf) => (
-      <KeyframeDiamond key={kf.id} time={kf.time} zoom={zoom} interpolation={kf.interpolation} />
-    ))}
-
-
-  </div>
-);
-
-/** Single keyframe diamond with interpolation-appropriate shape */
-const KeyframeDiamond: React.FC<{
-  time: number; zoom: number; interpolation: string;
-}> = ({ time, zoom, interpolation }) => {
-  let shape: React.ReactNode;
-  const size = 8;
-  const x = time * zoom;
-
-  switch (interpolation) {
-    case 'hold':
-      shape = <rect x={x - size / 2} y={-size / 2} width={size} height={size} fill="#ff4444" rx={1} />;
-      break;
-    case 'bezier':
-      shape = <circle cx={x} cy={0} r={size / 2} fill="#ffaa00" />;
-      break;
-    default: // linear
-      shape = <polygon points={`${x},${-size/2} ${x+size/2},0 ${x},${size/2} ${x-size/2},0`} fill="#88ccff" />;
-  }
+  layer: Layer; zoom: number; compId: string; totalFrames: number;
+}> = ({ layer, zoom, compId, totalFrames }) => {
+  const { onMouseDown } = useLayerBarDrag(layer, compId, zoom, totalFrames);
+  const left = layer.startFrame * zoom;
+  const width = Math.max(4, (layer.endFrame - layer.startFrame) * zoom);
 
   return (
-    <svg width={size + 2} height={size + 2} className="absolute top-1/2 -translate-y-1/2 z-10 cursor-pointer hover:scale-125 transition-transform"
-      style={{ left: x - size / 2 - 1 }}
+    <div
+      className="relative border-b border-border/20 hover:bg-panel-hover"
+      style={{ height: TRACK_HEIGHT }}
+      onDoubleClick={() => animationClock.seekToFrame(layer.startFrame)}
     >
-      {shape}
-    </svg>
+      <div
+        className="absolute top-1/2 -translate-y-1/2 h-[16px] rounded-sm bg-accent/50 border border-accent"
+        style={{ left, width, cursor: 'grab' }}
+        onMouseDown={onMouseDown('move')}
+        title={`${layer.name}: ${layer.startFrame}–${layer.endFrame}`}
+      >
+        <div
+          className="absolute left-0 top-0 bottom-0 w-[6px] bg-accent rounded-l-sm"
+          style={{ cursor: 'ew-resize' }}
+          onMouseDown={onMouseDown('trimStart')}
+        />
+        <div
+          className="absolute right-0 top-0 bottom-0 w-[6px] bg-accent rounded-r-sm"
+          style={{ cursor: 'ew-resize' }}
+          onMouseDown={onMouseDown('trimEnd')}
+        />
+        <div className="absolute inset-0 flex items-center px-2 pointer-events-none">
+          <span className="text-[9px] text-white/80 truncate select-none">{layer.name}</span>
+        </div>
+      </div>
+    </div>
   );
 };
 
+const PropertyKeyframeTrack: React.FC<{
+  keyframes: Keyframe[];
+  zoom: number;
+  totalFrames: number;
+  onKfDown: (id: string, time: number) => (e: React.MouseEvent) => void;
+}> = ({ keyframes, zoom, totalFrames: _tf, onKfDown }) => (
+  <div className="relative border-b border-border/10 bg-black/10" style={{ height: PROP_TRACK_HEIGHT }}>
+    {keyframes.map(kf => (
+      <KeyframeDiamond
+        key={kf.id} kf={kf} zoom={zoom} onMouseDown={onKfDown(kf.id, kf.time)}
+      />
+    ))}
+  </div>
+);
 
+const KeyframeDiamond: React.FC<{
+  kf: Keyframe; zoom: number; onMouseDown: (e: React.MouseEvent) => void;
+}> = ({ kf, zoom, onMouseDown }) => {
+  const size = 9;
+  const x = kf.time * zoom;
+  let fill = '#e8b84b';
+  if (kf.interpolation === 'hold') fill = '#e04040';
+  if (kf.interpolation === 'bezier') fill = '#4bd0e8';
+  return (
+    <svg
+      width={size + 4} height={size + 4}
+      className="absolute top-1/2 -translate-y-1/2 z-10 hover:scale-125 transition-transform"
+      style={{ left: x - (size / 2) - 2, cursor: 'ew-resize' }}
+      onMouseDown={onMouseDown}
+    >
+      {kf.interpolation === 'hold' ? (
+        <rect x={2} y={2} width={size} height={size} fill={fill} rx={1} stroke="#000" strokeWidth="0.5" />
+      ) : kf.interpolation === 'bezier' ? (
+        <circle cx={size / 2 + 2} cy={size / 2 + 2} r={size / 2} fill={fill} stroke="#000" strokeWidth="0.5" />
+      ) : (
+        <polygon
+          points={`${size/2+2},2 ${size+2},${size/2+2} ${size/2+2},${size+2} 2,${size/2+2}`}
+          fill={fill} stroke="#000" strokeWidth="0.5"
+        />
+      )}
+    </svg>
+  );
+};

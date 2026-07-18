@@ -1,0 +1,642 @@
+﻿===== src\ui\panels\timeline\Playhead.tsx =====
+import { forwardRef } from 'react';
+
+interface PlayheadProps {
+  currentFrame: number;
+  zoom: number;
+}
+
+/**
+ * Playhead â€” renders the vertical playhead line and triangle indicator.
+ * Uses a ref for direct DOM manipulation during playback (no React re-render).
+ */
+export const Playhead = forwardRef<HTMLDivElement, PlayheadProps>(
+  ({ currentFrame, zoom }, ref) => {
+    return (
+      <div
+        ref={ref}
+        className="absolute top-0 z-20 pointer-events-none"
+        style={{
+          left: currentFrame * zoom,
+          width: 2,
+          height: '100%',
+          transition: 'none',
+        }}
+      >
+        {/* Triangle at top */}
+        <svg width="10" height="8" style={{ position: 'absolute', top: -1, left: -4 }}>
+          <polygon points="0,0 10,0 5,8" fill="var(--timeline-playhead)" />
+        </svg>
+
+        {/* Line */}
+        <div
+          style={{
+            width: 2,
+            height: 'calc(100% - 6px)',
+            background: 'var(--timeline-playhead)',
+            opacity: 0.8,
+          }}
+        />
+      </div>
+    );
+  },
+);
+
+Playhead.displayName = 'Playhead';
+
+
+===== src\ui\panels\timeline\TimelineRuler.tsx =====
+import React, { useRef, useCallback } from 'react';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { animationClock } from './PlaybackControls';
+
+interface TimelineRulerProps {
+  totalFrames: number;
+  currentFrame: number;
+  zoom: number;
+  scrollX: number;
+  compId: string;
+  workAreaStart?: number;
+  workAreaEnd?: number;
+}
+
+export const TimelineRuler: React.FC<TimelineRulerProps> = ({
+  totalFrames, currentFrame, zoom, scrollX, compId,
+  workAreaStart, workAreaEnd,
+}) => {
+  const rulerRef = useRef<HTMLDivElement>(null);
+  const isScrubbing = useRef(false);
+
+  const calcFrameFromX = useCallback((clientX: number): number => {
+    if (!rulerRef.current) return 0;
+    const rect = rulerRef.current.getBoundingClientRect();
+    const x = clientX - rect.left + scrollX;
+    return Math.max(0, Math.min(totalFrames, Math.round(x / zoom)));
+  }, [zoom, totalFrames, scrollX]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    isScrubbing.current = true;
+    const frame = calcFrameFromX(e.clientX);
+    animationClock.seekToFrame(frame);
+    useCompositionStore.getState().setCurrentTime(compId, frame / (totalFrames / (compId ? 30 : 30)));
+
+    const onMove = (ev: MouseEvent) => {
+      if (!isScrubbing.current) return;
+      const f = calcFrameFromX(ev.clientX);
+      animationClock.seekToFrame(f);
+      useCompositionStore.getState().setCurrentTime(compId, f / (totalFrames / 30));
+    };
+    const onUp = () => {
+      isScrubbing.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [calcFrameFromX, compId, totalFrames]);
+
+  // Generate tick marks â€” show major tick every ~100px
+  const frameStep = Math.max(1, Math.round(100 / zoom));
+  const majorStep = Math.max(frameStep, Math.round(500 / zoom));
+
+  const ticks: React.ReactNode[] = [];
+  for (let f = 0; f <= totalFrames; f += frameStep) {
+    const isMajor = f % majorStep === 0 || f === 0 || f === totalFrames;
+    ticks.push(
+      <div key={f} className="absolute top-0" style={{ left: f * zoom, width: 1 }}>
+        <div className="bg-border-light" style={{ height: isMajor ? 14 : 8 }} />
+        {isMajor && (
+          <span className="absolute left-[3px] top-[14px] text-[8px] text-text-disabled whitespace-nowrap font-mono leading-none">
+            {f}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative flex-shrink-0 bg-surface border-b border-border"
+      style={{ height: 28 }}
+    >
+      <div
+        ref={rulerRef}
+        className="absolute inset-0 cursor-pointer overflow-hidden"
+        onMouseDown={handleMouseDown}
+        style={{ paddingLeft: 0 }}
+      >
+        <div style={{ width: totalFrames * zoom + 100, height: '100%', position: 'relative' }}>
+          {/* Work area dimmed overlays */}
+          {workAreaStart !== undefined && workAreaEnd !== undefined && (
+            <>
+              {workAreaStart > 0 && (
+                <div className="absolute top-0 bottom-0 bg-black/20" style={{ left: 0, width: workAreaStart * zoom }} />
+              )}
+              {workAreaEnd < totalFrames && (
+                <div className="absolute top-0 bottom-0 bg-black/20" style={{ left: workAreaEnd * zoom, width: (totalFrames - workAreaEnd) * zoom }} />
+              )}
+            </>
+          )}
+          {ticks}
+          {/* Playhead line in ruler */}
+          <div className="absolute top-0" style={{ left: currentFrame * zoom, width: 2, height: '100%' }}>
+            <svg width="10" height="8" style={{ position: 'absolute', top: 0, left: -4 }}>
+              <polygon points="0,0 10,0 5,8" fill="var(--timeline-playhead)" />
+            </svg>
+            <div style={{ width: 2, height: '100%', background: 'var(--timeline-playhead)' }} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+===== src\ui\common\ContextMenu.tsx =====
+import React,{useEffect,useRef} from 'react';
+
+export interface ContextMenuItem{
+  id:string; label:string; shortcut?:string;
+  disabled?:boolean; checked?:boolean; icon?:React.ReactNode;
+  children?:ContextMenuItem[]; divider?:boolean;
+  onClick?:()=>void;
+}
+
+interface Props{items:ContextMenuItem[];position:{x:number;y:number};onClose:()=>void}
+
+export const ContextMenu:React.FC<Props> = ({items,position,onClose})=>{
+  const ref=useRef<HTMLDivElement>(null);
+  useEffect(()=>{
+    const hc=(e:MouseEvent)=>{if(ref.current&&!ref.current.contains(e.target as Node))onClose()};
+    const hk=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose()};
+    const t=setTimeout(()=>{document.addEventListener('mousedown',hc);document.addEventListener('keydown',hk)},0);
+    return()=>{clearTimeout(t);document.removeEventListener('mousedown',hc);document.removeEventListener('keydown',hk)};
+  },[onClose]);
+
+  return(
+    <div ref={ref}
+      className="fixed z-menu min-w-[160px] py-1 shadow-dropdown bg-panel-raised border border-border rounded-sm"
+      style={{left:position.x,top:position.y}}>
+      {items.map((item,i)=>(
+        <div key={item.id}>
+          {item.divider&&i>0&&<div className="h-px bg-border my-0.5"/>}
+          <button
+            className={[
+              'flex items-center w-full px-3 py-1 gap-2 text-left border-0',
+              'text-ui-sm',
+              item.disabled ? 'text-text-disabled' : 'text-text-primary',
+              !item.disabled && 'hover:bg-panel-hover',
+            ].join(' ')}
+            style={{cursor:item.disabled?'default':'pointer'}}
+            disabled={item.disabled}
+            onClick={()=>{if(!item.disabled&&item.onClick){item.onClick();onClose()}}}>
+            {item.icon&&<span className="w-4 flex items-center">{item.icon}</span>}
+            <span className="flex-1">{item.label}</span>
+            {item.shortcut&&<span className="text-text-disabled ml-3">{item.shortcut}</span>}
+            {item.checked!==undefined&&<span className="w-4 text-center">{item.checked?'âœ“':''}</span>}
+            {item.children&&<span className="text-text-disabled">â–¸</span>}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+
+===== src\input\KeyboardManager.ts =====
+/**
+ * KeyboardManager â€” listens to global keydown events and delegates
+ * matching shortcuts to the ShortcutRegistry.
+ */
+import { useEffect } from 'react';
+import { shortcutRegistry } from './ShortcutRegistry';
+import { useToolStore } from '../state/toolStore';
+import { useUIStore } from '../state/uiStore';
+import { useViewportStore } from '../state/viewportStore';
+import { useCompositionStore } from '../state/compositionStore';
+import { useSelectionStore } from '../state/selectionStore';
+import { createLayerInstance } from '../utils/createLayerInstance';
+import type { Composition } from '../types/composition';
+
+export function useKeyboardManager(): void {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      shortcutRegistry.handleEvent(e);
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+}
+
+function getCompWithCheck(): { compId: string; comp: Composition } | null {
+  const compState = useCompositionStore.getState();
+  const compId = compState.activeCompositionId;
+  if (!compId) return null;
+  const comp = compState.compositions.find((c) => c.id === compId);
+  if (!comp) return null;
+  return { compId, comp };
+}
+
+function genLayerId(): string {
+  return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function duplicateSelected(): void {
+  const ctx = getCompWithCheck();
+  if (!ctx) return;
+  const selectedIds = useSelectionStore.getState().getSelectedIds();
+  for (const id of selectedIds) {
+    const orig = ctx.comp.layers.find((l: any) => l.id === id);
+    if (orig) {
+      const dup = { ...JSON.parse(JSON.stringify(orig)), id: genLayerId(), name: `${orig.name} (copy)`, zIndex: ctx.comp.layers.length + 1 };
+      useCompositionStore.getState().addLayer(ctx.compId, dup);
+    }
+  }
+}
+
+function deleteSelected(): void {
+  const ctx = getCompWithCheck();
+  if (!ctx) return;
+  const selectedIds = useSelectionStore.getState().getSelectedIds();
+  for (const id of selectedIds) useCompositionStore.getState().removeLayer(ctx.compId, id);
+  useSelectionStore.getState().clearSelection();
+}
+
+/**
+ * Register all shortcuts once during app startup.
+ */
+export function registerAllShortcuts(): void {
+  // â”€â”€ Tool switching shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  shortcutRegistry.register({ id: 'tool.select', key: 'v', context: 'global', handler: () => useToolStore.getState().setActiveTool('select'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.hand', key: 'h', context: 'global', handler: () => useToolStore.getState().setActiveTool('hand'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.zoom', key: 'z', context: 'global', handler: () => useToolStore.getState().setActiveTool('zoom'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.rect', key: 'r', shift: true, context: 'global', handler: () => useToolStore.getState().setActiveTool('shapeRect'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.ellipse', key: 'e', shift: true, context: 'global', handler: () => useToolStore.getState().setActiveTool('shapeEllipse'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.pen', key: 'p', context: 'global', handler: () => useToolStore.getState().setActiveTool('pen'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.text', key: 't', context: 'global', handler: () => useToolStore.getState().setActiveTool('text'), remappable: true });
+
+  // â”€â”€ Phase 1: UI toggles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  shortcutRegistry.register({
+    id: 'ui.toggleSidePanel', key: 'n', context: 'global',
+    handler: () => {
+      const s = useUIStore.getState();
+      s.setRightPanelWidth(s.rightPanelWidth > 10 ? 0 : 320);
+    }, remappable: true,
+  });
+  shortcutRegistry.register({ id: 'edit.undo', key: 'z', ctrl: true, context: 'global', handler: () => console.log('[Shortcut] Ctrl+Z'), remappable: true });
+  shortcutRegistry.register({ id: 'edit.redo', key: 'z', ctrl: true, shift: true, context: 'global', handler: () => console.log('[Shortcut] Ctrl+Shift+Z'), remappable: true });
+  // â”€â”€ Phase 4: Playback shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const togglePlayback = () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => {
+      m.animationClock.togglePlay();
+    });
+  };
+  shortcutRegistry.register({ id: 'playback.toggle', key: ' ', context: 'global', handler: togglePlayback, remappable: true });
+  shortcutRegistry.register({ id: 'file.save', key: 's', ctrl: true, context: 'global', handler: () => console.log('[Shortcut] Ctrl+S'), remappable: true });
+
+  // â”€â”€ Phase 2: Viewport shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  shortcutRegistry.register({ id: 'viewport.fitToViewport', key: 'Home', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('viewport:frameAll')), remappable: true });
+  shortcutRegistry.register({ id: 'viewport.toggleGrid', key: 'g', ctrl: true, context: 'global', handler: () => useViewportStore.getState().toggleGrid(), remappable: true });
+  shortcutRegistry.register({ id: 'viewport.toggleRulers', key: 'r', ctrl: true, context: 'global', handler: () => useViewportStore.getState().toggleRulers(), remappable: true });
+  shortcutRegistry.register({ id: 'viewport.toggleSnapping', key: 'Tab', shift: true, context: 'global', handler: () => useViewportStore.getState().toggleSnapping(), remappable: true });
+  shortcutRegistry.register({ id: 'viewport.frameSelected', key: '.', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('viewport:frameSelected')), remappable: true });
+  shortcutRegistry.register({ id: 'viewport.zoom100', key: '1', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('viewport:zoom100')), remappable: true });
+
+  // â”€â”€ Phase 3: Layer shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // â”€â”€ Phase 4: More playback shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  shortcutRegistry.register({ id: 'playback.start', key: 'Home', context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.goToStart());
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.end', key: 'End', context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.goToEnd());
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.prevFrame', key: 'ArrowLeft', context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.stepBackward());
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.nextFrame', key: 'ArrowRight', context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.stepForward());
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.skipBack', key: 'ArrowLeft', shift: true, context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.jumpBackward(10));
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.skipForward', key: 'ArrowRight', shift: true, context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.jumpForward(10));
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.prevKeyframe', key: 'j', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/keyframeStore'),
+      import('../state/selectionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([kfStore, selStore, pc]) => {
+      const sel = selStore.useSelectionStore.getState().getSelectedIds();
+      if (sel.length > 0) {
+        const kfs = kfStore.useKeyframeStore.getState().engine.getAllKeyframesForLayer(sel[0]);
+        const prev = [...kfs].reverse().find((k: any) => k.time < pc.animationClock.currentFrame);
+        if (prev) pc.animationClock.seekToFrame(prev.time);
+      }
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.nextKeyframe', key: 'k', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/keyframeStore'),
+      import('../state/selectionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([kfStore, selStore, pc]) => {
+      const sel = selStore.useSelectionStore.getState().getSelectedIds();
+      if (sel.length > 0) {
+        const kfs = kfStore.useKeyframeStore.getState().engine.getAllKeyframesForLayer(sel[0]);
+        const next = kfs.find((k: any) => k.time > pc.animationClock.currentFrame);
+        if (next) pc.animationClock.seekToFrame(next.time);
+      }
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.workAreaStart', key: 'b', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/compositionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([compStore, pc]) => {
+      const compId = compStore.useCompositionStore.getState().activeCompositionId;
+      if (compId) {
+        const frame = pc.animationClock.currentFrame;
+        const comp = compStore.useCompositionStore.getState().compositions.find((c: any) => c.id === compId);
+        const fps = comp?.fps ?? 30;
+        compStore.useCompositionStore.getState().updateComposition(compId, { workAreaStart: frame / fps });
+      }
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.workAreaEnd', key: 'n', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/compositionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([compStore, pc]) => {
+      const compId = compStore.useCompositionStore.getState().activeCompositionId;
+      if (compId) {
+        const frame = pc.animationClock.currentFrame;
+        const comp = compStore.useCompositionStore.getState().compositions.find((c: any) => c.id === compId);
+        const fps = comp?.fps ?? 30;
+        compStore.useCompositionStore.getState().updateComposition(compId, { workAreaEnd: frame / fps });
+      }
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.setInPoint', key: 'i', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/compositionStore'),
+      import('../state/selectionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([compStore, selStore, pc]) => {
+      const sel = selStore.useSelectionStore.getState().getSelectedIds();
+      const compId = compStore.useCompositionStore.getState().activeCompositionId;
+      const frame = pc.animationClock.currentFrame;
+      if (compId && sel.length > 0) {
+        for (const id of sel) {
+          compStore.useCompositionStore.getState().updateLayer(compId, id, { startFrame: frame });
+        }
+      }
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.setOutPoint', key: 'o', context: 'global', handler: () => {
+    Promise.all([
+      import('../state/compositionStore'),
+      import('../state/selectionStore'),
+      import('../ui/panels/timeline/PlaybackControls'),
+    ]).then(([compStore, selStore, pc]) => {
+      const sel = selStore.useSelectionStore.getState().getSelectedIds();
+      const compId = compStore.useCompositionStore.getState().activeCompositionId;
+      const frame = pc.animationClock.currentFrame;
+      if (compId && sel.length > 0) {
+        for (const id of sel) {
+          compStore.useCompositionStore.getState().updateLayer(compId, id, { endFrame: frame });
+        }
+      }
+    });
+  }, remappable: true });
+  // â”€â”€ Phase 4: Additional playback shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  shortcutRegistry.register({ id: 'playback.reverseToggle', key: ' ', shift: true, context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => {
+      const clock = m.animationClock;
+      clock.setPlaybackRate(clock.playbackRate > 0 ? -1 : 1);
+      clock.togglePlay();
+    });
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.stop', key: 'Escape', context: 'global', handler: () => {
+    import('../ui/panels/timeline/PlaybackControls').then((m) => m.animationClock.stop());
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'playback.easeSelected', key: 'F9', context: 'global', handler: () => {
+    import('../state/keyframeStore').then((m) => {
+      const state = m.useKeyframeStore.getState();
+      state.selectedKeyframeIds.forEach((id) => state.setInterpolation(id, 'bezier'));
+    });
+  }, remappable: true });
+
+  shortcutRegistry.register({ id: 'playback.addKeyframe', key: 'k', alt: true, context: 'global', handler: () => {
+    document.dispatchEvent(new CustomEvent('animation:addKeyframe'));
+  }, remappable: true });
+
+  shortcutRegistry.register({ id: 'layer.grab', key: 'g', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('transform:grab')), remappable: true });
+  shortcutRegistry.register({ id: 'layer.rotate', key: 'r', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('transform:rotate')), remappable: true });
+  shortcutRegistry.register({ id: 'layer.scale', key: 's', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('transform:scale')), remappable: true });
+
+  shortcutRegistry.register({
+    id: 'layer.selectAll', key: 'a', context: 'global',
+    handler: () => {
+      const ctx = getCompWithCheck();
+      if (!ctx) return;
+      useSelectionStore.getState().selectAll(ctx.compId, ctx.comp.layers.map((l: any) => l.id));
+    }, remappable: true,
+  });
+  shortcutRegistry.register({ id: 'layer.deselectAll', key: 'a', alt: true, context: 'global', handler: () => useSelectionStore.getState().deselectAll(), remappable: true });
+  shortcutRegistry.register({ id: 'layer.duplicate', key: 'd', ctrl: true, context: 'global', handler: () => duplicateSelected(), remappable: true });
+
+  shortcutRegistry.register({
+    id: 'layer.newSolid', key: 'y', ctrl: true, context: 'global',
+    handler: () => {
+      const ctx = getCompWithCheck();
+      if (!ctx) return;
+      const layer = createLayerInstance('solid', ctx.comp);
+      useCompositionStore.getState().addLayer(ctx.compId, layer);
+      useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: ctx.compId });
+    }, remappable: true,
+  });
+  shortcutRegistry.register({
+    id: 'layer.newText', key: 't', ctrl: true, context: 'global',
+    handler: () => {
+      const ctx = getCompWithCheck();
+      if (!ctx) return;
+      const layer = createLayerInstance('text', ctx.comp);
+      useCompositionStore.getState().addLayer(ctx.compId, layer);
+      useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: ctx.compId });
+    }, remappable: true,
+  });
+
+  shortcutRegistry.register({ id: 'layer.delete', key: 'Delete', context: 'global', handler: () => deleteSelected(), remappable: true });
+  shortcutRegistry.register({ id: 'layer.deleteAlt', key: 'x', context: 'global', handler: () => deleteSelected(), remappable: true });
+  shortcutRegistry.register({ id: 'layer.rename', key: 'F2', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('layer:rename')), remappable: true });
+}
+
+
+===== src\input\ShortcutRegistry.ts =====
+/**
+ * ShortcutRegistry â€” stores all keyboard shortcut bindings.
+ * Shortcuts can be added/removed and are checked by KeyboardManager.
+ * Supports context-based activation (e.g., only fire when viewport is focused).
+ *
+ * K1: Uses lazy import to check ModalTransform.activeAnywhere â€” when a modal
+ * transform is active (G/R/S), global shortcuts like 'X' for delete are suspended
+ * so the modal transform's own key handlers work without conflict.
+ */
+
+// Lazy reference to avoid circular imports
+let _getModalActive: (() => boolean) | null = null;
+function getModalActive(): boolean {
+  return _getModalActive ? _getModalActive() : false;
+}
+
+export function registerModalActiveCheck(fn: () => boolean): void {
+  _getModalActive = fn;
+}
+
+export interface ShortcutBinding {
+  id: string;
+  key: string;
+  ctrl?: boolean;
+  shift?: boolean;
+  alt?: boolean;
+  meta?: boolean;
+  /** Context in which this shortcut is active (e.g. 'viewport', 'timeline', 'global') */
+  context?: string;
+  handler: () => void;
+  /** Whether this shortcut can be remapped */
+  remappable: boolean;
+}
+
+type ShortcutMap = Map<string, ShortcutBinding[]>;
+
+class ShortcutRegistryClass {
+  private shortcuts: ShortcutMap = new Map();
+  private activeContext = 'global';
+
+  /**
+   * Register a keyboard shortcut.
+   * Key format: combination of modifiers + key, e.g. 'ctrl+z', 'n', 'ctrl+shift+z'
+   */
+  register(binding: ShortcutBinding): void {
+    const key = this.buildKey(binding);
+    const existing = this.shortcuts.get(key) ?? [];
+    existing.push(binding);
+    this.shortcuts.set(key, existing);
+  }
+
+  /** Remove a shortcut by its ID */
+  unregister(id: string): void {
+    for (const [key, bindings] of this.shortcuts.entries()) {
+      const filtered = bindings.filter((b) => b.id !== id);
+      if (filtered.length === 0) {
+        this.shortcuts.delete(key);
+      } else {
+        this.shortcuts.set(key, filtered);
+      }
+    }
+  }
+
+  /** Set the active context (e.g., 'viewport', 'timeline', 'global') */
+  setActiveContext(context: string): void {
+    this.activeContext = context;
+  }
+
+  /** Match a keyboard event against registered shortcuts and execute the handler */
+  handleEvent(e: KeyboardEvent): boolean {
+    // Don't fire when typing in input/textarea
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+      return false;
+    }
+
+    // K1: Skip ALL global shortcuts while a modal transform is active
+    // The modal transform's own docKeydown handler in useViewportInput handles X/Y/Esc/Enter/numbers
+    if (getModalActive()) {
+      return false;
+    }
+
+    const key = this.buildKeyFromEvent(e);
+    const bindings = this.shortcuts.get(key);
+    if (!bindings || bindings.length === 0) return false;
+
+    // Find the first matching binding for the current context
+    for (const binding of bindings) {
+      if (!binding.context || binding.context === 'global' || binding.context === this.activeContext) {
+        e.preventDefault();
+        binding.handler();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Clear all shortcuts */
+  clear(): void {
+    this.shortcuts.clear();
+  }
+
+  private buildKey(b: ShortcutBinding): string {
+    const parts: string[] = [];
+    if (b.ctrl) parts.push('ctrl');
+    if (b.shift) parts.push('shift');
+    if (b.alt) parts.push('alt');
+    if (b.meta) parts.push('meta');
+    parts.push(b.key.toLowerCase());
+    return parts.join('+');
+  }
+
+  private buildKeyFromEvent(e: KeyboardEvent): string {
+    const parts: string[] = [];
+    if (e.ctrlKey || e.metaKey) parts.push('ctrl');
+    if (e.shiftKey) parts.push('shift');
+    if (e.altKey) parts.push('alt');
+    parts.push(e.key.toLowerCase());
+    return parts.join('+');
+  }
+}
+
+export const shortcutRegistry = new ShortcutRegistryClass();
+
+
+===== src\config\shortcuts.ts =====
+import { MODIFIERS } from './constants';
+
+export interface Shortcut {
+  id: string;
+  label: string;
+  display: string;
+  key: string;
+  modifiers: string[];
+  context?: string;
+  remappable: boolean;
+}
+
+export const SHORTCUTS: Record<string, Shortcut> = {
+  GRAB: { id:'tool.grab', label:'Grab/Move', display:'G', key:'g', modifiers:[], context:'viewport', remappable:true },
+  ROTATE: { id:'tool.rotate', label:'Rotate', display:'R', key:'r', modifiers:[], context:'viewport', remappable:true },
+  SCALE: { id:'tool.scale', label:'Scale', display:'S', key:'s', modifiers:[], context:'viewport', remappable:true },
+  SELECT_ALL: { id:'edit.selectAll', label:'Select All', display:'A', key:'a', modifiers:[], context:'global', remappable:true },
+  DESELECT_ALL: { id:'edit.deselectAll', label:'Deselect All', display:'Alt+A', key:'a', modifiers:[MODIFIERS.ALT], context:'global', remappable:true },
+  DELETE: { id:'edit.delete', label:'Delete', display:'X / Delete', key:'x', modifiers:[], context:'global', remappable:true },
+  DELETE_ALT: { id:'edit.deleteAlt', label:'Delete', display:'Delete', key:'Delete', modifiers:[], context:'global', remappable:true },
+  UNDO: { id:'edit.undo', label:'Undo', display:'Ctrl+Z', key:'z', modifiers:[MODIFIERS.CTRL], context:'global', remappable:true },
+  REDO: { id:'edit.redo', label:'Redo', display:'Ctrl+Shift+Z', key:'z', modifiers:[MODIFIERS.CTRL, MODIFIERS.SHIFT], context:'global', remappable:true },
+  PLAY_PAUSE: { id:'playback.playPause', label:'Play / Pause', display:'Space', key:' ', modifiers:[], context:'timeline', remappable:true },
+  NEXT_FRAME: { id:'playback.nextFrame', label:'Next Frame', display:'Right Arrow', key:'ArrowRight', modifiers:[], context:'timeline', remappable:true },
+  PREV_FRAME: { id:'playback.prevFrame', label:'Previous Frame', display:'Left Arrow', key:'ArrowLeft', modifiers:[], context:'timeline', remappable:true },
+  JUMP_FORWARD: { id:'playback.jumpForward', label:'Jump Forward 10', display:'Shift+Right', key:'ArrowRight', modifiers:[MODIFIERS.SHIFT], context:'timeline', remappable:true },
+  JUMP_BACK: { id:'playback.jumpBack', label:'Jump Back 10', display:'Shift+Left', key:'ArrowLeft', modifiers:[MODIFIERS.SHIFT], context:'timeline', remappable:true },
+  GO_TO_START: { id:'playback.goToStart', label:'First Frame', display:'Home', key:'Home', modifiers:[], context:'timeline', remappable:true },
+  GO_TO_END: { id:'playback.goToEnd', label:'Last Frame', display:'End', key:'End', modifiers:[], context:'timeline', remappable:true },
+  TOGGLE_SIDE_PANEL: { id:'ui.toggleSidePanel', label:'Toggle Side Panel', display:'N', key:'n', modifiers:[], context:'global', remappable:true },
+  TOGGLE_TOOLBAR: { id:'ui.toggleToolbar', label:'Toggle Toolbar', display:'T', key:'t', modifiers:[], context:'global', remappable:true },
+  FRAME_SELECTED: { id:'viewport.frameSelected', label:'Frame Selected', display:'Numpad .', key:'.', modifiers:[], context:'viewport', remappable:true },
+  SAVE: { id:'file.save', label:'Save', display:'Ctrl+S', key:'s', modifiers:[MODIFIERS.CTRL], context:'global', remappable:true },
+  OPEN: { id:'file.open', label:'Open', display:'Ctrl+O', key:'o', modifiers:[MODIFIERS.CTRL], context:'global', remappable:true },
+  NEW_COMPOSITION: { id:'composition.new', label:'New Composition', display:'Ctrl+N', key:'n', modifiers:[MODIFIERS.CTRL], context:'global', remappable:true },
+  RENDER: { id:'render.addToQueue', label:'Add to Render Queue', display:'Ctrl+M', key:'m', modifiers:[MODIFIERS.CTRL], context:'global', remappable:true },
+};
+
+
+

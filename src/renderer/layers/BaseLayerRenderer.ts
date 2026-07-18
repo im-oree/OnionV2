@@ -19,30 +19,26 @@ export abstract class BaseLayerRenderer {
 
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.name = `${id}_mesh`;
-    this.mesh.renderOrder = 1; // J5: render on top of grid (renderOrder=0)
+    this.mesh.renderOrder = 1;
     this.group.add(this.mesh);
   }
 
   updateTransform(transform: Transform): void {
-    this.group.position.set(transform.position.x, transform.position.y, 0);
+    // Position: world units, direct
+    this.group.position.set(transform.position.x, transform.position.y, this.group.position.z);
+    // Rotation: degrees → radians, positive = CCW in Y-up
     this.group.rotation.z = THREE.MathUtils.degToRad(transform.rotation);
+    // FIX: scale is stored as percentage (100 = 100%), convert to 0-1
     this.mesh.scale.set(transform.scale.x / 100, transform.scale.y / 100, 1);
-    this.updateAnchorOffset(transform.anchorPoint);
+    // Anchor offset: applied to mesh position within the group
+    this.mesh.position.set(-transform.anchorPoint.x, -transform.anchorPoint.y, 0);
   }
-
-  protected updateAnchorOffset(anchor: { x: number; y: number }): void {
-    this.mesh.position.set(-anchor.x, -anchor.y, 0);
-  }
-
-  protected abstract geometryWidth(): number;
-  protected abstract geometryHeight(): number;
 
   updateOpacity(opacity: number): void {
     const mat = this.material as THREE.MeshBasicMaterial;
-    if (mat.transparent !== undefined) {
-      mat.transparent = opacity < 1;
-      mat.opacity = opacity;
-    }
+    mat.transparent = opacity < 1;
+    mat.opacity = opacity;
+    mat.needsUpdate = true;
   }
 
   setVisible(visible: boolean): void {
@@ -54,4 +50,7 @@ export abstract class BaseLayerRenderer {
     this.geometry.dispose();
     this.material.dispose();
   }
+
+  protected abstract geometryWidth(): number;
+  protected abstract geometryHeight(): number;
 }

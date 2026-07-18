@@ -5,6 +5,7 @@
  */
 import React from 'react';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { useViewportStore } from '../../../state/viewportStore';
 import { formatTime } from '../../../utils/time';
 import { VIEWPORT_CONFIG } from '../../../config/viewportConfig';
 interface ViewportHUDProps {
@@ -45,6 +46,26 @@ export const ViewportHUD: React.FC<ViewportHUDProps> = ({
 
   return (
     <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2 py-1 pointer-events-none z-20">
+      {/* Top-left: Grid toggle button (M6) */}
+      <div className="absolute top-0 left-0 -mt-8 flex items-center gap-1 pointer-events-auto">
+        <button onClick={() => useViewportStore.getState().toggleGrid()}
+          className={`w-5 h-5 flex items-center justify-center rounded-sm border-0 cursor-pointer text-[9px] ${useViewportStore.getState().settings.showGrid ? 'bg-accent text-white' : 'bg-panel-header text-text-secondary hover:bg-bg-hover'}`}
+          title="Toggle Grid">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="0.8">
+            <rect x="0.5" y="0.5" width="9" height="9" />
+            <line x1="3.5" y1="0.5" x2="3.5" y2="9.5" /><line x1="6.5" y1="0.5" x2="6.5" y2="9.5" />
+            <line x1="0.5" y1="3.5" x2="9.5" y2="3.5" /><line x1="0.5" y1="6.5" x2="9.5" y2="6.5" />
+          </svg>
+        </button>
+        <button onClick={() => useViewportStore.getState().toggleSnapping()}
+          className={`w-5 h-5 flex items-center justify-center rounded-sm border-0 cursor-pointer text-[9px] ${useViewportStore.getState().settings.snappingEnabled ? 'bg-accent text-white' : 'bg-panel-header text-text-secondary hover:bg-bg-hover'}`}
+          title="Toggle Snapping">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="0.8">
+            <circle cx="5" cy="5" r="4" /><circle cx="5" cy="5" r="1.5" fill="currentColor" />
+          </svg>
+        </button>
+      </div>
+
       {/* Left: composition info */}
       <div className="flex items-center gap-3 text-ui-xs text-text-disabled font-mono">
         <span className="text-text-primary font-medium">{comp.name}</span>

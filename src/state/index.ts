@@ -18,3 +18,6 @@ export type { ToolState, ToolId, ToolSettings } from './toolStore';
 
 export { useHistoryStore } from './historyStore';
 export type { HistoryState, HistoryEntry } from './historyStore';
+
+export { useMarkerStore } from './markerStore';
+export type { MarkerState } from './markerStore';

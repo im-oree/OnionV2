@@ -22,3 +22,8 @@ export type {
 export type {
   Project, ProjectSettings, ProjectAsset,
 } from './project';
+
+export type {
+  CompositionMarker,
+} from './marker';
+export { MARKER_COLORS, defaultMarker } from './marker';

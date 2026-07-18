@@ -1,0 +1,862 @@
+﻿===== src\ui\layout\EmptyStateLanding.tsx =====
+import React from 'react';
+import { openNewCompositionDialog } from '../dialogs/DialogManager';
+
+export const EmptyStateLanding: React.FC = () => {
+  return (
+    <div className="w-full h-full flex items-center justify-center bg-app">
+      <div className="flex gap-6">
+        <LandingCard
+          title="New Composition"
+          icon={<CompIcon />}
+          onClick={openNewCompositionDialog}
+        />
+        <LandingCard
+          title="Open Project"
+          subtitle="From your computer"
+          icon={<FolderIcon />}
+          onClick={() => {
+            // Placeholder â€” hook up File System Access API in storage phase
+            openNewCompositionDialog();
+          }}
+        />
+      </div>
+    </div>
+  );
+};
+
+const LandingCard: React.FC<{
+  title: string;
+  subtitle?: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+}> = ({ title, subtitle, icon, onClick }) => (
+  <button
+    onClick={onClick}
+    className="flex flex-col items-center justify-center gap-3 w-[220px] h-[180px] bg-panel border border-border rounded-md cursor-pointer hover:bg-panel-hover hover:border-accent transition-colors"
+  >
+    <div className="text-text-secondary">{icon}</div>
+    <div className="text-center">
+      <div className="text-ui-md text-text-primary">{title}</div>
+      {subtitle && (
+        <div className="text-ui-xs text-text-disabled mt-1">{subtitle}</div>
+      )}
+    </div>
+  </button>
+);
+
+const CompIcon: React.FC = () => (
+  <svg width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <rect x="6" y="10" width="36" height="28" rx="2" />
+    <path d="M6 16 h36" />
+    <circle cx="10" cy="13" r="1" fill="currentColor" />
+    <circle cx="14" cy="13" r="1" fill="currentColor" />
+    <path d="M18 24 l6 4 l-6 4 z" fill="currentColor" />
+  </svg>
+);
+
+const FolderIcon: React.FC = () => (
+  <svg width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <path d="M6 14 h12 l4 4 h20 v22 h-36 z" />
+  </svg>
+);
+
+===== src\ui\layout\AppShell.tsx =====
+import React, { useEffect, useCallback } from 'react';
+import { useUIStore } from '../../state/uiStore';
+import { useCompositionStore } from '../../state/compositionStore';
+import { MenuBar } from '../menubar/MenuBar';
+import { WorkspaceTabs } from './WorkspaceTabs';
+import { Toolbar } from '../toolbar/Toolbar';
+import { EmptyStateLanding } from './EmptyStateLanding';
+import { RightSidebar } from './RightSidebar';
+
+const ProjectBrowserPanel = React.lazy(() => import('../panels/project/ProjectBrowserPanel'));
+const ViewportPanel = React.lazy(() => import('../panels/viewport/ViewportPanel'));
+const TimelinePanel = React.lazy(() => import('../panels/timeline/TimelinePanel'));
+
+const Fallback = () => <div className="panel-empty h-full">Loading...</div>;
+
+export const AppShell: React.FC = () => {
+  const leftW = useUIStore((s) => s.leftPanelWidth);
+  const rightW = useUIStore((s) => s.rightPanelWidth);
+  const tlH = useUIStore((s) => s.timelineHeight);
+  const showLeft = useUIStore((s) => s.showLeftPanel);
+  const showRight = useUIStore((s) => s.showRightPanel);
+  const showTimeline = useUIStore((s) => s.showTimeline);
+  const setWs = useUIStore((s) => s.setWindowSize);
+
+  const activeCompId = useCompositionStore((s) => s.activeCompositionId);
+
+  const handleResize = useCallback(
+    () => setWs({ width: window.innerWidth, height: window.innerHeight }),
+    [setWs],
+  );
+  useEffect(() => {
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [handleResize]);
+
+  // Column widths (0 if hidden)
+  const leftCol = showLeft ? `${leftW}px` : '0px';
+  const leftSplit = showLeft ? '3px' : '0px';
+  const rightTabStrip = showRight ? '32px' : '0px';
+  const rightCol = showRight ? `${rightW}px` : '0px';
+  const rightSplit = showRight ? '3px' : '0px';
+  const tlRow = showTimeline && activeCompId ? `${tlH}px` : '0px';
+  const tlSplit = showTimeline && activeCompId ? '3px' : '0px';
+
+  return (
+    <div
+      className="h-full w-full overflow-hidden bg-app"
+      style={{
+        display: 'grid',
+        gridTemplateColumns: `40px ${leftCol} ${leftSplit} 1fr ${rightSplit} ${rightTabStrip} ${rightCol}`,
+        gridTemplateRows: `28px 28px 1fr ${tlSplit} ${tlRow}`,
+        gap: 0,
+      }}
+    >
+      {/* Row 0: Menubar */}
+      <div style={{ gridColumn: '1 / -1', gridRow: '1' }} className="overflow-hidden">
+        <MenuBar />
+      </div>
+
+      {/* Row 1: Workspace tabs */}
+      <div style={{ gridColumn: '1 / -1', gridRow: '2' }} className="overflow-hidden">
+        <WorkspaceTabs />
+      </div>
+
+      {/* Row 2: Main content area */}
+      {/* Col 0: Toolbar */}
+      <div
+        style={{ gridColumn: '1', gridRow: '3 / 6' }}
+        className="overflow-hidden bg-surface border-r border-border"
+      >
+        <Toolbar />
+      </div>
+
+      {/* Col 1: Project Browser (left panel) */}
+      {showLeft && (
+        <div
+          style={{ gridColumn: '2', gridRow: '3 / 6' }}
+          className="overflow-hidden bg-panel border-r border-border"
+        >
+          <React.Suspense fallback={<Fallback />}>
+            <ProjectBrowserPanel />
+          </React.Suspense>
+        </div>
+      )}
+
+      {/* Col 2: Left splitter */}
+      {showLeft && (
+        <div style={{ gridColumn: '3', gridRow: '3 / 6' }}>
+          <VSplitDrag which="left" />
+        </div>
+      )}
+
+      {/* Col 3: Center (Viewport + Timeline stacked) */}
+      <div style={{ gridColumn: '4', gridRow: '3' }} className="overflow-hidden relative bg-app">
+        {activeCompId ? (
+          <React.Suspense fallback={<Fallback />}>
+            <ViewportPanel />
+          </React.Suspense>
+        ) : (
+          <EmptyStateLanding />
+        )}
+      </div>
+
+      {/* Timeline splitter */}
+      {activeCompId && showTimeline && (
+        <div style={{ gridColumn: '4', gridRow: '4' }}>
+          <HSplitDrag />
+        </div>
+      )}
+
+      {/* Timeline */}
+      {activeCompId && showTimeline && (
+        <div style={{ gridColumn: '4', gridRow: '5' }} className="overflow-hidden bg-panel">
+          <React.Suspense fallback={<Fallback />}>
+            <TimelinePanel />
+          </React.Suspense>
+        </div>
+      )}
+
+      {/* Col 4: Right splitter */}
+      {showRight && (
+        <div style={{ gridColumn: '5', gridRow: '3 / 6' }}>
+          <VSplitDrag which="right" />
+        </div>
+      )}
+
+      {/* Col 5: Right tab strip */}
+      {showRight && (
+        <div
+          style={{ gridColumn: '6', gridRow: '3 / 6' }}
+          className="overflow-hidden bg-surface border-r border-border"
+        >
+          <RightSidebar />
+        </div>
+      )}
+
+      {/* Col 6: Right panel content */}
+      {showRight && (
+        <div
+          style={{ gridColumn: '7', gridRow: '3 / 6' }}
+          className="overflow-hidden bg-panel"
+        >
+          <RightPanelContent />
+        </div>
+      )}
+    </div>
+  );
+};
+
+/** Renders the currently selected right-tab panel content */
+const RightPanelContent: React.FC = () => {
+  const tab = useUIStore((s) => s.activeRightTab);
+  const PropertiesPanel = React.useMemo(
+    () => React.lazy(() => import('../panels/properties/PropertiesPanel')),
+    [],
+  );
+  const EffectsPanel = React.useMemo(
+    () => React.lazy(() => import('../panels/properties/EffectsPanelWrapper')),
+    [],
+  );
+  const AlignPanel = React.useMemo(
+    () => React.lazy(() => import('../panels/align/AlignPanel')),
+    [],
+  );
+  const InfoPanel = React.useMemo(
+    () => React.lazy(() => import('../panels/info/InfoPanel')),
+    [],
+  );
+  const RenderPanel = React.useMemo(
+    () => React.lazy(() => import('../panels/render/RenderPanel')),
+    [],
+  );
+  const CharacterPanel = React.useMemo(
+    () => React.lazy(() => import('../panels/character/CharacterPanel')),
+    [],
+  );
+
+  return (
+    <React.Suspense fallback={<Fallback />}>
+      {tab === 'properties' && <PropertiesPanel />}
+      {tab === 'effects' && <EffectsPanel />}
+      {tab === 'align' && <AlignPanel />}
+      {tab === 'info' && <InfoPanel />}
+      {tab === 'render' && <RenderPanel />}
+      {tab === 'character' && <CharacterPanel />}
+    </React.Suspense>
+  );
+};
+
+const VSplitDrag: React.FC<{ which: 'left' | 'right' }> = ({ which }) => {
+  const setLeft = useUIStore((s) => s.setLeftPanelWidth);
+  const setRight = useUIStore((s) => s.setRightPanelWidth);
+  const onDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW =
+        which === 'left'
+          ? useUIStore.getState().leftPanelWidth
+          : useUIStore.getState().rightPanelWidth;
+      const mm = (ev: MouseEvent) => {
+        const delta = ev.clientX - startX;
+        const w = which === 'left' ? startW + delta : startW - delta;
+        const clamped = Math.max(180, Math.min(600, w));
+        if (which === 'left') setLeft(clamped);
+        else setRight(clamped);
+      };
+      const mu = () => {
+        document.removeEventListener('mousemove', mm);
+        document.removeEventListener('mouseup', mu);
+        document.body.style.cursor = '';
+      };
+      document.body.style.cursor = 'col-resize';
+      document.addEventListener('mousemove', mm);
+      document.addEventListener('mouseup', mu);
+    },
+    [which, setLeft, setRight],
+  );
+  return (
+    <div
+      onMouseDown={onDown}
+      className="w-full h-full cursor-col-resize bg-border hover:bg-accent transition-colors"
+    />
+  );
+};
+
+const HSplitDrag: React.FC = () => {
+  const setTh = useUIStore((s) => s.setTimelineHeight);
+  const onDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startY = e.clientY;
+      const startH = useUIStore.getState().timelineHeight;
+      const mm = (ev: MouseEvent) => {
+        const h = Math.max(120, Math.min(600, startH + startY - ev.clientY));
+        setTh(h);
+      };
+      const mu = () => {
+        document.removeEventListener('mousemove', mm);
+        document.removeEventListener('mouseup', mu);
+        document.body.style.cursor = '';
+      };
+      document.body.style.cursor = 'row-resize';
+      document.addEventListener('mousemove', mm);
+      document.addEventListener('mouseup', mu);
+    },
+    [setTh],
+  );
+  return (
+    <div
+      onMouseDown={onDown}
+      className="w-full h-full cursor-row-resize bg-border hover:bg-accent transition-colors"
+    />
+  );
+};
+
+===== src\ui\dialogs\NewCompositionDialog.tsx =====
+/**
+ * NewCompositionDialog â€” modal dialog for creating a new composition.
+ * Fields: Name, Width, Height, Frame Rate, Duration, Background Color, Presets.
+ * Presets loaded from compositionPresets.ts.
+ */
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { useCompositionStore } from '../../state/compositionStore';
+import { COMPOSITION, FRAME_RATES } from '../../config/constants';
+import { COMPOSITION_PRESETS, type CompPreset } from '../../config/compositionPresets';
+
+const DEF_W = COMPOSITION.DEFAULT_WIDTH;
+const DEF_H = COMPOSITION.DEFAULT_HEIGHT;
+const DEF_FPS = COMPOSITION.DEFAULT_FPS;
+const DEF_DUR = COMPOSITION.DEFAULT_DURATION;
+
+interface NewCompositionDialogProps {
+  open: boolean;
+  onClose: () => void;
+}
+
+export const NewCompositionDialog: React.FC<NewCompositionDialogProps> = ({
+  open,
+  onClose,
+}) => {
+  const addComposition = useCompositionStore((s) => s.addComposition);
+
+  const [name, setName] = useState('New Composition');
+  const [width, setWidth] = useState<number>(DEF_W);
+  const [height, setHeight] = useState<number>(DEF_H);
+  const [fps, setFps] = useState<number>(DEF_FPS);
+  const [duration, setDuration] = useState<number>(DEF_DUR);
+  const [bgColor, setBgColor] = useState('#000000');
+  const [selectedPreset, setSelectedPreset] = useState<string>('fhd');
+
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  // Focus name input when dialog opens
+  useEffect(() => {
+    if (open) {
+      setName('New Composition');
+      setWidth(COMPOSITION.DEFAULT_WIDTH);
+      setHeight(COMPOSITION.DEFAULT_HEIGHT);
+      setFps(COMPOSITION.DEFAULT_FPS);
+      setDuration(COMPOSITION.DEFAULT_DURATION);
+      setBgColor('#000000');
+      setSelectedPreset('fhd');
+      setTimeout(() => nameRef.current?.focus(), 50);
+    }
+  }, [open]);
+
+  // Apply preset
+  const applyPreset = useCallback((preset: CompPreset) => {
+    setWidth(preset.width);
+    setHeight(preset.height);
+    setFps(preset.fps);
+    setSelectedPreset(preset.id);
+  }, []);
+
+  // Handle size changes â€” switch to Custom if no preset matches
+  const handleWidthChange = useCallback((w: number) => {
+    setWidth(w);
+    const match = COMPOSITION_PRESETS.find((p) => p.width === w && p.height === height);
+    if (!match) setSelectedPreset('custom');
+  }, [height]);
+
+  const handleHeightChange = useCallback((h: number) => {
+    setHeight(h);
+    const match = COMPOSITION_PRESETS.find((p) => p.width === width && p.height === h);
+    if (!match) setSelectedPreset('custom');
+  }, [width]);
+
+  const handleSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      addComposition({
+        name: name || 'New Composition',
+        width: Math.max(COMPOSITION.MIN_SIZE, Math.min(COMPOSITION.MAX_SIZE, width)),
+        height: Math.max(COMPOSITION.MIN_SIZE, Math.min(COMPOSITION.MAX_SIZE, height)),
+        fps,
+        duration: Math.max(1, duration),
+        backgroundColor: bgColor,
+      });
+      onClose();
+    },
+    [name, width, height, fps, duration, bgColor, addComposition, onClose],
+  );
+
+  const handleBackdropClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.target === e.currentTarget) onClose();
+    },
+    [onClose],
+  );
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    },
+    [onClose],
+  );
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-modal flex items-center justify-center bg-[var(--color-bg-overlay)]"
+      onClick={handleBackdropClick}
+      onKeyDown={handleKeyDown}
+    >
+      <div
+        className="bg-panel rounded-md shadow-modal border border-border min-w-[340px] max-w-[420px]"
+        role="dialog"
+        aria-modal="true"
+        aria-label="New Composition"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+          <h2 className="text-ui-sm font-medium text-text-primary">New Composition</h2>
+          <button
+            className="border-0 bg-transparent text-text-disabled cursor-pointer hover:text-text-primary text-ui-sm"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            âœ•
+          </button>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="p-3 space-y-3">
+          {/* Name */}
+          <div className="flex items-center gap-2">
+            <label className="text-ui-xs text-text-secondary w-16 shrink-0">Name</label>
+            <input
+              ref={nameRef}
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="flex-1 h-6 text-ui-xs px-2 bg-[var(--color-bg-input)] border border-border rounded-sm text-text-primary outline-none focus:border-[var(--color-border-focus)]"
+              placeholder="My Composition"
+            />
+          </div>
+
+          {/* Presets */}
+          <div className="flex items-center gap-2">
+            <label className="text-ui-xs text-text-secondary w-16 shrink-0">Preset</label>
+            <div className="flex flex-wrap gap-1 flex-1">
+              {COMPOSITION_PRESETS.filter((p) => p.id !== 'custom').map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={[
+                    'px-1.5 py-0.5 text-ui-xs rounded-sm border cursor-pointer transition-colors',
+                    selectedPreset === preset.id
+                      ? 'bg-accent text-white border-accent'
+                      : 'bg-transparent text-text-secondary border-border hover:bg-panel-hover',
+                  ].join(' ')}
+                  onClick={() => applyPreset(preset)}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Width / Height */}
+          <div className="flex items-center gap-2">
+            <label className="text-ui-xs text-text-secondary w-16 shrink-0">Size</label>
+            <div className="flex items-center gap-1 flex-1">
+              <input
+                type="number"
+                value={width}
+                onChange={(e) => handleWidthChange(Number(e.target.value))}
+                className="w-16 h-6 text-ui-xs px-1 text-center bg-[var(--color-bg-input)] border border-border rounded-sm text-text-primary outline-none focus:border-[var(--color-border-focus)]"
+                min={COMPOSITION.MIN_SIZE}
+                max={COMPOSITION.MAX_SIZE}
+              />
+              <span className="text-text-disabled text-ui-xs">Ã—</span>
+              <input
+                type="number"
+                value={height}
+                onChange={(e) => handleHeightChange(Number(e.target.value))}
+                className="w-16 h-6 text-ui-xs px-1 text-center bg-[var(--color-bg-input)] border border-border rounded-sm text-text-primary outline-none focus:border-[var(--color-border-focus)]"
+                min={COMPOSITION.MIN_SIZE}
+                max={COMPOSITION.MAX_SIZE}
+              />
+              <span className="text-text-muted text-ui-xs">px</span>
+            </div>
+          </div>
+
+          {/* Frame Rate */}
+          <div className="flex items-center gap-2">
+            <label className="text-ui-xs text-text-secondary w-16 shrink-0">Frame Rate</label>
+            <select
+              value={fps}
+              onChange={(e) => setFps(Number(e.target.value))}
+              className="flex-1 h-6 text-ui-xs px-1 bg-[var(--color-bg-input)] border border-border rounded-sm text-text-primary outline-none focus:border-[var(--color-border-focus)]"
+            >
+              {FRAME_RATES.map((rate) => (
+                <option key={rate} value={rate}>
+                  {rate} fps
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Duration */}
+          <div className="flex items-center gap-2">
+            <label className="text-ui-xs text-text-secondary w-16 shrink-0">Duration</label>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                value={duration}
+                onChange={(e) => setDuration(Number(e.target.value))}
+                className="w-16 h-6 text-ui-xs px-1 text-center bg-[var(--color-bg-input)] border border-border rounded-sm text-text-primary outline-none focus:border-[var(--color-border-focus)]"
+                min={1}
+                max={9999}
+              />
+              <span className="text-text-disabled text-ui-xs">seconds</span>
+            </div>
+          </div>
+
+          {/* Background Color */}
+          <div className="flex items-center gap-2">
+            <label className="text-ui-xs text-text-secondary w-16 shrink-0">Bg Color</label>
+            <input
+              type="color"
+              value={bgColor}
+              onChange={(e) => setBgColor(e.target.value)}
+              className="w-8 h-6 p-0 border border-border rounded-sm cursor-pointer bg-transparent"
+            />
+            <span className="text-ui-xs text-text-disabled font-mono">{bgColor}</span>
+          </div>
+
+          {/* Actions */}
+          <div className="flex justify-end gap-2 pt-2 border-t border-border">
+            <button
+              type="button"
+              className="px-3 py-1 text-ui-xs border border-border rounded-sm bg-transparent text-text-secondary cursor-pointer hover:bg-panel-hover transition-colors"
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="px-3 py-1 text-ui-xs border border-accent rounded-sm bg-accent text-white cursor-pointer hover:bg-accent-hover transition-colors"
+            >
+              Create
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+
+===== src\ui\dialogs\DialogManager.tsx =====
+import React from 'react';
+import { NewCompositionDialog } from './NewCompositionDialog';
+
+interface DialogState {
+  newComposition: boolean;
+}
+
+let dialogState: DialogState = { newComposition: false };
+const listeners: Array<() => void> = [];
+
+function notifyListeners(): void {
+  for (const l of listeners) l();
+}
+
+export function openNewCompositionDialog(): void {
+  dialogState = { ...dialogState, newComposition: true };
+  notifyListeners();
+}
+
+export function closeAllDialogs(): void {
+  dialogState = { newComposition: false };
+  notifyListeners();
+}
+
+function useDialogState(): DialogState {
+  const [state, setState] = React.useState<DialogState>(dialogState);
+  React.useEffect(() => {
+    const handler = () => setState({ ...dialogState });
+    listeners.push(handler);
+    return () => {
+      const idx = listeners.indexOf(handler);
+      if (idx >= 0) listeners.splice(idx, 1);
+    };
+  }, []);
+  return state;
+}
+
+export const DialogManager: React.FC = () => {
+  const state = useDialogState();
+  return (
+    <>
+      {state.newComposition && <NewCompositionDialog open onClose={closeAllDialogs} />}
+    </>
+  );
+};
+
+===== src\App.tsx =====
+import React from 'react';
+import { AppShell } from './ui/layout/AppShell';
+import { DialogManager } from './ui/dialogs/DialogManager';
+import { useKeyboardManager, registerAllShortcuts } from './input/KeyboardManager';
+
+// Register all shortcuts once
+registerAllShortcuts();
+
+const App: React.FC = () => {
+  // Mount keyboard listener
+  useKeyboardManager();
+  return (
+    <>
+      <AppShell />
+      <DialogManager />
+    </>
+  );
+};
+export default App;
+
+
+===== src\main.tsx =====
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import './styles/global.css';
+import './styles/panels.css';
+import { useCompositionStore } from './state/compositionStore';
+import { registerAllEffects } from './renderer/effects/registerEffects';
+
+// Phase 5: Register all built-in effects at startup
+registerAllEffects();
+
+const rootEl = document.getElementById('root');
+if (!rootEl) throw new Error('Root element #root not found');
+
+ReactDOM.createRoot(rootEl).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+);
+
+// Initialize with a default composition
+const initTimer = setTimeout(() => {
+  const state = useCompositionStore.getState();
+  if (state.compositions.length === 0) {
+    state.addComposition({ name: 'My Composition' });
+  }
+}, 0);
+
+// Cleanup for HMR
+import.meta.hot?.dispose?.(() => clearTimeout(initTimer));
+
+
+===== src\config\defaults.ts =====
+import { COMPOSITION, PERFORMANCE } from './constants';
+import type { Composition, Layer, Project } from '../types';
+import { defaultTransform } from '../types/layer';
+
+export const DEFAULT_COMPOSITION: Omit<Composition, 'id'> = {
+  name: 'New Composition',
+  width: COMPOSITION.DEFAULT_WIDTH,
+  height: COMPOSITION.DEFAULT_HEIGHT,
+  fps: COMPOSITION.DEFAULT_FPS,
+  duration: COMPOSITION.DEFAULT_DURATION,
+  backgroundColor: '#000000',
+  layers: [],
+  currentTime: 0,
+  workAreaStart: 0,
+  workAreaEnd: COMPOSITION.DEFAULT_DURATION,
+  pixelAspect: COMPOSITION.PIXEL_ASPECT,
+};
+
+export function createDefaultLayer(type: Layer['type'], name: string): Omit<Layer, 'id'> {
+  return {
+    type,
+    name,
+    visible: true,
+    locked: false,
+    soloed: false,
+    shy: false,
+    blendMode: 'normal',
+    opacity: 100,
+    transform: defaultTransform(),
+    startFrame: 0,
+    endFrame: COMPOSITION.DEFAULT_DURATION,
+    zIndex: 0,
+    effects: [],
+    masks: [],
+    parentId: null,
+  };
+}
+
+export const DEFAULT_PROJECT: Omit<Project, 'id'> = {
+  name: 'Untitled Project',
+  version: '1.0',
+  created: Date.now(),
+  modified: Date.now(),
+  compositions: [],
+  assets: [],
+  settings: {
+    adaptiveResolution: PERFORMANCE.ADAPTIVE_RESOLUTION_ON,
+    ramPreview: PERFORMANCE.RAM_PREVIEW_ON,
+    targetFps: PERFORMANCE.TARGET_FPS,
+    gridSnap: true,
+    snapToGuides: true,
+  },
+};
+
+export const DEFAULT_UI_STATE = {
+  activeWorkspace: 'layout',
+  panelVisibility: {
+    menubar: true,
+    toolbar: true,
+    timeline: true,
+    outliner: true,
+    properties: true,
+  },
+  panelSizes: {
+    toolbarWidth: 36,
+    outlinerRatio: 0.4,
+    timelineHeight: 150,
+    propertiesRatio: 0.6,
+  },
+};
+
+
+===== src\config\compositionPresets.ts =====
+export interface CompPreset {
+  id: string;
+  label: string;
+  width: number;
+  height: number;
+  fps: number;
+}
+
+export const COMPOSITION_PRESETS: CompPreset[] = [
+  { id: 'fhd', label: 'HD 1080p', width: 1920, height: 1080, fps: 30 },
+  { id: 'hd', label: 'HD 720p', width: 1280, height: 720, fps: 30 },
+  { id: '4k', label: '4K UHD', width: 3840, height: 2160, fps: 30 },
+  { id: '2k', label: '2K DCI', width: 2048, height: 1080, fps: 24 },
+  { id: 'square', label: 'Square 1080', width: 1080, height: 1080, fps: 30 },
+  { id: 'vertical', label: 'Vertical 1080x1920', width: 1080, height: 1920, fps: 30 },
+  { id: 'custom', label: 'Custom', width: 1920, height: 1080, fps: 30 },
+];
+
+export const FRAME_RATE_OPTIONS = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60] as const;
+export const MIN_COMP_SIZE = 64;
+export const MAX_COMP_SIZE = 8192;
+
+
+===== src\state\uiStore.ts =====
+import { create } from 'zustand';
+import { PANEL_TYPES, WORKSPACES } from '../config/constants';
+
+export type PanelType = typeof PANEL_TYPES[keyof typeof PANEL_TYPES];
+export type WorkspaceType = typeof WORKSPACES[keyof typeof WORKSPACES];
+
+export type RightSidebarTab = 'properties' | 'effects' | 'align' | 'info' | 'render' | 'character';
+
+export interface PanelLayout { id: string; type: PanelType; label: string }
+export type SplitDirection = 'horizontal' | 'vertical';
+export type PanelNode =
+  | { type: 'leaf'; id: string; panel: PanelLayout }
+  | { type: 'split'; id: string; direction: SplitDirection; children: [PanelNode, PanelNode]; sizes: number[] };
+
+export interface UIState {
+  leftPanelWidth: number;
+  rightPanelWidth: number;
+  timelineHeight: number;
+  windowSize: { width: number; height: number };
+  activeWorkspace: string;
+  activeRightTab: RightSidebarTab;
+  showLeftPanel: boolean;
+  showRightPanel: boolean;
+  showTimeline: boolean;
+  panelVisibility: Record<string, boolean>;
+  layoutTree: PanelNode;
+
+  setLeftPanelWidth: (w: number) => void;
+  setRightPanelWidth: (w: number) => void;
+  setTimelineHeight: (h: number) => void;
+  setWindowSize: (s: { width: number; height: number }) => void;
+  setActiveWorkspace: (w: string) => void;
+  setActiveRightTab: (t: RightSidebarTab) => void;
+  toggleLeftPanel: () => void;
+  toggleRightPanel: () => void;
+  toggleTimeline: () => void;
+  togglePanelVisibility: (id: string) => void;
+  setLayoutTree: (tree: PanelNode) => void;
+  requestRendererRender: () => void;
+}
+
+let _requestRender: (() => void) | null = null;
+export function setRequestRender(fn: () => void): void {
+  _requestRender = fn;
+}
+export function triggerRequestRender(): void {
+  _requestRender?.();
+}
+
+function createDefaultLayoutTree(): PanelNode {
+  return {
+    type: 'leaf', id: 'viewport',
+    panel: { id: 'viewport', type: PANEL_TYPES.VIEWPORT, label: 'Viewport' },
+  };
+}
+
+export const useUIStore = create<UIState>((set) => ({
+  leftPanelWidth: 260,
+  rightPanelWidth: 320,
+  timelineHeight: 220,
+  windowSize: { width: window.innerWidth, height: window.innerHeight },
+  activeWorkspace: 'layout',
+  activeRightTab: 'properties',
+  showLeftPanel: true,
+  showRightPanel: true,
+  showTimeline: true,
+  panelVisibility: {},
+  layoutTree: createDefaultLayoutTree(),
+
+  setLeftPanelWidth: (w) => set({ leftPanelWidth: w }),
+  setRightPanelWidth: (w) => set({ rightPanelWidth: w }),
+  setTimelineHeight: (h) => set({ timelineHeight: h }),
+  setWindowSize: (s) => set({ windowSize: s }),
+  setActiveWorkspace: (w) => set({ activeWorkspace: w }),
+  setActiveRightTab: (t) => set({ activeRightTab: t }),
+  toggleLeftPanel: () => set((s) => ({ showLeftPanel: !s.showLeftPanel })),
+  toggleRightPanel: () => set((s) => ({ showRightPanel: !s.showRightPanel })),
+  toggleTimeline: () => set((s) => ({ showTimeline: !s.showTimeline })),
+  togglePanelVisibility: (id) =>
+    set((s) => ({ panelVisibility: { ...s.panelVisibility, [id]: !s.panelVisibility[id] } })),
+  setLayoutTree: (tree) => set({ layoutTree: tree }),
+  requestRendererRender: () => triggerRequestRender(),
+}));
+
+

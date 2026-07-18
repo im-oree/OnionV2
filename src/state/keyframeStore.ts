@@ -1,20 +1,13 @@
-/**
- * keyframeStore — Zustand store for keyframe state.
- * Manages keyframes by (layerId, propertyPath) and selection.
- */
 import { create } from 'zustand';
 import { KeyframeEngine } from '../animation/KeyframeEngine';
 import type { Keyframe, InterpolationType } from '../types/keyframe';
 
 export interface KeyframeState {
-  /** The engine instance that holds and evaluates keyframes */
   engine: KeyframeEngine;
-  /** Selected keyframe IDs */
   selectedKeyframeIds: Set<string>;
-  /** Which properties have animation enabled (stopwatch on) per layer */
-  animatedProperties: Map<string, Set<string>>; // layerId → Set<propertyPath>
+  animatedProperties: Map<string, Set<string>>;
+  revision: number;
 
-  // Actions
   addKeyframe: (layerId: string, keyframe: Keyframe) => void;
   removeKeyframe: (keyframeId: string) => void;
   updateKeyframe: (keyframeId: string, patch: Partial<Keyframe>) => void;
@@ -34,90 +27,81 @@ export const useKeyframeStore = create<KeyframeState>((set, get) => ({
   engine: new KeyframeEngine(),
   selectedKeyframeIds: new Set(),
   animatedProperties: new Map(),
+  revision: 0,
 
   addKeyframe: (layerId, keyframe) => {
     get().engine.addKeyframe(layerId, keyframe);
-    set({ engine: get().engine }); // Trigger re-render by replacing reference
+    set(s => ({ revision: s.revision + 1 }));
   },
 
   removeKeyframe: (keyframeId) => {
     get().engine.removeKeyframe(keyframeId);
-    set((s) => {
+    set(s => {
       const next = new Set(s.selectedKeyframeIds);
       next.delete(keyframeId);
-      return { selectedKeyframeIds: next };
+      return { selectedKeyframeIds: next, revision: s.revision + 1 };
     });
   },
 
   updateKeyframe: (keyframeId, patch) => {
     get().engine.updateKeyframe(keyframeId, patch);
+    set(s => ({ revision: s.revision + 1 }));
   },
 
   moveKeyframe: (keyframeId, newTime) => {
     get().engine.moveKeyframe(keyframeId, newTime);
+    set(s => ({ revision: s.revision + 1 }));
   },
 
   setInterpolation: (keyframeId, interpolation) => {
     get().engine.setInterpolation(keyframeId, interpolation);
+    set(s => ({ revision: s.revision + 1 }));
   },
 
   deleteSelectedKeyframes: () => {
     const ids = get().selectedKeyframeIds;
     for (const id of ids) get().engine.removeKeyframe(id);
-    set({ selectedKeyframeIds: new Set() });
+    set(s => ({ selectedKeyframeIds: new Set(), revision: s.revision + 1 }));
   },
 
-  toggleKeyframeSelection: (id) => {
-    set((s) => {
-      const next = new Set(s.selectedKeyframeIds);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return { selectedKeyframeIds: next };
-    });
-  },
+  toggleKeyframeSelection: (id) => set(s => {
+    const next = new Set(s.selectedKeyframeIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return { selectedKeyframeIds: next };
+  }),
 
-  selectKeyframe: (id, addToSelection) => {
-    set((s) => {
-      const next = addToSelection ? new Set(s.selectedKeyframeIds) : new Set<string>();
-      next.add(id);
-      return { selectedKeyframeIds: next };
-    });
-  },
+  selectKeyframe: (id, add) => set(s => {
+    const next = add ? new Set(s.selectedKeyframeIds) : new Set<string>();
+    next.add(id);
+    return { selectedKeyframeIds: next };
+  }),
 
-  deselectKeyframe: (id) => {
-    set((s) => {
-      const next = new Set(s.selectedKeyframeIds);
-      next.delete(id);
-      return { selectedKeyframeIds: next };
-    });
-  },
+  deselectKeyframe: (id) => set(s => {
+    const next = new Set(s.selectedKeyframeIds);
+    next.delete(id);
+    return { selectedKeyframeIds: next };
+  }),
 
   clearKeyframeSelection: () => set({ selectedKeyframeIds: new Set() }),
 
-  getKeyframeIdsForLayer: (layerId) => {
-    return get().engine.getAllKeyframesForLayer(layerId).map((k) => k.id);
-  },
+  getKeyframeIdsForLayer: (layerId) =>
+    get().engine.getAllKeyframesForLayer(layerId).map(k => k.id),
 
-  toggleAnimatedProperty: (layerId, property) => {
-    set((s) => {
-      const next = new Map(s.animatedProperties);
-      const existing = next.get(layerId);
-      if (existing?.has(property)) {
-        existing.delete(property);
-        if (existing.size === 0) next.delete(layerId);
-        else next.set(layerId, existing);
-        // Remove all keyframes for this property
-        s.engine.removeAllForProperty(layerId, property);
-      } else {
-        const props = existing ? new Set(existing) : new Set<string>();
-        props.add(property);
-        next.set(layerId, props);
-      }
-      return { animatedProperties: next };
-    });
-  },
+  toggleAnimatedProperty: (layerId, property) => set(s => {
+    const next = new Map(s.animatedProperties);
+    const existing = next.get(layerId);
+    if (existing?.has(property)) {
+      existing.delete(property);
+      if (existing.size === 0) next.delete(layerId);
+      s.engine.removeAllForProperty(layerId, property);
+    } else {
+      const props = existing ? new Set(existing) : new Set<string>();
+      props.add(property);
+      next.set(layerId, props);
+    }
+    return { animatedProperties: next, revision: s.revision + 1 };
+  }),
 
-  isPropertyAnimated: (layerId, property) => {
-    return get().animatedProperties.get(layerId)?.has(property) ?? false;
-  },
+  isPropertyAnimated: (layerId, property) =>
+    get().animatedProperties.get(layerId)?.has(property) ?? false,
 }));

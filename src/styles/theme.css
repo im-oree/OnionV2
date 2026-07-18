@@ -1,5 +1,9 @@
 :root {
   /* ── AE-exact colors (K6) ──────────────────────────────── */
+    /* Panel gutter — dark space BETWEEN panels (like Blender/AE) */
+  --color-gutter:          #131313;
+  --color-border:          #131313;
+  --color-border-light:    #1a1a1a;
   --color-bg-app:          #232323;
   --color-bg-surface:      #2b2b2b;
   --color-bg-surface-alt:  #202020;
@@ -11,8 +15,8 @@
   --color-bg-raised:       #353535;
   --color-bg-overlay:      rgba(0,0,0,0.7);
 
-  --color-border:          #1a1a1a;
-  --color-border-light:    #222222;
+  --color-border:          #131313;
+  --color-border-light:    #1a1a1a;
   --color-border-focus:    #4772b3;
 
   --color-text-primary:    #e6e6e6;
