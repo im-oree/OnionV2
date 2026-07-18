@@ -1,5 +1,24 @@
-export type { Layer, LayerType, LayerPayload, Mask, Vec2, ShapeData, SolidData, ImageData, VideoData, TextData } from './layer';
-export type { Composition, Transform, BlendMode, WorkArea } from './composition';
-export type { Keyframe, InterpolationType, BezierTangent, AnimatedProperty, AnimatedProperties, EvaluatedProperties } from './keyframe';
-export type { Effect, EffectType, EffectParameter, EffectDefinition } from './effect';
-export type { Project, ProjectSettings, ProjectAsset } from './project';
+export type {
+  Layer, LayerType, BlendMode, Transform,
+  BaseLayer, LayerPayload,
+  SolidData, ShapeData, TextData, ImageData, VideoData,
+  ShapeRectangle, ShapeEllipse, ShapePolygon, ShapeStar,
+  Mask, defaultTransform,
+} from './layer';
+
+export type {
+  Composition, WorkArea,
+} from './composition';
+
+export type {
+  EffectType, EffectParameter, EffectDefinition, EffectInstance,
+} from './effect';
+
+export type {
+  Keyframe, AnimatedProperty, AnimatedProperties,
+  InterpolationType, BezierTangent,
+} from './keyframe';
+
+export type {
+  Project, ProjectSettings, ProjectAsset,
+} from './project';

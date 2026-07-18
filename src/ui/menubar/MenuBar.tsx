@@ -2,14 +2,22 @@ import React,{useState,useCallback,useEffect} from 'react';
 import {MenuDropdown,type MenuItemDefinition} from './MenuDropdown';
 import {fileMenu} from './menus/fileMenu';
 import {editMenu} from './menus/editMenu';
+import {addMenu} from './menus/addMenu';
+import {animationMenu} from './menus/animationMenu';
 import {renderMenu} from './menus/renderMenu';
+import {viewMenu} from './menus/viewMenu';
 import {windowMenu} from './menus/windowMenu';
 import {helpMenu} from './menus/helpMenu';
 
 interface MenuDef{label:string;items:MenuItemDefinition[]}
 const MENUS:MenuDef[]=[
-  {label:'File',items:fileMenu},{label:'Edit',items:editMenu},
-  {label:'Render',items:renderMenu},{label:'Window',items:windowMenu},
+  {label:'File',items:fileMenu},
+  {label:'Edit',items:editMenu},
+  {label:'Add',items:addMenu},
+  {label:'Animation',items:animationMenu},
+  {label:'Render',items:renderMenu},
+  {label:'View',items:viewMenu},
+  {label:'Window',items:windowMenu},
   {label:'Help',items:helpMenu},
 ];
 

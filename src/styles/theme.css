@@ -1,24 +1,27 @@
 :root {
-  /* ── Blender-exact colors ───────────────────────────────── */
-  --color-bg-app:          #303030;
-  --color-bg-surface:      #282828;
-  --color-bg-surface-alt:  #242424;
-  --color-bg-panel:        #383838;
-  --color-bg-panel-header: #333333;
-  --color-bg-hover:        #444444;
+  /* ── AE-exact colors (K6) ──────────────────────────────── */
+  --color-bg-app:          #232323;
+  --color-bg-surface:      #2b2b2b;
+  --color-bg-surface-alt:  #202020;
+  --color-bg-panel:        #303030;
+  --color-bg-panel-header: #2a2a2a;
+  --color-bg-hover:        #3a3a3a;
   --color-bg-active:       #4772b3;
-  --color-bg-input:        #2b2b2b;
-  --color-bg-raised:       #3d3d3d;
-  --color-bg-overlay:      rgba(0,0,0,0.6);
+  --color-bg-input:        #1e1e1e;
+  --color-bg-raised:       #353535;
+  --color-bg-overlay:      rgba(0,0,0,0.7);
 
-  --color-border:          #232323;
-  --color-border-light:    #2a2a2a;
+  --color-border:          #1a1a1a;
+  --color-border-light:    #222222;
   --color-border-focus:    #4772b3;
 
   --color-text-primary:    #e6e6e6;
   --color-text-secondary:  #a0a0a0;
-  --color-text-disabled:   #666666;
+  --color-text-disabled:   #555555;
   --color-text-accent:     #8cb9f5;
+
+  --color-bg-panel-input:  var(--color-bg-input);
+  --color-text-muted:      var(--color-text-secondary);
 
   --color-accent:          #4772b3;
   --color-accent-hover:    #5a8cce;
@@ -42,7 +45,8 @@
   /* ── Sizing ─────────────────────────────────────────────── */
   --size-menubar-height:   28px;
   --size-tabs-height:      28px;
-  --size-toolbar-width:    44px;
+  --size-toolbar-width:    40px;
+  --size-toolbar-icon:     24px;
   --size-panel-header:     26px;
   --size-splitter:         4px;
   --size-timeline-height:  200px;

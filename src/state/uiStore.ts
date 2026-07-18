@@ -16,7 +16,6 @@ export interface UIState {
   /** CSS Grid layout state */
   rightPanelWidth: number;
   timelineHeight: number;
-  outlinerRatio: number;
   windowSize: { width: number; height: number };
   activeWorkspace: string;
   panelVisibility: Record<string, boolean>;
@@ -27,11 +26,23 @@ export interface UIState {
   // Actions
   setRightPanelWidth: (w: number) => void;
   setTimelineHeight: (h: number) => void;
-  setOutlinerRatio: (r: number) => void;
   setWindowSize: (s: { width: number; height: number }) => void;
   setActiveWorkspace: (w: string) => void;
   togglePanelVisibility: (id: string) => void;
   setLayoutTree: (tree: PanelNode) => void;
+  /** Request the current renderer to redraw one frame (used during animation playback) */
+  requestRendererRender: () => void;
+}
+
+// Global render callback — set by useRenderer when a Renderer instance is created
+let _requestRender: (() => void) | null = null;
+/** Register a function to request a render frame (called by useRenderer) */
+export function setRequestRender(fn: () => void): void {
+  _requestRender = fn;
+}
+
+export function triggerRequestRender(): void {
+  _requestRender?.();
 }
 
 function createDefaultLayoutTree(): PanelNode {
@@ -56,7 +67,6 @@ export const useUIStore = create<UIState>((set) => ({
   // Layout state
   rightPanelWidth: 320,
   timelineHeight: 200,
-  outlinerRatio: 0.4,
   windowSize: { width: window.innerWidth, height: window.innerHeight },
   activeWorkspace: 'layout',
   panelVisibility: {},
@@ -65,10 +75,10 @@ export const useUIStore = create<UIState>((set) => ({
   // Layout actions
   setRightPanelWidth: (w) => set({ rightPanelWidth: w }),
   setTimelineHeight: (h) => set({ timelineHeight: h }),
-  setOutlinerRatio: (r) => set({ outlinerRatio: r }),
   setWindowSize: (s) => set({ windowSize: s }),
   setActiveWorkspace: (w) => set({ activeWorkspace: w }),
   togglePanelVisibility: (id) =>
     set((s) => ({ panelVisibility: { ...s.panelVisibility, [id]: !s.panelVisibility[id] } })),
   setLayoutTree: (tree) => set({ layoutTree: tree }),
+  requestRendererRender: () => triggerRequestRender(),
 }));

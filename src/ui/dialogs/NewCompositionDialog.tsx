@@ -1,10 +1,12 @@
 /**
  * NewCompositionDialog — modal dialog for creating a new composition.
- * Fields: Name, Width, Height, Frame Rate, Duration, Background Color.
+ * Fields: Name, Width, Height, Frame Rate, Duration, Background Color, Presets.
+ * Presets loaded from compositionPresets.ts.
  */
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useCompositionStore } from '../../state/compositionStore';
 import { COMPOSITION, FRAME_RATES } from '../../config/constants';
+import { COMPOSITION_PRESETS, type CompPreset } from '../../config/compositionPresets';
 
 const DEF_W = COMPOSITION.DEFAULT_WIDTH;
 const DEF_H = COMPOSITION.DEFAULT_HEIGHT;
@@ -28,6 +30,7 @@ export const NewCompositionDialog: React.FC<NewCompositionDialogProps> = ({
   const [fps, setFps] = useState<number>(DEF_FPS);
   const [duration, setDuration] = useState<number>(DEF_DUR);
   const [bgColor, setBgColor] = useState('#000000');
+  const [selectedPreset, setSelectedPreset] = useState<string>('fhd');
 
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -40,9 +43,31 @@ export const NewCompositionDialog: React.FC<NewCompositionDialogProps> = ({
       setFps(COMPOSITION.DEFAULT_FPS);
       setDuration(COMPOSITION.DEFAULT_DURATION);
       setBgColor('#000000');
+      setSelectedPreset('fhd');
       setTimeout(() => nameRef.current?.focus(), 50);
     }
   }, [open]);
+
+  // Apply preset
+  const applyPreset = useCallback((preset: CompPreset) => {
+    setWidth(preset.width);
+    setHeight(preset.height);
+    setFps(preset.fps);
+    setSelectedPreset(preset.id);
+  }, []);
+
+  // Handle size changes — switch to Custom if no preset matches
+  const handleWidthChange = useCallback((w: number) => {
+    setWidth(w);
+    const match = COMPOSITION_PRESETS.find((p) => p.width === w && p.height === height);
+    if (!match) setSelectedPreset('custom');
+  }, [height]);
+
+  const handleHeightChange = useCallback((h: number) => {
+    setHeight(h);
+    const match = COMPOSITION_PRESETS.find((p) => p.width === width && p.height === h);
+    if (!match) setSelectedPreset('custom');
+  }, [width]);
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
@@ -83,7 +108,7 @@ export const NewCompositionDialog: React.FC<NewCompositionDialogProps> = ({
       onKeyDown={handleKeyDown}
     >
       <div
-        className="bg-panel rounded-md shadow-modal border border-border min-w-[320px] max-w-[400px]"
+        className="bg-panel rounded-md shadow-modal border border-border min-w-[340px] max-w-[420px]"
         role="dialog"
         aria-modal="true"
         aria-label="New Composition"
@@ -110,9 +135,31 @@ export const NewCompositionDialog: React.FC<NewCompositionDialogProps> = ({
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="flex-1 h-6 text-ui-xs px-2"
+              className="flex-1 h-6 text-ui-xs px-2 bg-[var(--color-bg-input)] border border-border rounded-sm text-text-primary outline-none focus:border-[var(--color-border-focus)]"
               placeholder="My Composition"
             />
+          </div>
+
+          {/* Presets */}
+          <div className="flex items-center gap-2">
+            <label className="text-ui-xs text-text-secondary w-16 shrink-0">Preset</label>
+            <div className="flex flex-wrap gap-1 flex-1">
+              {COMPOSITION_PRESETS.filter((p) => p.id !== 'custom').map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={[
+                    'px-1.5 py-0.5 text-ui-xs rounded-sm border cursor-pointer transition-colors',
+                    selectedPreset === preset.id
+                      ? 'bg-accent text-white border-accent'
+                      : 'bg-transparent text-text-secondary border-border hover:bg-panel-hover',
+                  ].join(' ')}
+                  onClick={() => applyPreset(preset)}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Width / Height */}
@@ -122,8 +169,8 @@ export const NewCompositionDialog: React.FC<NewCompositionDialogProps> = ({
               <input
                 type="number"
                 value={width}
-                onChange={(e) => setWidth(Number(e.target.value))}
-                className="w-16 h-6 text-ui-xs px-1 text-center"
+                onChange={(e) => handleWidthChange(Number(e.target.value))}
+                className="w-16 h-6 text-ui-xs px-1 text-center bg-[var(--color-bg-input)] border border-border rounded-sm text-text-primary outline-none focus:border-[var(--color-border-focus)]"
                 min={COMPOSITION.MIN_SIZE}
                 max={COMPOSITION.MAX_SIZE}
               />
@@ -131,42 +178,13 @@ export const NewCompositionDialog: React.FC<NewCompositionDialogProps> = ({
               <input
                 type="number"
                 value={height}
-                onChange={(e) => setHeight(Number(e.target.value))}
-                className="w-16 h-6 text-ui-xs px-1 text-center"
+                onChange={(e) => handleHeightChange(Number(e.target.value))}
+                className="w-16 h-6 text-ui-xs px-1 text-center bg-[var(--color-bg-input)] border border-border rounded-sm text-text-primary outline-none focus:border-[var(--color-border-focus)]"
                 min={COMPOSITION.MIN_SIZE}
                 max={COMPOSITION.MAX_SIZE}
               />
               <span className="text-text-muted text-ui-xs">px</span>
             </div>
-          </div>
-
-          {/* Preset sizes */}
-          <div className="flex gap-1 ml-18">
-            {[
-              { label: 'HD', w: 1280, h: 720 },
-              { label: 'FHD', w: 1920, h: 1080 },
-              { label: '2K', w: 2560, h: 1440 },
-              { label: '4K', w: 3840, h: 2160 },
-              { label: 'Square', w: 1080, h: 1080 },
-              { label: 'Vertical', w: 1080, h: 1920 },
-            ].map((preset) => (
-              <button
-                key={preset.label}
-                type="button"
-                className={[
-                  'px-1.5 py-0.5 text-ui-xs rounded-sm border cursor-pointer transition-colors',
-                  width === preset.w && height === preset.h
-                    ? 'bg-accent text-white border-accent'
-                    : 'bg-transparent text-text-secondary border-border hover:bg-panel-hover',
-                ].join(' ')}
-                onClick={() => {
-                  setWidth(preset.w);
-                  setHeight(preset.h);
-                }}
-              >
-                {preset.label}
-              </button>
-            ))}
           </div>
 
           {/* Frame Rate */}
@@ -175,7 +193,7 @@ export const NewCompositionDialog: React.FC<NewCompositionDialogProps> = ({
             <select
               value={fps}
               onChange={(e) => setFps(Number(e.target.value))}
-              className="flex-1 h-6 text-ui-xs px-1 bg-panel-input border border-border rounded-sm text-text-primary"
+              className="flex-1 h-6 text-ui-xs px-1 bg-[var(--color-bg-input)] border border-border rounded-sm text-text-primary outline-none focus:border-[var(--color-border-focus)]"
             >
               {FRAME_RATES.map((rate) => (
                 <option key={rate} value={rate}>
@@ -193,7 +211,7 @@ export const NewCompositionDialog: React.FC<NewCompositionDialogProps> = ({
                 type="number"
                 value={duration}
                 onChange={(e) => setDuration(Number(e.target.value))}
-                className="w-16 h-6 text-ui-xs px-1 text-center"
+                className="w-16 h-6 text-ui-xs px-1 text-center bg-[var(--color-bg-input)] border border-border rounded-sm text-text-primary outline-none focus:border-[var(--color-border-focus)]"
                 min={1}
                 max={9999}
               />
@@ -217,14 +235,14 @@ export const NewCompositionDialog: React.FC<NewCompositionDialogProps> = ({
           <div className="flex justify-end gap-2 pt-2 border-t border-border">
             <button
               type="button"
-              className="px-3 py-1 text-ui-xs border border-border rounded-sm bg-transparent text-text-secondary cursor-pointer hover:bg-panel-hover"
+              className="px-3 py-1 text-ui-xs border border-border rounded-sm bg-transparent text-text-secondary cursor-pointer hover:bg-panel-hover transition-colors"
               onClick={onClose}
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-3 py-1 text-ui-xs border border-accent rounded-sm bg-accent text-white cursor-pointer hover:bg-accent-hover"
+              className="px-3 py-1 text-ui-xs border border-accent rounded-sm bg-accent text-white cursor-pointer hover:bg-accent-hover transition-colors"
             >
               Create
             </button>

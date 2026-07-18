@@ -2,7 +2,21 @@
  * ShortcutRegistry — stores all keyboard shortcut bindings.
  * Shortcuts can be added/removed and are checked by KeyboardManager.
  * Supports context-based activation (e.g., only fire when viewport is focused).
+ *
+ * K1: Uses lazy import to check ModalTransform.activeAnywhere — when a modal
+ * transform is active (G/R/S), global shortcuts like 'X' for delete are suspended
+ * so the modal transform's own key handlers work without conflict.
  */
+
+// Lazy reference to avoid circular imports
+let _getModalActive: (() => boolean) | null = null;
+function getModalActive(): boolean {
+  return _getModalActive ? _getModalActive() : false;
+}
+
+export function registerModalActiveCheck(fn: () => boolean): void {
+  _getModalActive = fn;
+}
 
 export interface ShortcutBinding {
   id: string;
@@ -57,6 +71,12 @@ class ShortcutRegistryClass {
     // Don't fire when typing in input/textarea
     const target = e.target as HTMLElement;
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+      return false;
+    }
+
+    // K1: Skip ALL global shortcuts while a modal transform is active
+    // The modal transform's own docKeydown handler in useViewportInput handles X/Y/Esc/Enter/numbers
+    if (getModalActive()) {
       return false;
     }
 

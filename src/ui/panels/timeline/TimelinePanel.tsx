@@ -1,63 +1,171 @@
-import React from 'react';
-import {Icon} from '../../common/Icon';
-import {Button} from '../../common/Button';
-import {useTimelineStore} from '../../../state/timelineStore';
-import {useCompositionStore} from '../../../state/compositionStore';
-import {formatTime} from '../../../utils/time';
+/**
+ * TimelinePanel — AE-style timeline with Outliner embedded on the left.
+ * Layout: header (playback controls) → flex row containing [Outliner | Ruler+Tracks].
+ * The Outliner (left sidebar) shows layer names aligned with timeline track rows.
+ * Playhead updates via direct DOM manipulation for smooth playback.
+ */
+import React, { useRef, useCallback, useEffect, useState } from 'react';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useTimelineStore } from '../../../state/timelineStore';
+import { PlaybackControls } from './PlaybackControls';
+import { TimelineRuler } from './TimelineRuler';
+import { TrackLabels } from './TrackLabels';
+import { KeyframeArea } from './KeyframeArea';
+import { Playhead } from './Playhead';
 
-/** Generate frame tick marks for the ruler */
-const FRAMES = Array.from({length:251},(_,i)=>i);
+const OutlinerPanel = React.lazy(() => import('../outliner/OutlinerPanel'));
 
-export const TimelinePanel:React.FC = ()=>{
-  const ps=useTimelineStore(s=>s.playbackState);
-  const toggle=useTimelineStore(s=>s.togglePlayback);
-  const zoom=useTimelineStore(s=>s.zoom);
-  const ac=useCompositionStore(s=>s.getActiveComposition());
+export const TimelinePanel: React.FC = () => {
+  const comp = useCompositionStore((s) => s.activeCompositionId
+    ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null : null);
+  const zoom = useTimelineStore((s) => s.zoom);
+  const scrollX = useTimelineStore((s) => s.scrollX);
+  const setScrollX = useTimelineStore((s) => s.setScrollX);
 
-  return(
-    <div className="flex flex-col h-full">
-      {/* Playback controls header */}
-      <div className="flex items-center gap-1 px-2 flex-shrink-0 h-tl-header bg-panel-header border-b border-border">
-        <Button variant="icon" size="sm" icon={<Icon name="goToStart" size={14}/>} title="Go to start" onClick={()=>{}}/>
-        <Button variant="icon" size="sm" icon={<Icon name="frameBack" size={14}/>} title="Prev frame" onClick={()=>{}}/>
-        <Button variant="icon" size="sm" icon={<Icon name={ps==='playing'?'pause':'play'} size={14}/>} title="Play / Pause" onClick={toggle}/>
-        <Button variant="icon" size="sm" icon={<Icon name="frameForward" size={14}/>} title="Next frame" onClick={()=>{}}/>
-        <Button variant="icon" size="sm" icon={<Icon name="goToEnd" size={14}/>} title="Go to end" onClick={()=>{}}/>
-        {/* Time display */}
-        <div className="flex items-center px-2 ml-2 font-mono text-ui-xs h-5 bg-panel-input rounded-sm border border-border text-text-primary">
-          {ac ? formatTime(ac.currentTime, ac.fps) : '00:00:00'}
-        </div>
-        {/* Zoom */}
-        <div className="flex-1"/>
-        <Button variant="icon" size="sm" icon={<Icon name="minus" size={12}/>} title="Zoom out" onClick={()=>{}}/>
-        <span className="text-ui-xs text-text-disabled w-8 text-center">{zoom}</span>
-        <Button variant="icon" size="sm" icon={<Icon name="plus" size={12}/>} title="Zoom in" onClick={()=>{}}/>
+  const [expandedLayers, setExpandedLayers] = useState<Set<string>>(new Set());
+  const [trackLabelWidth, setTrackLabelWidth] = useState(200);
+  const [outlinerWidth, setOutlinerWidth] = useState(250);
+  const tracksRef = useRef<HTMLDivElement>(null);
+  const playheadRef = useRef<HTMLDivElement>(null);
+
+  const layers = comp?.layers ?? [];
+  const totalFrames = comp ? Math.floor(comp.duration * comp.fps) : 250;
+  const currentFrame = comp ? Math.floor(comp.currentTime * comp.fps) : 0;
+
+  // Update playhead DOM position directly during playback
+  useEffect(() => {
+    if (playheadRef.current) {
+      playheadRef.current.style.left = `${currentFrame * zoom}px`;
+    }
+  }, [currentFrame, zoom]);
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollX(e.currentTarget.scrollLeft);
+  }, [setScrollX]);
+
+  const toggleExpand = useCallback((layerId: string) => {
+    setExpandedLayers((prev) => {
+      const next = new Set(prev);
+      if (next.has(layerId)) next.delete(layerId);
+      else next.add(layerId);
+      return next;
+    });
+  }, []);
+
+  if (!comp) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center text-ui-xs text-text-disabled">
+        No composition
       </div>
+    );
+  }
 
-      {/* Ruler + Tracks area */}
-      <div className="flex-1 overflow-auto bg-surface-alt relative">
-        {/* Ruler */}
-        <div className="flex-shrink-0 h-6 bg-surface border-b border-border relative overflow-hidden">
-          {FRAMES.map(frame=>(
-            <div key={frame} className="absolute top-0" style={{left:frame*zoom,width:1}}>
-              {/* Tick mark for every frame */}
-              <div className="h-2 bg-border-light" style={{height:frame%5===0?'100%':'6px'}}/>
-              {/* Label every 5 frames */}
-              {frame%5===0&&(
-                <span className="absolute left-1 top-1 text-ui-xs text-text-disabled whitespace-nowrap">
-                  {frame}
-                </span>
-              )}
-            </div>
-          ))}
+  const propertyPaths = [
+    { path: 'transform.position', label: 'Position' },
+    { path: 'transform.rotation', label: 'Rotation' },
+    { path: 'transform.scale', label: 'Scale' },
+    { path: 'opacity', label: 'Opacity' },
+  ];
+
+  return (
+    <div className="flex flex-col h-full bg-surface-alt select-none">
+      {/* ── Header: Playback controls + time display + zoom ── */}
+      <PlaybackControls comp={comp} totalFrames={totalFrames} currentFrame={currentFrame} />
+
+      {/* ── Flex row: Outliner (left) + Timeline content (right) ── */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* K5: Outliner embedded on left side of timeline (AE-style) */}
+        <div
+          className="flex-shrink-0 overflow-hidden border-r border-border bg-surface flex flex-col"
+          style={{ width: outlinerWidth }}
+        >
+          <React.Suspense fallback={<div className="flex-1 flex items-center justify-center text-ui-xs">Loading...</div>}>
+            <OutlinerPanel />
+          </React.Suspense>
         </div>
 
-        {/* Tracks area */}
-        <div className="flex items-center justify-center text-text-disabled text-ui-xs min-h-[60px]">
-          Timeline — No layers (Phase 4)
+        {/* Resize handle for Outliner width */}
+        <div
+          className="w-1 cursor-col-resize flex-shrink-0 hover:bg-accent bg-border transition-colors"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startW = outlinerWidth;
+            const mm = (ev: MouseEvent) => setOutlinerWidth(Math.max(120, Math.min(500, startW + ev.clientX - startX)));
+            const mu = () => { document.removeEventListener('mousemove', mm); document.removeEventListener('mouseup', mu); };
+            document.addEventListener('mousemove', mm);
+            document.addEventListener('mouseup', mu);
+          }}
+        />
+
+        {/* Timeline content (ruler + track labels + keyframe area) */}
+        <div className="flex flex-col flex-1 overflow-hidden">
+          {/* ── Ruler ── */}
+          <TimelineRuler
+            totalFrames={totalFrames}
+            currentFrame={currentFrame}
+            zoom={zoom}
+            scrollX={scrollX}
+            compId={comp.id}
+            workAreaStart={comp.workAreaStart != null ? Math.floor(comp.workAreaStart * comp.fps) : undefined}
+            workAreaEnd={comp.workAreaEnd != null ? Math.floor(comp.workAreaEnd * comp.fps) : undefined}
+          />
+
+          {/* ── Tracks area (labels + keyframes) ── */}
+          <div className="flex flex-1 overflow-hidden">
+            {/* Track labels */}
+            <div
+              className="flex-shrink-0 overflow-hidden border-r border-border bg-surface"
+              style={{ width: trackLabelWidth }}
+            >
+              <TrackLabels
+                layers={layers}
+                expandedLayers={expandedLayers}
+                onToggleExpand={toggleExpand}
+                propertyPaths={propertyPaths}
+                currentFrame={currentFrame}
+                compId={comp.id}
+              />
+            </div>
+
+            {/* Resize handle for track labels */}
+            <div
+              className="w-1 cursor-col-resize flex-shrink-0 hover:bg-accent bg-border transition-colors"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                const startX = e.clientX;
+                const startW = trackLabelWidth;
+                const mm = (ev: MouseEvent) => setTrackLabelWidth(Math.max(100, Math.min(400, startW + ev.clientX - startX)));
+                const mu = () => { document.removeEventListener('mousemove', mm); document.removeEventListener('mouseup', mu); };
+                document.addEventListener('mousemove', mm);
+                document.addEventListener('mouseup', mu);
+              }}
+            />
+
+            {/* Keyframe area */}
+            <div
+              ref={tracksRef}
+              className="flex-1 overflow-auto relative"
+              onScroll={handleScroll}
+            >
+              <div style={{ width: totalFrames * zoom + 100, minHeight: '100%', position: 'relative' }}>
+                <KeyframeArea
+                  layers={layers}
+                  expandedLayers={expandedLayers}
+                  propertyPaths={propertyPaths}
+                  currentFrame={currentFrame}
+                  zoom={zoom}
+                  totalFrames={totalFrames}
+                  compId={comp.id}
+                />
+              </div>
+              <Playhead ref={playheadRef} currentFrame={currentFrame} zoom={zoom} />
+            </div>
+          </div>
         </div>
       </div>
     </div>
   );
 };
+
 export default TimelinePanel;

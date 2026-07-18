@@ -4,6 +4,10 @@ import App from './App';
 import './styles/global.css';
 import './styles/panels.css';
 import { useCompositionStore } from './state/compositionStore';
+import { registerAllEffects } from './renderer/effects/registerEffects';
+
+// Phase 5: Register all built-in effects at startup
+registerAllEffects();
 
 const rootEl = document.getElementById('root');
 if (!rootEl) throw new Error('Root element #root not found');

@@ -8,17 +8,16 @@ export const ToolButton:React.FC<Props> = React.memo(({icon,label,shortcut,activ
   <Tooltip content={shortcut?`${label} (${shortcut})`:label} position="right" delay={400}>
     <button
       className={[
-        'flex items-center justify-center w-full border-0 cursor-pointer',
+        'flex items-center justify-center w-full h-9 border-0 cursor-pointer',
         'transition-colors duration-fast',
         'focus-visible:outline focus-visible:outline-1 focus-visible:outline-border-focus',
-        'h-toolbar',
-        active ? 'bg-panel-active text-white border-l-2 border-l-accent' : 'bg-transparent text-text-secondary border-l-2 border-l-transparent',
+        active ? 'bg-panel-active text-white border-l-2 border-l-accent' : 'bg-transparent text-text-secondary border-l-2 border-l-transparent hover:bg-panel-hover',
       ].join(' ')}
       onClick={onClick}
       role="tab"
       aria-selected={active}
     >
-      <Icon name={icon} size={18}/>
+      <Icon name={icon} size={20}/>
     </button>
   </Tooltip>
 ));

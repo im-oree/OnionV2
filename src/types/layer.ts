@@ -1,36 +1,87 @@
+import type { EffectInstance } from './effect';
+
 export type LayerType =
   | 'solid' | 'shape' | 'text' | 'image' | 'video' | 'null' | 'adjustment';
 
-export interface Vec2 { x: number; y: number }
+export type BlendMode =
+  | 'normal'|'multiply'|'screen'|'overlay'|'darken'|'lighten'
+  | 'colorDodge'|'colorBurn'|'hardLight'|'softLight'
+  | 'difference'|'exclusion'|'hue'|'saturation'|'color'|'luminosity';
 
-export type ShapeData =
-  | { type:'rectangle'; width:number; height:number; borderRadius:number }
-  | { type:'ellipse'; radiusX:number; radiusY:number }
-  | { type:'polygon'; sides:number; radius:number }
-  | { type:'path'; points:Vec2[]; closed:boolean };
-
-export interface SolidData { color:string; width:number; height:number }
-export interface ImageData { src:string; naturalWidth:number; naturalHeight:number; textureId?:string }
-export interface VideoData { src:string; naturalWidth:number; naturalHeight:number; duration:number; textureId?:string; currentTime?:number }
-export interface TextData { text:string; fontFamily:string; fontSize:number; fontWeight:number; color:string; lineHeight:number; letterSpacing:number; alignment:'left'|'center'|'right' }
-
-export type LayerPayload = SolidData | ShapeData | ImageData | VideoData | TextData | Record<string,never>;
-
-export interface Mask {
-  id:string; points:Vec2[]; inverted:boolean; feather:number;
-  opacity:number; expansion:number; mode:'add'|'subtract'|'intersect'|'difference';
+export interface Transform {
+  position: { x: number; y: number };
+  scale: { x: number; y: number };
+  rotation: number;
+  anchorPoint: { x: number; y: number };
 }
 
-import type { Transform, BlendMode } from './composition';
-import type { Effect } from './effect';
+/** Shape-specific data */
+export interface ShapeRectangle {
+  type: 'rectangle';
+  width: number;
+  height: number;
+  borderRadius: number;
+}
+export interface ShapeEllipse {
+  type: 'ellipse';
+  radiusX: number;
+  radiusY: number;
+}
+export interface ShapePolygon {
+  type: 'polygon';
+  sides: number;
+  radius: number;
+  roundness: number;
+}
+export interface ShapeStar {
+  type: 'star';
+  points: number;
+  radius: number;
+  innerRadius: number;
+  roundness: number;
+}
+export type ShapeData = ShapeRectangle | ShapeEllipse | ShapePolygon | ShapeStar;
 
-export interface Layer {
-  id:string; type:LayerType; name:string;
-  enabled:boolean; locked:boolean; solo:boolean;
-  blendMode:BlendMode; opacity:number;
-  transform:Transform;
-  inPoint:number; outPoint:number; startTime:number; stretch:number;
-  effects:Effect[]; masks:Mask[];
-  parentId:string|null;
-  data?:LayerPayload;
+export interface SolidData { color: string; width: number; height: number }
+export interface ImageData { assetId: string; naturalWidth: number; naturalHeight: number }
+export interface VideoData { assetId: string; naturalWidth: number; naturalHeight: number; duration: number; muted: boolean; volume: number; playbackRate: number }
+export interface TextData { text: string; fontFamily: string; fontSize: number; fontWeight: number; color: string; lineHeight: number; letterSpacing: number; alignment: 'left'|'center'|'right' }
+
+export type LayerPayload = SolidData | ShapeData | ImageData | VideoData | TextData | Record<string, never>;
+
+export interface Mask {
+  id: string; points: Array<{ x: number; y: number }>; inverted: boolean; feather: number;
+  opacity: number; expansion: number; mode: 'add'|'subtract'|'intersect'|'difference';
+}
+
+export interface BaseLayer {
+  id: string;
+  type: LayerType;
+  name: string;
+  visible: boolean;
+  locked: boolean;
+  soloed: boolean;
+  shy: boolean;
+  parentId: string | null;
+  blendMode: BlendMode;
+  opacity: number;
+  startFrame: number;
+  endFrame: number;
+  transform: Transform;
+  zIndex: number;
+  effects: EffectInstance[];
+  masks: Mask[];
+  data?: LayerPayload;
+}
+
+export type Layer = BaseLayer;
+
+/** Helper to create a default transform */
+export function defaultTransform(): Transform {
+  return {
+    position: { x: 0, y: 0 },
+    scale: { x: 100, y: 100 },
+    rotation: 0,
+    anchorPoint: { x: 0, y: 0 },
+  };
 }

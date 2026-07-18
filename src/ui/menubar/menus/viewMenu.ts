@@ -1,0 +1,120 @@
+/**
+ * View menu definitions — viewport visual toggles and framing actions.
+ * Each item calls the corresponding viewportStore action or renderer method.
+ */
+import type { MenuItemDefinition } from '../MenuDropdown';
+import { useViewportStore } from '../../../state/viewportStore';
+
+export const viewMenu: MenuItemDefinition[] = [
+  {
+    id: 'view.toggleGrid',
+    label: 'Show Grid',
+    shortcut: 'Ctrl+G',
+    checked: true,
+    onClick: () => {
+      useViewportStore.getState().toggleGrid();
+    },
+  },
+  {
+    id: 'view.toggleRulers',
+    label: 'Show Rulers',
+    shortcut: 'Ctrl+R',
+    checked: true,
+    onClick: () => {
+      useViewportStore.getState().toggleRulers();
+    },
+  },
+  {
+    id: 'view.toggleGuides',
+    label: 'Show Guides',
+    checked: true,
+    onClick: () => {
+      useViewportStore.getState().toggleGuides();
+    },
+  },
+  {
+    id: 'view.lockGuides',
+    label: 'Lock Guides',
+    checked: false,
+    onClick: () => {
+      const s = useViewportStore.getState();
+      s.setGuidesLocked(!s.settings.guidesLocked);
+    },
+  },
+  {
+    id: 'view.clearGuides',
+    label: 'Clear All Guides',
+    onClick: () => {
+      useViewportStore.getState().clearGuides();
+    },
+  },
+  {
+    id: 'view.sep1',
+    label: '',
+    divider: true,
+    onClick: () => {},
+  },
+  {
+    id: 'view.toggleSafeZones',
+    label: 'Show Safe Zones',
+    shortcut: 'Ctrl+Shift+S',
+    checked: false,
+    onClick: () => {
+      useViewportStore.getState().toggleSafeZones();
+    },
+  },
+  {
+    id: 'view.toggleSnapping',
+    label: 'Enable Snapping',
+    shortcut: 'Shift+Tab',
+    checked: true,
+    onClick: () => {
+      useViewportStore.getState().toggleSnapping();
+    },
+  },
+  {
+    id: 'view.sep2',
+    label: '',
+    divider: true,
+    onClick: () => {},
+  },
+  {
+    id: 'view.frameAll',
+    label: 'Frame All',
+    shortcut: 'Home',
+    onClick: () => {
+      // Dispatched via KeyboardManager event — this is a placeholder
+      document.dispatchEvent(new CustomEvent('viewport:frameAll'));
+    },
+  },
+  {
+    id: 'view.frameSelected',
+    label: 'Frame Selected',
+    shortcut: 'Numpad .',
+    onClick: () => {
+      document.dispatchEvent(new CustomEvent('viewport:frameSelected'));
+    },
+  },
+  {
+    id: 'view.zoom100',
+    label: 'Zoom 100%',
+    shortcut: 'Numpad 1',
+    onClick: () => {
+      document.dispatchEvent(new CustomEvent('viewport:zoom100'));
+    },
+  },
+  {
+    id: 'view.sep3',
+    label: '',
+    divider: true,
+    onClick: () => {},
+  },
+  {
+    id: 'view.toggleStats',
+    label: 'Show Stats',
+    checked: false,
+    onClick: () => {
+      useViewportStore.getState().toggleStats();
+    },
+  },
+];

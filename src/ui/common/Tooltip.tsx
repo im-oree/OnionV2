@@ -6,7 +6,7 @@ interface Props{content:string;position?:Pos;delay?:number;children:React.ReactE
 
 export const Tooltip:React.FC<Props> = ({content,position='top',delay=600,children})=>{
   const [visible,setVisible]=useState(false);
-  const timer=useRef<ReturnType<typeof setTimeout>>();
+  const timer=useRef<ReturnType<typeof setTimeout> | null>(null);
   const show=useCallback(()=>{timer.current=setTimeout(()=>setVisible(true),delay)},[delay]);
   const hide=useCallback(()=>{if(timer.current)clearTimeout(timer.current);setVisible(false)},[]);
   useEffect(()=>()=>{if(timer.current)clearTimeout(timer.current)},[]);

@@ -1,17 +1,33 @@
 /**
  * ViewportHUD — information overlay at the bottom of the viewport.
- * Shows composition resolution, FPS, zoom percentage, and current time.
+ * Shows composition info, transform mode indicator, selected layer count,
+ * FPS, zoom controls (+/- buttons and percentage), and optional stats.
  */
 import React from 'react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { formatTime } from '../../../utils/time';
-
+import { VIEWPORT_CONFIG } from '../../../config/viewportConfig';
 interface ViewportHUDProps {
   fps: number;
   zoom: number;
+  showStats: boolean;
+  viewportSize: { width: number; height: number };
+  selectedLayerIds?: string[];
+  transformMode?: string | null;
+  onZoomChange?: (zoom: number) => void;
+  onFitToViewport?: () => void;
 }
 
-export const ViewportHUD: React.FC<ViewportHUDProps> = ({ fps, zoom }) => {
+export const ViewportHUD: React.FC<ViewportHUDProps> = ({
+  fps,
+  zoom,
+  showStats,
+  viewportSize,
+  selectedLayerIds,
+  transformMode,
+  onZoomChange,
+  onFitToViewport,
+}) => {
   const comp = useCompositionStore((s) => {
     const id = s.activeCompositionId;
     return id ? s.compositions.find((c) => c.id === id) ?? null : null;
@@ -20,22 +36,70 @@ export const ViewportHUD: React.FC<ViewportHUDProps> = ({ fps, zoom }) => {
   if (!comp) return null;
 
   const zoomPercent = Math.round((1 / (zoom || 1)) * 100);
+  const currentFrame = Math.floor(comp.currentTime * comp.fps);
+  const totalFrames = Math.floor(comp.duration * comp.fps);
+  const selCount = selectedLayerIds?.length ?? 0;
+
+  const zoomIn = () => onZoomChange?.(zoom / VIEWPORT_CONFIG.ZOOM_FACTOR);
+  const zoomOut = () => onZoomChange?.(zoom * VIEWPORT_CONFIG.ZOOM_FACTOR);
 
   return (
     <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2 py-1 pointer-events-none z-20">
       {/* Left: composition info */}
       <div className="flex items-center gap-3 text-ui-xs text-text-disabled font-mono">
-        <span>
-          {comp.width}×{comp.height}
-        </span>
+        <span className="text-text-primary font-medium">{comp.name}</span>
+        <span className="text-text-disabled">|</span>
+        <span>{comp.width}×{comp.height}</span>
+        <span className="text-text-disabled">|</span>
         <span>{comp.fps} fps</span>
-        <span>Time: {formatTime(comp.currentTime, comp.fps)}</span>
+        <span className="text-text-disabled">|</span>
+        <span>{formatTime(comp.currentTime, comp.fps)} / {formatTime(comp.duration, comp.fps)}</span>
+        <span className="text-text-disabled">|</span>
+        <span>Frame {currentFrame}/{totalFrames}</span>
       </div>
 
-      {/* Right: viewport info */}
-      <div className="flex items-center gap-3 text-ui-xs text-text-disabled font-mono">
-        <span>{fps} FPS</span>
-        <span>{zoomPercent}%</span>
+      {/* Center: transform mode indicator + zoom controls */}
+      <div className="flex items-center gap-2">
+        {transformMode && (
+          <div className="flex items-center gap-1 px-1.5 py-0.5 bg-accent text-white rounded-sm text-ui-xs font-mono font-semibold">
+            <span>{transformMode}</span>
+          </div>
+        )}
+        {selCount > 0 && (
+          <span className="text-ui-xs text-text-secondary font-mono">
+            {selCount} layer{selCount !== 1 ? 's' : ''}
+          </span>
+        )}
+      </div>
+
+      {/* Right: zoom controls + viewport info */}
+      <div className="flex items-center gap-1 text-ui-xs text-text-disabled font-mono">
+        {/* Zoom controls — pointer-events re-enabled */}
+        <div className="flex items-center gap-0.5 pointer-events-auto">
+          <button
+            onClick={zoomOut}
+            className="w-4 h-4 flex items-center justify-center rounded-sm bg-panel-header hover:bg-bg-hover text-text-primary text-xs leading-none"
+            title="Zoom Out"
+          >−</button>
+          <button
+            onClick={onFitToViewport}
+            className="px-1 h-4 flex items-center justify-center rounded-sm bg-panel-header hover:bg-bg-hover text-text-primary text-xs leading-none"
+            title="Fit to Viewport (Home)"
+          >{zoomPercent}%</button>
+          <button
+            onClick={zoomIn}
+            className="w-4 h-4 flex items-center justify-center rounded-sm bg-panel-header hover:bg-bg-hover text-text-primary text-xs leading-none"
+            title="Zoom In"
+          >+</button>
+        </div>
+        <span className="text-text-disabled mx-1">|</span>
+        {showStats && (
+          <>
+            <span>{fps} FPS</span>
+            <span className="text-text-disabled mx-1">|</span>
+          </>
+        )}
+        <span>{viewportSize.width}×{viewportSize.height}</span>
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
-import { COMPOSITION, LAYER_TYPES, PERFORMANCE } from './constants';
+import { COMPOSITION, PERFORMANCE } from './constants';
 import type { Composition, Layer, Project } from '../types';
+import { defaultTransform } from '../types/layer';
 
 export const DEFAULT_COMPOSITION: Omit<Composition, 'id'> = {
   name: 'New Composition',
@@ -15,28 +16,25 @@ export const DEFAULT_COMPOSITION: Omit<Composition, 'id'> = {
   pixelAspect: COMPOSITION.PIXEL_ASPECT,
 };
 
-export const DEFAULT_SOLID_LAYER: Omit<Layer, 'id'> = {
-  type: LAYER_TYPES.SOLID,
-  name: 'Solid Layer',
-  enabled: true,
-  locked: false,
-  solo: false,
-  blendMode: 'normal',
-  opacity: 100,
-  transform: {
-    position: { x: 0, y: 0 },
-    scale: { x: 100, y: 100 },
-    rotation: 0,
-    anchorPoint: { x: 0.5, y: 0.5 },
-  },
-  inPoint: 0,
-  outPoint: COMPOSITION.DEFAULT_DURATION,
-  startTime: 0,
-  stretch: 1,
-  effects: [],
-  masks: [],
-  parentId: null,
-};
+export function createDefaultLayer(type: Layer['type'], name: string): Omit<Layer, 'id'> {
+  return {
+    type,
+    name,
+    visible: true,
+    locked: false,
+    soloed: false,
+    shy: false,
+    blendMode: 'normal',
+    opacity: 100,
+    transform: defaultTransform(),
+    startFrame: 0,
+    endFrame: COMPOSITION.DEFAULT_DURATION,
+    zIndex: 0,
+    effects: [],
+    masks: [],
+    parentId: null,
+  };
+}
 
 export const DEFAULT_PROJECT: Omit<Project, 'id'> = {
   name: 'Untitled Project',

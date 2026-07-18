@@ -3,9 +3,21 @@
  * Supports frames, seconds, and SMPTE timecode formats.
  */
 
+export type TimeDisplayMode = 'frames' | 'seconds' | 'smpte';
+
 /** Format time in seconds to HH:MM:SS:FF at given frame rate */
-export function formatTime(seconds: number, fps: number): string {
+export function formatTime(seconds: number, fps: number, mode: TimeDisplayMode = 'smpte'): string {
   const totalFrames = Math.floor(seconds * fps);
+  
+  if (mode === 'frames') {
+    return `${totalFrames}f`;
+  }
+  
+  if (mode === 'seconds') {
+    return `${seconds.toFixed(1)}s`;
+  }
+  
+  // SMPTE (default)
   const h = Math.floor(totalFrames / (3600 * fps));
   const m = Math.floor((totalFrames % (3600 * fps)) / (60 * fps));
   const s = Math.floor((totalFrames % (60 * fps)) / fps);
