@@ -1,9 +1,5 @@
-/**
- * CompBounds — displays the composition boundary as a visible rectangle.
- * Everything outside is dimmed with a dark overlay quad.
- * Inside is the composition background color.
- */
 import * as THREE from 'three';
+import { getCSSColor } from '../../utils/theme';
 
 export class CompBoundsOverlay {
   public readonly group: THREE.Group;
@@ -17,27 +13,27 @@ export class CompBoundsOverlay {
     this.group.name = 'comp-bounds-overlay';
   }
 
-  /** Update composition bounds for given dimensions and background color */
   update(width: number, height: number, bgColor: string): void {
     this.clear();
 
     const halfW = width / 2;
     const halfH = height / 2;
-    const worldSize = Math.max(width, height) * 10; // large enough to cover viewport
+    const worldSize = Math.max(width, height) * 10;
 
-    // Dark overlay outside composition
-    const outsideGeo = this.buildOutsideQuad(worldSize, halfW, halfH);
+    // Outside area — medium grey (reads from CSS var, falls back to #3d3d3d)
+    const outsideColor = getCSSColor('--viewport-outside', '#3d3d3d');
+    const outsideGeo = this._buildOutsideQuad(worldSize, halfW, halfH);
     const outsideMat = new THREE.MeshBasicMaterial({
-      color: 0x000000,
-      transparent: true,
-      opacity: 0.7,
+      color: outsideColor,
       depthTest: false,
       side: THREE.DoubleSide,
     });
+    // Set render order so outside is behind everything
     this.darkOutside = new THREE.Mesh(outsideGeo, outsideMat);
+    this.darkOutside.renderOrder = -20;
     this.group.add(this.darkOutside);
 
-    // Composition background quad (fills inside)
+    // Comp background quad (inside area)
     const bgMat = new THREE.MeshBasicMaterial({
       color: bgColor,
       depthTest: false,
@@ -45,9 +41,10 @@ export class CompBoundsOverlay {
     });
     const bgGeo = new THREE.PlaneGeometry(width, height);
     this.bgQuad = new THREE.Mesh(bgGeo, bgMat);
+    this.bgQuad.renderOrder = -18;
     this.group.add(this.bgQuad);
 
-    // Border line
+    // Border line (subtle accent)
     const borderPos = [
       -halfW, -halfH, 0, halfW, -halfH, 0,
       halfW, -halfH, 0, halfW, halfH, 0,
@@ -60,9 +57,10 @@ export class CompBoundsOverlay {
       color: 0x4772b3,
       depthTest: false,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.4,
     });
     this.border = new THREE.LineSegments(borderGeo, borderMat);
+    this.border.renderOrder = -16;
     this.group.add(this.border);
 
     this.group.visible = this._visible;
@@ -72,17 +70,12 @@ export class CompBoundsOverlay {
   hide(): void { this._visible = false; this.group.visible = false; }
   get visible(): boolean { return this._visible; }
 
-  private buildOutsideQuad(worldSize: number, halfW: number, halfH: number): THREE.BufferGeometry {
-    // Create a large quad with a hole in the middle using 4 separate quads
+  private _buildOutsideQuad(worldSize: number, halfW: number, halfH: number): THREE.BufferGeometry {
     const s = worldSize;
     const positions: number[] = [
-      // Top strip
       -s, halfH, 0, s, halfH, 0, s, s, 0, -s, halfH, 0, s, s, 0, -s, s, 0,
-      // Bottom strip
       -s, -s, 0, s, -s, 0, s, -halfH, 0, -s, -s, 0, s, -halfH, 0, -s, -halfH, 0,
-      // Left strip
       -s, -halfH, 0, -halfW, -halfH, 0, -halfW, halfH, 0, -s, -halfH, 0, -halfW, halfH, 0, -s, halfH, 0,
-      // Right strip
       halfW, -halfH, 0, s, -halfH, 0, s, halfH, 0, halfW, -halfH, 0, s, halfH, 0, halfW, halfH, 0,
     ];
     const geo = new THREE.BufferGeometry();
@@ -91,13 +84,11 @@ export class CompBoundsOverlay {
   }
 
   private clear(): void {
-    [this.border, this.darkOutside, this.bgQuad].forEach((obj) => {
+    [this.border, this.darkOutside, this.bgQuad].forEach(obj => {
       if (obj) {
         this.group.remove(obj);
         obj.geometry.dispose();
-        if (obj instanceof THREE.Mesh) {
-          (obj.material as THREE.Material).dispose();
-        }
+        if (obj instanceof THREE.Mesh) (obj.material as THREE.Material).dispose();
       }
     });
     this.border = null;

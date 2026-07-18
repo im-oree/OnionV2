@@ -26,14 +26,18 @@ export class CameraManager {
   }
 
   setCompositionSize(width: number, height: number): void {
+    if (this.compWidth === width && this.compHeight === height) return;
     this.compWidth = width;
     this.compHeight = height;
     this.updateProjection();
   }
 
   setViewportSize(width: number, height: number): void {
-    this.viewportWidth = Math.max(1, width);
-    this.viewportHeight = Math.max(1, height);
+    const w = Math.max(1, width);
+    const h = Math.max(1, height);
+    if (this.viewportWidth === w && this.viewportHeight === h) return;
+    this.viewportWidth = w;
+    this.viewportHeight = h;
     this.updateProjection();
   }
 

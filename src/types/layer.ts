@@ -1,7 +1,7 @@
 import type { EffectInstance } from './effect';
 
 export type LayerType =
-  | 'solid' | 'shape' | 'text' | 'image' | 'video' | 'null' | 'adjustment';
+  | 'solid' | 'shape' | 'text' | 'image' | 'video' | 'null' | 'adjustment' | 'comp';
 
 export type BlendMode =
   | 'normal'|'multiply'|'screen'|'overlay'|'darken'|'lighten'
@@ -47,7 +47,18 @@ export interface ImageData { assetId: string; naturalWidth: number; naturalHeigh
 export interface VideoData { assetId: string; naturalWidth: number; naturalHeight: number; duration: number; muted: boolean; volume: number; playbackRate: number }
 export interface TextData { text: string; fontFamily: string; fontSize: number; fontWeight: number; color: string; lineHeight: number; letterSpacing: number; alignment: 'left'|'center'|'right' }
 
-export type LayerPayload = SolidData | ShapeData | ImageData | VideoData | TextData | Record<string, never>;
+export interface CompData {
+  /** ID of the source Composition to render inside this layer */
+  sourceCompId: string;
+  /** Loop when parent time exceeds nested comp duration */
+  loop: boolean;
+  /** Playback speed multiplier for the nested comp (1.0 = normal) */
+  timeScale: number;
+  /** Frame offset — nested comp starts at this local frame */
+  timeOffset: number;
+}
+
+export type LayerPayload = SolidData | ShapeData | ImageData | VideoData | TextData | CompData | Record<string, never>;
 
 export interface Mask {
   id: string; points: Array<{ x: number; y: number }>; inverted: boolean; feather: number;

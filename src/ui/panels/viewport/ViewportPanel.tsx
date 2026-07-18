@@ -12,6 +12,7 @@ import { useViewportStore } from '../../../state/viewportStore';
 import { ContextMenu } from '../../common/ContextMenu';
 import { useContextMenu } from '../../common/useContextMenu';
 import { buildViewportContextMenu, buildInsertKeyframeMenu } from './contextMenus';
+import { Breadcrumb } from './Breadcrumb';
 
 export const ViewportPanel: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -28,7 +29,6 @@ export const ViewportPanel: React.FC = () => {
 
   const showRulers = useViewportStore((s) => s.settings.showRulers);
   const showGuides = useViewportStore((s) => s.settings.showGuides);
-  const showStats = useViewportStore((s) => s.settings.showStats);
   const ctxMenu = useContextMenu();
 
   useViewportInput({
@@ -89,6 +89,8 @@ export const ViewportPanel: React.FC = () => {
         onContextMenu={handleCtx}
       />
 
+      {comp && <Breadcrumb />}
+
       {comp && (
         <div className="absolute inset-0 z-20 pointer-events-none">
           {showRulers && viewportSize.width > 0 && (
@@ -105,7 +107,6 @@ export const ViewportPanel: React.FC = () => {
         <ViewportHUD
           fps={state.fps}
           zoom={state.zoom}
-          showStats={showStats}
           viewportSize={viewportSize}
           selectedLayerIds={viewportState.selectedLayerIds}
           transformMode={viewportState.transformMode}

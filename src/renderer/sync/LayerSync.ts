@@ -19,7 +19,6 @@ export class LayerSync {
     const nextMap = new Map<string, Layer>();
     for (const l of layers) nextMap.set(l.id, l);
 
-    // Remove layers no longer present
     for (const [id] of prevMap) {
       if (!nextMap.has(id)) {
         const renderer = this.renderers.get(id);
@@ -30,7 +29,6 @@ export class LayerSync {
       }
     }
 
-    // Add new or update existing
     for (const layer of layers) {
       const prev = prevMap.get(layer.id);
       if (!prev) {
@@ -42,7 +40,18 @@ export class LayerSync {
     }
 
     this._updateZOrder(layers);
-    this.prevLayers = layers.map((l) => ({ ...l, transform: { ...l.transform } }));
+    this.prevLayers = layers.map(l => ({ ...l, transform: { ...l.transform } }));
+  }
+
+  /** Hide/show layers based on whether currentFrame is within their startFrame–endFrame range */
+  updateFrameVisibility(currentFrame: number): void {
+    for (const [, layer] of this.prevLayers.entries()) {
+      const renderer = this.renderers.get(layer.id);
+      if (!renderer) continue;
+      const inRange = currentFrame >= layer.startFrame && currentFrame <= layer.endFrame;
+      const shouldBeVisible = layer.visible && inRange;
+      renderer.setVisible(shouldBeVisible);
+    }
   }
 
   clear(): void {
@@ -64,15 +73,12 @@ export class LayerSync {
     const renderer = this.renderers.get(layerId);
     if (!renderer) return;
 
-    if (this._transformChanged(prev.transform, next.transform)) {
+    if (this._transformChanged(prev.transform, next.transform))
       renderer.updateTransform(next.transform);
-    }
-    if (prev.opacity !== next.opacity) {
+    if (prev.opacity !== next.opacity)
       renderer.updateOpacity(next.opacity / 100);
-    }
-    if (prev.visible !== next.visible) {
+    if (prev.visible !== next.visible)
       renderer.setVisible(next.visible);
-    }
 
     if (prev.data === next.data) return;
 
@@ -80,9 +86,8 @@ export class LayerSync {
       const sr = renderer as any;
       const nd = next.data as any;
       if (sr.setColor && nd?.color !== undefined) sr.setColor(nd.color);
-      if (sr.setSize && (nd?.width !== undefined || nd?.height !== undefined)) {
+      if (sr.setSize && (nd?.width !== undefined || nd?.height !== undefined))
         sr.setSize(nd.width ?? 100, nd.height ?? 100);
-      }
     }
 
     if (next.type === 'shape') {
@@ -99,27 +104,26 @@ export class LayerSync {
       const tr = renderer as any;
       if (tr.setText && next.data) tr.setText(next.data);
     }
+
+    if (next.type === 'comp') {
+      // Comp layer size/texture managed by Renderer._processNestedComps
+      // Nothing to sync here since data changes take effect via re-render
+    }
   }
 
   private _transformChanged(a: Layer['transform'], b: Layer['transform']): boolean {
     return (
-      a.position.x !== b.position.x ||
-      a.position.y !== b.position.y ||
-      a.scale.x !== b.scale.x ||
-      a.scale.y !== b.scale.y ||
+      a.position.x !== b.position.x || a.position.y !== b.position.y ||
+      a.scale.x !== b.scale.x || a.scale.y !== b.scale.y ||
       a.rotation !== b.rotation ||
-      a.anchorPoint.x !== b.anchorPoint.x ||
-      a.anchorPoint.y !== b.anchorPoint.y
+      a.anchorPoint.x !== b.anchorPoint.x || a.anchorPoint.y !== b.anchorPoint.y
     );
   }
 
   private _updateZOrder(layers: Layer[]): void {
     layers.forEach((layer, index) => {
       const renderer = this.renderers.get(layer.id);
-      if (renderer) {
-        // Higher index = rendered on top (lower z so closer to camera)
-        renderer.group.position.z = -(index * 0.001);
-      }
+      if (renderer) renderer.group.position.z = -(index * 0.001);
     });
   }
 }

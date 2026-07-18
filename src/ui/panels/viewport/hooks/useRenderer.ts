@@ -56,6 +56,21 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
     return comp?.fps ?? 30;
   });
 
+  // Subscribe to identity-affecting fields individually so playback frame ticks don't retrigger
+  const compId = useCompositionStore(s => s.activeCompositionId);
+  const compWidth = useCompositionStore((s) => {
+    if (!s.activeCompositionId) return 0;
+    return s.compositions.find(c => c.id === s.activeCompositionId)?.width ?? 0;
+  });
+  const compHeight = useCompositionStore((s) => {
+    if (!s.activeCompositionId) return 0;
+    return s.compositions.find(c => c.id === s.activeCompositionId)?.height ?? 0;
+  });
+  const compBgColor = useCompositionStore((s) => {
+    if (!s.activeCompositionId) return '#000000';
+    return s.compositions.find(c => c.id === s.activeCompositionId)?.backgroundColor ?? '#000000';
+  });
+
   const selectedIds = useSelectionStore((s) =>
     s.selected.filter((x) => x.type === 'layer').map((x) => x.id),
   );
@@ -89,15 +104,19 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
   }, []);
 
   // Apply composition identity changes (dimensions, fps, bg color)
+  // Depend only on identity-affecting fields so playback frame ticks don't retrigger.
+  // `composition` is intentionally omitted from deps — the individual selectors above
+  // capture all identity-affecting fields. Stale `composition` is harmless because
+  // the identity string check prevents any spurious applyComposition call.
   const compIdentityRef = useRef('');
   useEffect(() => {
     const r = rendererRef.current;
     if (!r || !composition) return;
-    const identity = `${composition.id}_${composition.width}_${composition.height}_${composition.fps}_${composition.backgroundColor}`;
+    const identity = `${compId}_${compWidth}_${compHeight}_${compFps}_${compBgColor}`;
     if (compIdentityRef.current === identity) return;
     compIdentityRef.current = identity;
     r.applyComposition(composition);
-  }, [composition]);
+  }, [compId, compWidth, compHeight, compFps, compBgColor]);
 
   // Sync layers whenever they change
   useEffect(() => {

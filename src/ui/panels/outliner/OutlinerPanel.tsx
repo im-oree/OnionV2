@@ -2,8 +2,9 @@ import React, { useCallback, useMemo } from 'react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useSelectionStore } from '../../../state/selectionStore';
 import { LayerRow } from './LayerRow';
+import { useNavigationStore } from '../../../state/navigationStore';
 import { createDefaultLayer } from '../../../config/defaults';
-import type { Layer } from '../../../types/layer';
+import type { Layer, CompData } from '../../../types/layer';
 import { capitalize } from '../../../utils/string';
 
 function genId(): string {
@@ -122,10 +123,11 @@ export const OutlinerPanel: React.FC = () => {
     if (!comp) return;
     const orig = comp.layers.find((l) => l.id === id);
     if (!orig) return;
-    const dup = { ...JSON.parse(JSON.stringify(orig)), id: genId(), name: `${orig.name} (copy)`, zIndex: comp.layers.length + 1 };
-    addLayer(comp.id, dup);
-    select({ type: 'layer', id: dup.id, compositionId: comp.id });
-  }, [comp, addLayer, select]);
+    import('../../../utils/duplicateLayer').then(({ duplicateLayer }) => {
+      const dup = duplicateLayer(comp.id, orig);
+      select({ type: 'layer', id: dup.id, compositionId: comp.id });
+    });
+  }, [comp, select]);
 
   const handleDeleteLayer = useCallback((id: string) => {
     if (!comp) return;
@@ -138,6 +140,17 @@ export const OutlinerPanel: React.FC = () => {
     for (const id of selectedIds) removeLayer(comp.id, id);
     clearSelection();
   }, [comp, selectedIds, removeLayer, clearSelection]);
+
+  const handleDoubleClick = useCallback((layerId: string) => {
+    if (!comp) return;
+    const layer = comp.layers.find(l => l.id === layerId);
+    if (!layer || layer.type !== 'comp') return;
+    const data = layer.data as CompData | undefined;
+    if (!data?.sourceCompId) return;
+    useNavigationStore.getState().enterComp(data.sourceCompId);
+    useCompositionStore.getState().setActiveComposition(data.sourceCompId);
+    useSelectionStore.getState().clearSelection();
+  }, [comp]);
 
   const handleAddLayer = useCallback((type: Layer['type']) => {
     if (!comp) return;
@@ -271,6 +284,7 @@ export const OutlinerPanel: React.FC = () => {
               onDuplicate={handleDuplicate}
               onDelete={handleDeleteLayer}
               forceRename={renameLayerId === layer.id}
+              onDoubleClick={handleDoubleClick}
             />
           ))
         )}

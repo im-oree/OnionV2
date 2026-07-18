@@ -23,19 +23,17 @@ function getCtx(): { compId: string; comp: Composition } | null {
   return c ? { compId: s.activeCompositionId, comp: c } : null;
 }
 
-function gId(): string {
-  return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-}
-
 function dupSel(): void {
   const ctx = getCtx(); if (!ctx) return;
-  for (const id of useSelectionStore.getState().getSelectedIds()) {
-    const o = ctx.comp.layers.find(l => l.id === id);
-    if (o) {
-      const d = { ...JSON.parse(JSON.stringify(o)), id: gId(), name: `${o.name} (copy)`, zIndex: ctx.comp.layers.length + 1 };
-      useCompositionStore.getState().addLayer(ctx.compId, d);
+  const selected = useSelectionStore.getState().getSelectedIds();
+  const originals = selected.map(id => ctx.comp.layers.find(l => l.id === id)).filter(Boolean) as any[];
+  if (originals.length === 0) return;
+  import('../utils/duplicateLayer').then(({ duplicateLayers }) => {
+    const dups = duplicateLayers(ctx.compId, originals);
+    if (dups.length > 0) {
+      useSelectionStore.getState().replaceSelection(dups.map(d => d.id), ctx.compId);
     }
-  }
+  });
 }
 
 function delSel(): void {
@@ -140,7 +138,8 @@ export function registerAllShortcuts(): void {
     clock().then(c => { c.setPlaybackRate(c.playbackRate > 0 ? -1 : 1); c.togglePlay(); });
   }, remappable: true });
 
-  shortcutRegistry.register({ id: 'playback.stop', key: 'Escape', context: 'global', handler: () => clock().then(c => c.stop()), remappable: true });
+  // Escape pauses instead of stop() to avoid rewinding to frame 0 (which snaps all animated properties)
+  shortcutRegistry.register({ id: 'playback.pause', key: 'Escape', context: 'global', handler: () => clock().then(c => c.pause()), remappable: true });
 
   shortcutRegistry.register({ id: 'playback.easeSelected', key: 'F9', context: 'global', handler: () => {
     import('../state/keyframeStore').then(m => {
@@ -197,5 +196,30 @@ export function registerAllShortcuts(): void {
   shortcutRegistry.register({ id: 'layer.delete', key: 'Delete', context: 'global', handler: delSel, remappable: true });
   shortcutRegistry.register({ id: 'layer.deleteAlt', key: 'x', context: 'global', handler: delSel, remappable: true });
   shortcutRegistry.register({ id: 'layer.rename', key: 'F2', context: 'global', handler: () => document.dispatchEvent(new CustomEvent('layer:rename')), remappable: true });
+  // Markers
+  shortcutRegistry.register({ id: 'marker.add', key: 'm', context: 'global', handler: () => {
+    Promise.all([import('../state/markerStore'), import('../state/compositionStore'), clock()]).then(([ms, cs, c]) => {
+      const id = cs.useCompositionStore.getState().activeCompositionId;
+      if (id) {
+        const comp = cs.useCompositionStore.getState().compositions.find(x => x.id === id);
+        const frame = c.currentFrame;
+        const time = frame / (comp?.fps ?? 30);
+        ms.useMarkerStore.getState().addMarker(id, time, frame);
+      }
+    });
+  }, remappable: true });
+
+  shortcutRegistry.register({ id: 'marker.remove', key: 'm', alt: true, context: 'global', handler: () => {
+    Promise.all([import('../state/markerStore'), import('../state/compositionStore'), clock()]).then(([ms, cs, c]) => {
+      const id = cs.useCompositionStore.getState().activeCompositionId;
+      if (id) {
+        const markers = ms.useMarkerStore.getState().getMarkersForComposition(id);
+        const frame = c.currentFrame;
+        const atFrame = markers.find(m => m.frame === frame);
+        if (atFrame) ms.useMarkerStore.getState().removeMarker(id, atFrame.id);
+      }
+    });
+  }, remappable: true });
+
   shortcutRegistry.register({ id: 'file.save', key: 's', ctrl: true, context: 'global', handler: () => {}, remappable: true });
 }

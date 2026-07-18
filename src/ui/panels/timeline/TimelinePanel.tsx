@@ -5,11 +5,12 @@ import { PlaybackControls, animationClock } from './PlaybackControls';
 import { TimelineHeader } from './TimelineHeader';
 import { TimelineRuler } from './TimelineRuler';
 import { KeyframeArea } from './KeyframeArea';
+import { OutlinerTracks } from './OutlinerTracks';
 import { ContextMenu } from '../../common/ContextMenu';
 import { useContextMenu } from '../../common/useContextMenu';
 import { buildTimelineContextMenu } from './timelineContextMenus';
-
-const OutlinerPanel = React.lazy(() => import('../outliner/OutlinerPanel'));
+import { useKeyframeModal } from './useKeyframeModal';
+import { useKeyframeShortcuts } from './useKeyframeShortcuts';
 
 export const TimelinePanel: React.FC = () => {
   const comp = useCompositionStore(s =>
@@ -20,11 +21,11 @@ export const TimelinePanel: React.FC = () => {
   const scrollX = useTimelineStore(s => s.scrollX);
   const setScrollX = useTimelineStore(s => s.setScrollX);
 
-  const [expandedLayers] = useState<Set<string>>(new Set());
   const [outlinerWidth, setOutlinerWidth] = useState(280);
   const tracksScrollRef = useRef<HTMLDivElement>(null);
   const outlinerScrollRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const rightSideRef = useRef<HTMLDivElement>(null);
   const ctxMenu = useContextMenu();
 
@@ -33,18 +34,47 @@ export const TimelinePanel: React.FC = () => {
   const currentFrame = comp ? Math.floor(comp.currentTime * comp.fps) : 0;
   const fps = comp?.fps ?? 30;
 
+  // Global modal + shortcuts
+  useKeyframeModal(zoom, totalFrames);
+  useKeyframeShortcuts();
+
+  // Track when mouse is inside the timeline area (for scoping shortcuts)
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const enter = () => { (document as any)._lastMouseInTimeline = true; };
+    const leave = () => { (document as any)._lastMouseInTimeline = false; };
+    el.addEventListener('mouseenter', enter);
+    el.addEventListener('mouseleave', leave);
+    return () => {
+      el.removeEventListener('mouseenter', enter);
+      el.removeEventListener('mouseleave', leave);
+    };
+  }, []);
+
+  // Dispatch kfmodal events → start modal grab/scale (used by context menu)
+  useEffect(() => {
+    const g = () => {
+      const ev = new KeyboardEvent('keydown', { key: 'g' });
+      document.dispatchEvent(ev);
+    };
+    const s = () => {
+      const ev = new KeyboardEvent('keydown', { key: 's' });
+      document.dispatchEvent(ev);
+    };
+    document.addEventListener('kfmodal:grab', g);
+    document.addEventListener('kfmodal:scale', s);
+    return () => {
+      document.removeEventListener('kfmodal:grab', g);
+      document.removeEventListener('kfmodal:scale', s);
+    };
+  }, []);
+
   useEffect(() => {
     if (playheadRef.current) {
       playheadRef.current.style.left = `${currentFrame * zoom - scrollX}px`;
     }
   }, [currentFrame, zoom, scrollX]);
-
-  const propertyPaths = [
-    { path: 'transform.position', label: 'Position' },
-    { path: 'transform.rotation', label: 'Rotation' },
-    { path: 'transform.scale', label: 'Scale' },
-    { path: 'opacity', label: 'Opacity' },
-  ];
 
   const onOutlinerScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     if (tracksScrollRef.current) tracksScrollRef.current.scrollTop = e.currentTarget.scrollTop;
@@ -88,6 +118,10 @@ export const TimelinePanel: React.FC = () => {
     const el = rightSideRef.current;
     if (!el) return;
     let panning = false, lx = 0, ly = 0;
+    const stop = () => {
+      if (!panning) return;
+      panning = false; document.body.style.cursor = '';
+    };
     const onDown = (e: MouseEvent) => {
       if (e.button !== 1) return;
       e.preventDefault();
@@ -96,20 +130,26 @@ export const TimelinePanel: React.FC = () => {
     };
     const onMove = (e: MouseEvent) => {
       if (!panning) return;
+      if ((e.buttons & 4) === 0) { stop(); return; }
       if (tracksScrollRef.current) {
         tracksScrollRef.current.scrollLeft -= e.clientX - lx;
         tracksScrollRef.current.scrollTop -= e.clientY - ly;
       }
       lx = e.clientX; ly = e.clientY;
     };
-    const onUp = () => { if (panning) { panning = false; document.body.style.cursor = ''; } };
+    const onUp = (e: MouseEvent) => { if (e.button === 1) stop(); };
     el.addEventListener('mousedown', onDown);
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
+    document.addEventListener('pointercancel', stop);
+    window.addEventListener('blur', stop);
     return () => {
       el.removeEventListener('mousedown', onDown);
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('pointercancel', stop);
+      window.removeEventListener('blur', stop);
+      document.body.style.cursor = '';
     };
   }, []);
 
@@ -129,16 +169,15 @@ export const TimelinePanel: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col h-full bg-surface-alt select-none">
+    <div ref={rootRef} className="flex flex-col h-full bg-surface-alt select-none">
       <PlaybackControls comp={comp} totalFrames={totalFrames} currentFrame={currentFrame} />
       <TimelineHeader comp={comp} currentFrame={currentFrame} totalFrames={totalFrames} />
 
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-shrink-0 overflow-hidden border-r border-border bg-surface flex flex-col" style={{ width: outlinerWidth }}>
+          <OutlinerTracksHeader compId={comp.id} />
           <div ref={outlinerScrollRef} className="flex-1 overflow-auto" onScroll={onOutlinerScroll}>
-            <React.Suspense fallback={<div className="p-2 text-ui-xs text-text-disabled">Loading...</div>}>
-              <OutlinerPanel />
-            </React.Suspense>
+            <OutlinerTracks layers={layers} compId={comp.id} />
           </div>
         </div>
 
@@ -164,8 +203,7 @@ export const TimelinePanel: React.FC = () => {
           <div ref={tracksScrollRef} className="flex-1 overflow-auto relative" onScroll={onTracksScroll}>
             <div style={{ width: totalFrames * zoom + 100, minHeight: '100%', position: 'relative' }}>
               <KeyframeArea
-                layers={layers} expandedLayers={expandedLayers}
-                propertyPaths={propertyPaths} currentFrame={currentFrame}
+                layers={layers} currentFrame={currentFrame}
                 zoom={zoom} totalFrames={totalFrames} compId={comp.id}
               />
             </div>
@@ -188,5 +226,55 @@ export const TimelinePanel: React.FC = () => {
     </div>
   );
 };
+
+const OutlinerTracksHeader: React.FC<{ compId: string }> = ({ compId }) => {
+  const ctx = useContextMenu();
+  const openAdd = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    ctx.open(e, [
+      { id: 'add.hdr', label: 'Add Layer', disabled: true },
+      { id: 'add.d1', divider: true },
+      { id: 'add.solid', label: 'Solid', onClick: () => addFromHeader(compId, 'solid') },
+      { id: 'add.shape', label: 'Shape', onClick: () => addFromHeader(compId, 'shape') },
+      { id: 'add.text', label: 'Text', onClick: () => addFromHeader(compId, 'text') },
+      { id: 'add.null', label: 'Null Object', onClick: () => addFromHeader(compId, 'null') },
+      { id: 'add.adj', label: 'Adjustment Layer', onClick: () => addFromHeader(compId, 'adjustment') },
+      { id: 'add.d2', divider: true },
+      { id: 'add.image', label: 'Image', onClick: () => addFromHeader(compId, 'image') },
+      { id: 'add.video', label: 'Video', onClick: () => addFromHeader(compId, 'video') },
+    ]);
+  };
+  return (
+    <div style={{ height: 28 }} className="border-b border-border bg-surface-alt flex items-center px-2 gap-1 text-ui-xs text-text-secondary">
+      <span className="flex-1 truncate">Channels</span>
+      <button
+        onClick={openAdd}
+        title="Add Layer"
+        className="w-[18px] h-[18px] flex items-center justify-center rounded-sm border-0 bg-transparent text-text-secondary hover:text-text-primary hover:bg-panel-hover cursor-pointer"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+        </svg>
+      </button>
+      {ctx.menu && <ContextMenu items={ctx.menu.items} position={ctx.menu.position} onClose={ctx.close} />}
+    </div>
+  );
+};
+
+function addFromHeader(compId: string, type: import('../../../types/layer').Layer['type']): void {
+  import('../../../utils/createLayerInstance').then(({ createLayerInstance }) => {
+    import('../../../state/compositionStore').then(({ useCompositionStore }) => {
+      import('../../../state/selectionStore').then(({ useSelectionStore }) => {
+        const cs = useCompositionStore.getState();
+        const comp = cs.compositions.find(c => c.id === compId);
+        if (!comp) return;
+        const layer = createLayerInstance(type, comp);
+        cs.addLayer(compId, layer);
+        useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+      });
+    });
+  });
+}
 
 export default TimelinePanel;

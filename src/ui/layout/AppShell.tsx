@@ -1,10 +1,10 @@
 import React, { useEffect, useCallback } from 'react';
 import { useUIStore } from '../../state/uiStore';
-import { useCompositionStore } from '../../state/compositionStore';
+
 import { MenuBar } from '../menubar/MenuBar';
 import { WorkspaceTabs } from './WorkspaceTabs';
 import { Toolbar } from '../toolbar/Toolbar';
-import { EmptyStateLanding } from './EmptyStateLanding';
+
 import { RightSidebar } from './RightSidebar';
 
 const ProjectBrowserPanel = React.lazy(() => import('../panels/project/ProjectBrowserPanel'));
@@ -22,7 +22,6 @@ export const AppShell: React.FC = () => {
   const showTimeline = useUIStore((s) => s.showTimeline);
   const setWs = useUIStore((s) => s.setWindowSize);
 
-  const activeCompId = useCompositionStore((s) => s.activeCompositionId);
 
   const handleResize = useCallback(
     () => setWs({ width: window.innerWidth, height: window.innerHeight }),
@@ -39,8 +38,8 @@ export const AppShell: React.FC = () => {
   const rightTabStrip = showRight ? '32px' : '0px';
   const rightCol = showRight ? `${rightW}px` : '0px';
   const rightSplit = showRight ? '3px' : '0px';
-  const tlRow = showTimeline && activeCompId ? `${tlH}px` : '0px';
-  const tlSplit = showTimeline && activeCompId ? '3px' : '0px';
+  const tlRow = showTimeline ? `${tlH}px` : '0px';
+  const tlSplit = showTimeline ? '3px' : '0px';
 
   return (
     <div
@@ -90,26 +89,20 @@ export const AppShell: React.FC = () => {
         </div>
       )}
 
-      {/* Col 3: Center (Viewport + Timeline stacked) */}
+      {/* Col 3: Center Viewport */}
       <div style={{ gridColumn: '4', gridRow: '3' }} className="overflow-hidden relative bg-app">
-        {activeCompId ? (
-          <React.Suspense fallback={<Fallback />}>
-            <ViewportPanel />
-          </React.Suspense>
-        ) : (
-          <EmptyStateLanding />
-        )}
+        <React.Suspense fallback={<Fallback />}>
+          <ViewportPanel />
+        </React.Suspense>
       </div>
 
-      {/* Timeline splitter */}
-      {activeCompId && showTimeline && (
+      {showTimeline && (
         <div style={{ gridColumn: '4', gridRow: '4' }}>
           <HSplitDrag />
         </div>
       )}
 
-      {/* Timeline */}
-      {activeCompId && showTimeline && (
+      {showTimeline && (
         <div style={{ gridColumn: '4', gridRow: '5' }} className="overflow-hidden bg-panel">
           <React.Suspense fallback={<Fallback />}>
             <TimelinePanel />

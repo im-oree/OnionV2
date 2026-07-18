@@ -1,5 +1,6 @@
 import React, { useRef, useCallback } from 'react';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { useMarkerStore } from '../../../state/markerStore';
 import { animationClock } from './PlaybackControls';
 
 interface Props {
@@ -90,6 +91,19 @@ export const TimelineRuler: React.FC<Props> = ({
     );
   }
 
+  // Markers for this composition — reactive Zustand subscription
+  const markers = useMarkerStore(s => s.markersByComposition[compId]);
+
+  const handleMarkerMouseDown = useCallback((e: React.MouseEvent, markerId: string) => {
+    e.stopPropagation();
+    const s = useMarkerStore.getState();
+    const existing = s.markersByComposition[compId] ?? [];
+    const marker = (existing ?? []).find(m => m.id === markerId);
+    if (!marker) return;
+    animationClock.seekToFrame(marker.frame);
+    useCompositionStore.getState().setCurrentTime(compId, marker.time);
+  }, [compId]);
+
   return (
     <div className="relative flex-shrink-0 bg-surface border-b border-border overflow-hidden" style={{ height: 28 }}>
       <div
@@ -116,6 +130,28 @@ export const TimelineRuler: React.FC<Props> = ({
             </>
           )}
           {ticks}
+
+          {/* Markers */}
+          {(markers ?? []).map(marker => (
+            <div
+              key={marker.id}
+              className="absolute top-0 cursor-pointer group"
+              style={{ left: marker.frame * zoom }}
+              onMouseDown={(e) => handleMarkerMouseDown(e, marker.id)}
+              title={marker.label || `Marker at frame ${marker.frame}`}
+            >
+              <svg width="10" height="14" viewBox="0 0 10 14">
+                <polygon points="0,0 10,0 10,10 5,14 0,10" fill={marker.color} stroke="#000" strokeWidth="0.5" />
+              </svg>
+              {marker.label && (
+                <span
+                  className="absolute left-[12px] top-0 text-[9px] text-text-secondary whitespace-nowrap hidden group-hover:block"
+                >
+                  {marker.label}
+                </span>
+              )}
+            </div>
+          ))}
         </div>
       </div>
     </div>

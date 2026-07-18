@@ -6,8 +6,15 @@ import './styles/panels.css';
 import { useCompositionStore } from './state/compositionStore';
 import { registerAllEffects } from './renderer/effects/registerEffects';
 
-// Phase 5: Register all built-in effects at startup
 registerAllEffects();
+
+// Ensure a default composition exists BEFORE first render
+{
+  const state = useCompositionStore.getState();
+  if (state.compositions.length === 0) {
+    state.addComposition({ name: 'My Composition' });
+  }
+}
 
 const rootEl = document.getElementById('root');
 if (!rootEl) throw new Error('Root element #root not found');
@@ -17,14 +24,3 @@ ReactDOM.createRoot(rootEl).render(
     <App />
   </React.StrictMode>,
 );
-
-// Initialize with a default composition
-const initTimer = setTimeout(() => {
-  const state = useCompositionStore.getState();
-  if (state.compositions.length === 0) {
-    state.addComposition({ name: 'My Composition' });
-  }
-}, 0);
-
-// Cleanup for HMR
-import.meta.hot?.dispose?.(() => clearTimeout(initTimer));

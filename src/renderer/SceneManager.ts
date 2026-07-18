@@ -26,7 +26,7 @@ export class SceneManager {
     // Render order via renderOrder to ensure correct layering.
     // Since all materials use depthTest: false, THREE.js renders
     // objects in ascending renderOrder regardless of scene add order.
-    // Order: compBounds bgQuad (-20) → darkOutside (-15) → border (-10)
+    // Order: compBounds darkOutside (-20) → bgQuad (-18) → border (-16)
     //        → grid (-5) → layers (0) → safeZones (5)
     // CRITICAL: layers MUST have higher renderOrder than grid so they
     // render ON TOP, preventing grid from showing through opaque meshes.
@@ -50,7 +50,8 @@ export class SceneManager {
     this.scene.add(this.safeZones.group);
 
     // Solid background so CSS grid patterns don't show through transparent canvas
-    this.scene.background = new THREE.Color('#1a1a1a');
+    // Matches the outside-comp area grey
+    this.scene.background = new THREE.Color('#3d3d3d');
   }
 
   applyComposition(width: number, height: number, bgColor: string): void {

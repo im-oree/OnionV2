@@ -3,6 +3,7 @@ import { Icon } from '../../common/Icon';
 import { Button } from '../../common/Button';
 import { useTimelineStore } from '../../../state/timelineStore';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { useMarkerStore } from '../../../state/markerStore';
 import { useContextMenu } from '../../common/useContextMenu';
 import { ContextMenu, type ContextMenuItem } from '../../common/ContextMenu';
 import { FrameInput } from './FrameInput';
@@ -45,12 +46,32 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
     { id: 'v.smpte', label: 'SMPTE', checked: timeDisplay === 'smpte', onClick: () => setTimeDisplay('smpte') },
   ], [timeDisplay, setTimeDisplay]);
 
+  const markers = useMarkerStore(s => s.markersByComposition[comp.id] ?? []);
+  const hasMarkers = markers.length > 0;
+
+  const addMarkerH = useCallback(() => {
+    const frame = animationClock.currentFrame;
+    const time = frame / fps;
+    useMarkerStore.getState().addMarker(comp.id, time, frame);
+  }, [comp.id, fps]);
+
+  const removeMarkerH = useCallback(() => {
+    const frame = animationClock.currentFrame;
+    const markers = useMarkerStore.getState().getMarkersForComposition(comp.id);
+    const atFrame = markers.find(m => m.frame === frame);
+    if (atFrame) useMarkerStore.getState().removeMarker(comp.id, atFrame.id);
+  }, [comp.id]);
+
+  const clearMarkersH = useCallback(() => {
+    useMarkerStore.getState().clearAllMarkers(comp.id);
+  }, [comp.id]);
+
   const markerMenu = useMemo((): ContextMenuItem[] => [
-    { id: 'm.add', label: 'Add Marker at Playhead', shortcut: 'M', disabled: true },
-    { id: 'm.rem', label: 'Remove Marker', disabled: true },
+    { id: 'm.add', label: 'Add Marker at Playhead', shortcut: 'M', onClick: addMarkerH },
+    { id: 'm.rem', label: 'Remove Marker at Playhead', disabled: !hasMarkers, onClick: removeMarkerH },
     { id: 'm.d1', divider: true },
-    { id: 'm.clear', label: 'Clear All Markers', disabled: true },
-  ], []);
+    { id: 'm.clear', label: 'Clear All Markers', disabled: !hasMarkers, onClick: clearMarkersH },
+  ], [addMarkerH, removeMarkerH, clearMarkersH, hasMarkers]);
 
   const playbackMenu = useMemo((): ContextMenuItem[] => [
     { id: 'p.loop', label: 'Loop', checked: loop, onClick: () => setLoop(!loop) },

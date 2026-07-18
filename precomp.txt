@@ -1,0 +1,1377 @@
+﻿===== src\types\layer.ts =====
+import type { EffectInstance } from './effect';
+
+export type LayerType =
+  | 'solid' | 'shape' | 'text' | 'image' | 'video' | 'null' | 'adjustment';
+
+export type BlendMode =
+  | 'normal'|'multiply'|'screen'|'overlay'|'darken'|'lighten'
+  | 'colorDodge'|'colorBurn'|'hardLight'|'softLight'
+  | 'difference'|'exclusion'|'hue'|'saturation'|'color'|'luminosity';
+
+export interface Transform {
+  position: { x: number; y: number };
+  scale: { x: number; y: number };
+  rotation: number;
+  anchorPoint: { x: number; y: number };
+}
+
+/** Shape-specific data */
+export interface ShapeRectangle {
+  type: 'rectangle';
+  width: number;
+  height: number;
+  borderRadius: number;
+}
+export interface ShapeEllipse {
+  type: 'ellipse';
+  radiusX: number;
+  radiusY: number;
+}
+export interface ShapePolygon {
+  type: 'polygon';
+  sides: number;
+  radius: number;
+  roundness: number;
+}
+export interface ShapeStar {
+  type: 'star';
+  points: number;
+  radius: number;
+  innerRadius: number;
+  roundness: number;
+}
+export type ShapeData = ShapeRectangle | ShapeEllipse | ShapePolygon | ShapeStar;
+
+export interface SolidData { color: string; width: number; height: number }
+export interface ImageData { assetId: string; naturalWidth: number; naturalHeight: number }
+export interface VideoData { assetId: string; naturalWidth: number; naturalHeight: number; duration: number; muted: boolean; volume: number; playbackRate: number }
+export interface TextData { text: string; fontFamily: string; fontSize: number; fontWeight: number; color: string; lineHeight: number; letterSpacing: number; alignment: 'left'|'center'|'right' }
+
+export type LayerPayload = SolidData | ShapeData | ImageData | VideoData | TextData | Record<string, never>;
+
+export interface Mask {
+  id: string; points: Array<{ x: number; y: number }>; inverted: boolean; feather: number;
+  opacity: number; expansion: number; mode: 'add'|'subtract'|'intersect'|'difference';
+}
+
+export interface BaseLayer {
+  id: string;
+  type: LayerType;
+  name: string;
+  visible: boolean;
+  locked: boolean;
+  soloed: boolean;
+  shy: boolean;
+  parentId: string | null;
+  blendMode: BlendMode;
+  opacity: number;
+  startFrame: number;
+  endFrame: number;
+  transform: Transform;
+  zIndex: number;
+  effects: EffectInstance[];
+  masks: Mask[];
+  data?: LayerPayload;
+}
+
+export type Layer = BaseLayer;
+
+/** Helper to create a default transform */
+export function defaultTransform(): Transform {
+  return {
+    position: { x: 0, y: 0 },
+    scale: { x: 100, y: 100 },
+    rotation: 0,
+    anchorPoint: { x: 0, y: 0 },
+  };
+}
+
+
+===== src\types\composition.ts =====
+import type { Layer } from './layer';
+
+export interface WorkArea { start: number; end: number; enabled: boolean }
+
+export interface Composition {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  fps: number;
+  duration: number;
+  backgroundColor: string;
+  layers: Layer[];
+  currentTime: number;
+  workAreaStart: number;
+  workAreaEnd: number;
+  pixelAspect: number;
+}
+
+
+===== src\renderer\layers\LayerFactory.ts =====
+import type { Layer, SolidData, ShapeData, TextData, ImageData, VideoData } from '../../types/layer';
+import type { SceneManager } from '../SceneManager';
+import type { BaseLayerRenderer } from './BaseLayerRenderer';
+import { SolidLayerRenderer } from './SolidLayerRenderer';
+import { ShapeLayerRenderer } from './ShapeLayerRenderer';
+import { TextLayerRenderer } from './TextLayerRenderer';
+import { ImageLayerRenderer } from './ImageLayerRenderer';
+import { VideoLayerRenderer } from './VideoLayerRenderer';
+
+export class LayerFactory {
+  private sceneManager: SceneManager;
+
+  constructor(sceneManager: SceneManager) {
+    this.sceneManager = sceneManager;
+  }
+
+  create(layer: Layer): BaseLayerRenderer {
+    let renderer: BaseLayerRenderer;
+
+    switch (layer.type) {
+      case 'solid': {
+        const data = layer.data as SolidData;
+        renderer = new SolidLayerRenderer(layer.id, data);
+        break;
+      }
+      case 'shape': {
+        const data = layer.data as ShapeData;
+        renderer = new ShapeLayerRenderer(layer.id, data);
+        break;
+      }
+      case 'text': {
+        const data = layer.data as TextData;
+        renderer = new TextLayerRenderer(layer.id, data);
+        break;
+      }
+      case 'image': {
+        const data = layer.data as ImageData;
+        renderer = new ImageLayerRenderer(layer.id, data.assetId, data.naturalWidth, data.naturalHeight);
+        break;
+      }
+      case 'video': {
+        const data = layer.data as VideoData;
+        renderer = new VideoLayerRenderer(layer.id, data.assetId, data.naturalWidth, data.naturalHeight);
+        break;
+      }
+      default:
+        renderer = new SolidLayerRenderer(layer.id, { color: '#000000', width: 100, height: 100 });
+        renderer.setVisible(false);
+        break;
+    }
+
+    // Apply initial state
+    renderer.updateTransform(layer.transform);
+    renderer.updateOpacity(layer.opacity / 100);
+    renderer.setVisible(layer.visible);
+    renderer.group.position.z = -(layer.zIndex * 0.001) || 0;
+
+    // Add the group (which contains the mesh) to the scene's layer group
+    this.sceneManager.layerGroup.add(renderer.group);
+
+    return renderer;
+  }
+
+  remove(renderer: BaseLayerRenderer): void {
+    this.sceneManager.layerGroup.remove(renderer.group);
+    renderer.dispose();
+  }
+
+  clearAll(): void {
+    this.sceneManager.clearLayers();
+  }
+}
+
+
+===== src\renderer\layers\BaseLayerRenderer.ts =====
+import * as THREE from 'three';
+import type { Transform } from '../../types/layer';
+
+export abstract class BaseLayerRenderer {
+  public readonly group: THREE.Group;
+  public readonly mesh: THREE.Mesh;
+  public readonly id: string;
+
+  protected geometry: THREE.BufferGeometry;
+  protected material: THREE.Material;
+
+  constructor(id: string, geometry: THREE.BufferGeometry, material: THREE.Material) {
+    this.id = id;
+    this.geometry = geometry;
+    this.material = material;
+
+    this.group = new THREE.Group();
+    this.group.name = id;
+
+    this.mesh = new THREE.Mesh(geometry, material);
+    this.mesh.name = `${id}_mesh`;
+    this.mesh.renderOrder = 1;
+    this.group.add(this.mesh);
+  }
+
+  updateTransform(transform: Transform): void {
+    // Position: world units, direct
+    this.group.position.set(transform.position.x, transform.position.y, this.group.position.z);
+    // Rotation: degrees â†’ radians, positive = CCW in Y-up
+    this.group.rotation.z = THREE.MathUtils.degToRad(transform.rotation);
+    // FIX: scale is stored as percentage (100 = 100%), convert to 0-1
+    this.mesh.scale.set(transform.scale.x / 100, transform.scale.y / 100, 1);
+    // Anchor offset: applied to mesh position within the group
+    this.mesh.position.set(-transform.anchorPoint.x, -transform.anchorPoint.y, 0);
+  }
+
+  updateOpacity(opacity: number): void {
+    const mat = this.material as THREE.MeshBasicMaterial;
+    mat.transparent = opacity < 1;
+    mat.opacity = opacity;
+    mat.needsUpdate = true;
+  }
+
+  setVisible(visible: boolean): void {
+    this.group.visible = visible;
+  }
+
+  dispose(): void {
+    this.group.remove(this.mesh);
+    this.geometry.dispose();
+    this.material.dispose();
+  }
+
+  protected abstract geometryWidth(): number;
+  protected abstract geometryHeight(): number;
+}
+
+===== src\renderer\layers\NullLayerRenderer.ts =====
+/**
+ * NullLayerRenderer â€” a layer with no visual content.
+ * Renders as a small square outline viewport-only (visible when selected).
+ * Used as a parent for organizing/animation groups.
+ */
+import * as THREE from 'three';
+import { BaseLayerRenderer } from './BaseLayerRenderer';
+
+export class NullLayerRenderer extends BaseLayerRenderer {
+  constructor(id: string) {
+    const geo = new THREE.PlaneGeometry(10, 10);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x666666,
+      transparent: true,
+      opacity: 0.3,
+      depthWrite: false,
+      depthTest: false,
+      side: THREE.DoubleSide,
+      wireframe: true,
+    });
+    super(id, geo, mat);
+    this.group.renderOrder = 0;
+  }
+
+  protected geometryWidth(): number {
+    return 10;
+  }
+
+  protected geometryHeight(): number {
+    return 10;
+  }
+}
+
+
+===== src\renderer\layers\SolidLayerRenderer.ts =====
+/**
+ * SolidLayerRenderer â€” flat color quad layer.
+ */
+import * as THREE from 'three';
+import { BaseLayerRenderer } from './BaseLayerRenderer';
+import type { SolidData } from '../../types/layer';
+
+export class SolidLayerRenderer extends BaseLayerRenderer {
+  private _width: number;
+  private _height: number;
+
+  constructor(id: string, data: SolidData) {
+    const geo = new THREE.PlaneGeometry(data.width, data.height);
+    const mat = new THREE.MeshBasicMaterial({
+      color: data.color,
+      depthTest: false,
+      transparent: false,
+      opacity: 1,
+      side: THREE.DoubleSide,
+    });
+    super(id, geo, mat);
+    this._width = data.width;
+    this._height = data.height;
+  }
+
+  /** Update the solid color */
+  setColor(color: string): void {
+    (this.material as THREE.MeshBasicMaterial).color.set(color);
+  }
+
+  /** Resize the solid geometry */
+  setSize(width: number, height: number): void {
+    this._width = width;
+    this._height = height;
+    this.geometry.dispose();
+    const newGeo = new THREE.PlaneGeometry(width, height);
+    this.mesh.geometry = newGeo;
+    // Update geometry reference
+    (this as any).geometry = newGeo;
+  }
+
+  protected geometryWidth(): number {
+    return this._width;
+  }
+  protected geometryHeight(): number {
+    return this._height;
+  }
+}
+
+
+===== src\ui\panels\project\ProjectBrowserPanel.tsx =====
+import React, { useState } from 'react';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useProjectStore } from '../../../state/projectStore';
+import { openNewCompositionDialog } from '../../dialogs/DialogManager';
+
+export const ProjectBrowserPanel: React.FC = () => {
+  const compositions = useCompositionStore((s) => s.compositions);
+  const activeCompId = useCompositionStore((s) => s.activeCompositionId);
+  const setActive = useCompositionStore((s) => s.setActiveComposition);
+  const removeComp = useCompositionStore((s) => s.removeComposition);
+  const project = useProjectStore((s) => s.project);
+  const [search, setSearch] = useState('');
+  const [expanded, setExpanded] = useState<{ comps: boolean; assets: boolean }>({
+    comps: true,
+    assets: true,
+  });
+
+  const filteredComps = compositions.filter((c) =>
+    c.name.toLowerCase().includes(search.toLowerCase()),
+  );
+  const filteredAssets = project.assets.filter((a) =>
+    a.name.toLowerCase().includes(search.toLowerCase()),
+  );
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div
+        className="flex items-center px-2 border-b border-border bg-panel-header"
+        style={{ height: 28 }}
+      >
+        <span className="text-ui-xs text-text-secondary font-medium flex-1">Project</span>
+        <button
+          className="w-[18px] h-[18px] flex items-center justify-center border-0 bg-transparent cursor-pointer text-text-secondary hover:text-text-primary hover:bg-panel-hover rounded-sm"
+          onClick={openNewCompositionDialog}
+          title="New Composition"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Search */}
+      <div className="px-2 py-1 border-b border-border">
+        <input
+          type="search"
+          placeholder="Search project..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full h-[20px] text-ui-xs px-1 bg-surface border border-border rounded-sm text-text-primary outline-none focus:border-accent"
+        />
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-auto">
+        {compositions.length === 0 && project.assets.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center px-4 gap-3">
+            <div className="text-ui-xs text-text-disabled">Empty project</div>
+            <button
+              className="text-ui-xs text-accent hover:text-accent-hover border-0 bg-transparent cursor-pointer underline"
+              onClick={openNewCompositionDialog}
+            >
+              Create composition
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* Compositions folder */}
+            <FolderRow
+              label={`Compositions (${filteredComps.length})`}
+              expanded={expanded.comps}
+              onToggle={() => setExpanded((s) => ({ ...s, comps: !s.comps }))}
+            />
+            {expanded.comps &&
+              filteredComps.map((comp) => (
+                <CompRow
+                  key={comp.id}
+                  name={comp.name}
+                  info={`${comp.width}Ã—${comp.height} @ ${comp.fps}fps`}
+                  isActive={comp.id === activeCompId}
+                  onClick={() => setActive(comp.id)}
+                  onDelete={() => removeComp(comp.id)}
+                />
+              ))}
+
+            {/* Assets folder */}
+            <FolderRow
+              label={`Assets (${filteredAssets.length})`}
+              expanded={expanded.assets}
+              onToggle={() => setExpanded((s) => ({ ...s, assets: !s.assets }))}
+            />
+            {expanded.assets &&
+              (filteredAssets.length === 0 ? (
+                <div className="text-ui-xs text-text-disabled px-6 py-1">No assets imported</div>
+              ) : (
+                filteredAssets.map((a) => (
+                  <div
+                    key={a.id}
+                    className="flex items-center h-[22px] px-6 gap-1 text-ui-xs text-text-secondary hover:bg-panel-hover cursor-pointer"
+                  >
+                    <span className="truncate">{a.name}</span>
+                  </div>
+                ))
+              ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const FolderRow: React.FC<{
+  label: string;
+  expanded: boolean;
+  onToggle: () => void;
+}> = ({ label, expanded, onToggle }) => (
+  <div
+    className="flex items-center h-[22px] px-2 gap-1 cursor-pointer hover:bg-panel-hover text-ui-xs text-text-secondary font-medium select-none"
+    onClick={onToggle}
+  >
+    <svg
+      width="8"
+      height="8"
+      viewBox="0 0 8 8"
+      fill="currentColor"
+      className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
+    >
+      <polygon points="2,0 6,4 2,8" />
+    </svg>
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M3 6 l3 -3 h6 l3 3 h6 v14 h-18 z" />
+    </svg>
+    <span>{label}</span>
+  </div>
+);
+
+const CompRow: React.FC<{
+  name: string;
+  info: string;
+  isActive: boolean;
+  onClick: () => void;
+  onDelete: () => void;
+}> = ({ name, info, isActive, onClick, onDelete }) => (
+  <div
+    onClick={onClick}
+    className={`group flex items-center h-[24px] pl-6 pr-2 gap-2 cursor-pointer text-ui-xs ${
+      isActive ? 'bg-accent/30 text-text-primary' : 'text-text-secondary hover:bg-panel-hover'
+    }`}
+  >
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="5" width="18" height="14" rx="1" />
+      <path d="M3 9 h18" />
+    </svg>
+    <span className="truncate flex-1">{name}</span>
+    <span className="text-[9px] text-text-disabled shrink-0">{info}</span>
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onDelete();
+      }}
+      className="w-3 h-3 border-0 bg-transparent cursor-pointer text-text-disabled hover:text-danger opacity-0 group-hover:opacity-100"
+      title="Delete"
+    >
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
+        <line x1="2" y1="2" x2="8" y2="8" />
+        <line x1="8" y1="2" x2="2" y2="8" />
+      </svg>
+    </button>
+  </div>
+);
+
+export default ProjectBrowserPanel;
+
+===== src\ui\panels\outliner\OutlinerPanel.tsx =====
+import React, { useCallback, useMemo } from 'react';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useSelectionStore } from '../../../state/selectionStore';
+import { LayerRow } from './LayerRow';
+import { createDefaultLayer } from '../../../config/defaults';
+import type { Layer } from '../../../types/layer';
+import { capitalize } from '../../../utils/string';
+
+function genId(): string {
+  return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function createNewLayer(_compId: string, type: Layer['type'], compWidth: number, compHeight: number, layerCount: number): Layer {
+  const base = createDefaultLayer(type, `${capitalize(type)} ${layerCount + 1}`);
+  const layer: Layer = {
+    ...base, id: genId(), zIndex: layerCount + 1,
+    transform: { position: { x: 0, y: 0 }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
+  };
+  switch (type) {
+    case 'solid': layer.data = { color: '#4772b3', width: compWidth, height: compHeight }; break;
+    case 'shape': layer.data = { type: 'rectangle', width: 200, height: 150, borderRadius: 0 }; break;
+    case 'text': layer.data = { text: 'Text', fontFamily: 'Inter', fontSize: 48, fontWeight: 400, color: '#ffffff', lineHeight: 1.2, letterSpacing: 0, alignment: 'center' }; break;
+    case 'image': layer.data = { assetId: '', naturalWidth: 100, naturalHeight: 100 }; break;
+    case 'video': layer.data = { assetId: '', naturalWidth: 100, naturalHeight: 100, duration: 10, muted: false, volume: 1, playbackRate: 1 }; break;
+  }
+  return layer;
+}
+
+function PlusIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  );
+}
+
+function SquareIcon({ size = 12 }: { size?: number }) {
+  return (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /></svg>);
+}
+function TriangleIcon({ size = 12 }: { size?: number }) {
+  return (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12,3 3,21 21,21" /></svg>);
+}
+function TypeIcon({ size = 12 }: { size?: number }) {
+  return (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="4,7 4,4 20,4 20,7" /><line x1="9" y1="20" x2="15" y2="20" /><line x1="12" y1="4" x2="12" y2="20" /></svg>);
+}
+function ImageIcon({ size = 12 }: { size?: number }) {
+  return (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21,15 16,10 5,21" /></svg>);
+}
+function FilmIcon({ size = 12 }: { size?: number }) {
+  return (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" /><line x1="7" y1="2" x2="7" y2="22" /><line x1="17" y1="2" x2="17" y2="22" /><line x1="2" y1="12" x2="22" y2="12" /></svg>);
+}
+
+export const OutlinerPanel: React.FC = () => {
+  const comp = useCompositionStore((s) => {
+    const id = s.activeCompositionId;
+    return id ? s.compositions.find((c) => c.id === id) ?? null : null;
+  });
+
+  const addLayer = useCompositionStore((s) => s.addLayer);
+  const removeLayer = useCompositionStore((s) => s.removeLayer);
+  const updateLayer = useCompositionStore((s) => s.updateLayer);
+  const reorderLayers = useCompositionStore((s) => s.reorderLayers);
+
+  const selectedIds = useSelectionStore((s) => s.selected.filter((x) => x.type === 'layer').map((x) => x.id));
+  const { select, selectRange, clearSelection } = useSelectionStore();
+
+  const [search, setSearch] = React.useState('');
+  const [showAddMenu, setShowAddMenu] = React.useState(false);
+
+  const handleSelect = useCallback((id: string, ctrl: boolean, shift: boolean) => {
+    if (!comp) return;
+    if (shift && selectedIds.length > 0) {
+      selectRange(selectedIds[selectedIds.length - 1], id, comp.layers.map((l) => l.id));
+    } else if (ctrl) {
+      const item = { type: 'layer' as const, id, compositionId: comp.id };
+      if (selectedIds.includes(id)) useSelectionStore.getState().deselect(id);
+      else useSelectionStore.getState().select(item, true);
+    } else {
+      select({ type: 'layer', id, compositionId: comp.id });
+    }
+  }, [comp, selectedIds, select, selectRange]);
+
+  const handleToggleVisibility = useCallback((id: string) => {
+    if (!comp) return;
+    const layer = comp.layers.find((l) => l.id === id);
+    if (layer) updateLayer(comp.id, id, { visible: !layer.visible });
+  }, [comp, updateLayer]);
+
+  const handleToggleLock = useCallback((id: string) => {
+    if (!comp) return;
+    const layer = comp.layers.find((l) => l.id === id);
+    if (layer) updateLayer(comp.id, id, { locked: !layer.locked });
+  }, [comp, updateLayer]);
+
+  const handleToggleSolo = useCallback((id: string) => {
+    if (!comp) return;
+    const layer = comp.layers.find((l) => l.id === id);
+    if (layer) updateLayer(comp.id, id, { soloed: !layer.soloed });
+  }, [comp, updateLayer]);
+
+  const handleRename = useCallback((id: string, name: string) => {
+    if (!comp) return;
+    updateLayer(comp.id, id, { name });
+  }, [comp, updateLayer]);
+
+  const handleDragStart = useCallback((_id: string) => {}, []);
+
+  const handleDrop = useCallback((targetId: string, draggedId: string, position: 'above' | 'below' | 'child') => {
+    if (!comp) return;
+    if (position === 'child') {
+      updateLayer(comp.id, draggedId, { parentId: targetId });
+    } else {
+      const fromIdx = comp.layers.findIndex((l) => l.id === draggedId);
+      const toIdx = comp.layers.findIndex((l) => l.id === targetId);
+      if (fromIdx !== -1 && toIdx !== -1) {
+        reorderLayers(comp.id, fromIdx, position === 'below' ? toIdx + 1 : toIdx);
+      }
+    }
+  }, [comp, reorderLayers, updateLayer]);
+
+  const handleDuplicate = useCallback((id: string) => {
+    if (!comp) return;
+    const orig = comp.layers.find((l) => l.id === id);
+    if (!orig) return;
+    const dup = { ...JSON.parse(JSON.stringify(orig)), id: genId(), name: `${orig.name} (copy)`, zIndex: comp.layers.length + 1 };
+    addLayer(comp.id, dup);
+    select({ type: 'layer', id: dup.id, compositionId: comp.id });
+  }, [comp, addLayer, select]);
+
+  const handleDeleteLayer = useCallback((id: string) => {
+    if (!comp) return;
+    removeLayer(comp.id, id);
+    useSelectionStore.getState().deselect(id);
+  }, [comp, removeLayer]);
+
+  const handleDeleteSelected = useCallback(() => {
+    if (!comp) return;
+    for (const id of selectedIds) removeLayer(comp.id, id);
+    clearSelection();
+  }, [comp, selectedIds, removeLayer, clearSelection]);
+
+  const handleAddLayer = useCallback((type: Layer['type']) => {
+    if (!comp) return;
+    const layer = createNewLayer(comp.id, type, comp.width, comp.height, comp.layers.length);
+    addLayer(comp.id, layer);
+    select({ type: 'layer', id: layer.id, compositionId: comp.id });
+    setShowAddMenu(false);
+  }, [comp, addLayer, select]);
+
+  const filteredLayers = useMemo(() => {
+    if (!comp) return [];
+    if (!search.trim()) return comp.layers;
+    const q = search.toLowerCase();
+    return comp.layers.filter((l) => l.name.toLowerCase().includes(q));
+  }, [comp, search]);
+
+  const getDepth = useCallback((layerId: string, visited = new Set<string>()): number => {
+    if (!comp) return 0;
+    if (visited.has(layerId)) return 0;
+    visited.add(layerId);
+    const layer = comp.layers.find((l) => l.id === layerId);
+    if (!layer || !layer.parentId) return 0;
+    return 1 + getDepth(layer.parentId, visited);
+  }, [comp]);
+
+  const rootLayers = useMemo(() => {
+    if (!comp) return [];
+    return filteredLayers.map((l) => ({ layer: l, depth: getDepth(l.id) }));
+  }, [filteredLayers, getDepth]);
+
+  const [renameLayerId, setRenameLayerId] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+        handleDeleteSelected();
+      }
+    };
+    const renameHandler = () => {
+      const selected = useSelectionStore.getState().selected.find((x) => x.type === 'layer');
+      if (selected) {
+        setRenameLayerId(selected.id);
+        setTimeout(() => setRenameLayerId(null), 100);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    document.addEventListener('layer:rename', renameHandler);
+    return () => {
+      document.removeEventListener('keydown', handler);
+      document.removeEventListener('layer:rename', renameHandler);
+    };
+  }, [handleDeleteSelected]);
+
+  if (!comp) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex-1 flex items-center justify-center text-ui-xs text-text-disabled">No composition</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header â€” 28px height to match TimelineRuler */}
+      <div className="flex items-center gap-1 px-2 border-b border-border bg-surface-alt flex-shrink-0" style={{ height: 28 }}>
+        <div className="flex-1 relative">
+          <input
+            type="search"
+            placeholder="Search layers..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full h-[18px] text-ui-xs px-1 bg-surface border border-border rounded-sm text-text-primary outline-none focus:border-accent"
+          />
+        </div>
+        <div className="relative">
+          <button
+            className="flex items-center justify-center w-[18px] h-[18px] border-0 bg-transparent text-text-secondary rounded-sm cursor-pointer hover:bg-panel-hover"
+            onClick={() => setShowAddMenu(!showAddMenu)}
+            title="Add layer"
+          >
+            <PlusIcon size={12} />
+          </button>
+          {showAddMenu && (
+            <div className="absolute top-full right-0 mt-1 min-w-[140px] bg-panel border border-border rounded-md shadow-dropdown z-50 py-1">
+              {(['solid', 'shape', 'text'] as const).map((type) => (
+                <button
+                  key={type}
+                  className="w-full text-left px-3 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer flex items-center gap-2"
+                  onClick={() => handleAddLayer(type)}
+                >
+                  {type === 'solid' ? <SquareIcon size={12} /> : type === 'shape' ? <TriangleIcon size={12} /> : <TypeIcon size={12} />}
+                  <span>New {capitalize(type)}</span>
+                </button>
+              ))}
+              <div className="border-t border-border my-1" />
+              {(['image', 'video'] as const).map((type) => (
+                <button
+                  key={type}
+                  className="w-full text-left px-3 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer flex items-center gap-2"
+                  onClick={() => handleAddLayer(type)}
+                >
+                  {type === 'image' ? <ImageIcon size={12} /> : <FilmIcon size={12} />}
+                  <span>New {capitalize(type)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Layer list â€” each row is 24px, matching timeline TRACK_HEIGHT */}
+      <div className="flex-1 overflow-auto">
+        {rootLayers.length === 0 ? (
+          <div className="text-ui-xs text-text-disabled text-center py-4">
+            {search ? 'No layers match search' : 'No layers â€” click + to add'}
+          </div>
+        ) : (
+          rootLayers.map(({ layer, depth }) => (
+            <LayerRow
+              key={layer.id}
+              layer={layer}
+              depth={depth}
+              isSelected={selectedIds.includes(layer.id)}
+              onSelect={handleSelect}
+              onToggleVisibility={handleToggleVisibility}
+              onToggleLock={handleToggleLock}
+              onToggleSolo={handleToggleSolo}
+              onRename={handleRename}
+              onDragStart={handleDragStart}
+              onDrop={handleDrop}
+              onDuplicate={handleDuplicate}
+              onDelete={handleDeleteLayer}
+              forceRename={renameLayerId === layer.id}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default OutlinerPanel;
+
+===== src\utils\createLayerInstance.ts =====
+/**
+ * createLayerInstance â€” shared factory for creating layer instances.
+ * Used by menus, keyboard shortcuts, toolbar tools, and outliner.
+ * Deduplicates the layer-creation logic that was copy-pasted everywhere.
+ */
+import type { Layer, LayerType, SolidData, ShapeData, TextData } from '../types/layer';
+import type { Composition } from '../types/composition';
+import { createDefaultLayer } from '../config/defaults';
+import { capitalize } from './string';
+
+function genId(): string {
+  return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+export function createLayerInstance(type: LayerType, comp: Composition, overrides?: Partial<Layer>): Layer {
+  const count = comp.layers.filter((l) => l.type === type).length + 1;
+  const base = createDefaultLayer(type, `${capitalize(type)} ${count}`);
+  const layer: Layer = {
+    ...base,
+    id: genId(),
+    zIndex: comp.layers.length + 1,
+    transform: { position: { x: 0, y: 0 }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
+    ...overrides,
+  };
+
+  if (!overrides?.data) {
+    switch (type) {
+      case 'solid':
+        (layer as any).data = { color: '#4772b3', width: comp.width, height: comp.height } satisfies SolidData;
+        break;
+      case 'shape':
+        (layer as any).data = { type: 'rectangle', width: 200, height: 150, borderRadius: 0 } satisfies ShapeData;
+        break;
+      case 'text':
+        (layer as any).data = {
+          text: 'Text', fontFamily: 'Inter', fontSize: 48, fontWeight: 400,
+          color: '#ffffff', lineHeight: 1.2, letterSpacing: 0, alignment: 'center',
+        } satisfies TextData;
+        break;
+      case 'image':
+        (layer as any).data = { assetId: '', naturalWidth: 100, naturalHeight: 100 };
+        break;
+      case 'video':
+        (layer as any).data = { assetId: '', naturalWidth: 100, naturalHeight: 100, duration: 10, muted: false, volume: 1, playbackRate: 1 };
+        break;
+      case 'adjustment':
+        (layer as any).data = {};
+        break;
+    }
+  }
+
+  return layer;
+}
+
+
+===== src\config\defaults.ts =====
+import { COMPOSITION, PERFORMANCE } from './constants';
+import type { Composition, Layer, Project } from '../types';
+import { defaultTransform } from '../types/layer';
+
+export const DEFAULT_COMPOSITION: Omit<Composition, 'id'> = {
+  name: 'New Composition',
+  width: COMPOSITION.DEFAULT_WIDTH,
+  height: COMPOSITION.DEFAULT_HEIGHT,
+  fps: COMPOSITION.DEFAULT_FPS,
+  duration: COMPOSITION.DEFAULT_DURATION,
+  backgroundColor: '#000000',
+  layers: [],
+  currentTime: 0,
+  workAreaStart: 0,
+  workAreaEnd: COMPOSITION.DEFAULT_DURATION,
+  pixelAspect: COMPOSITION.PIXEL_ASPECT,
+};
+
+export function createDefaultLayer(type: Layer['type'], name: string): Omit<Layer, 'id'> {
+  return {
+    type,
+    name,
+    visible: true,
+    locked: false,
+    soloed: false,
+    shy: false,
+    blendMode: 'normal',
+    opacity: 100,
+    transform: defaultTransform(),
+    startFrame: 0,
+    endFrame: COMPOSITION.DEFAULT_DURATION,
+    zIndex: 0,
+    effects: [],
+    masks: [],
+    parentId: null,
+  };
+}
+
+export const DEFAULT_PROJECT: Omit<Project, 'id'> = {
+  name: 'Untitled Project',
+  version: '1.0',
+  created: Date.now(),
+  modified: Date.now(),
+  compositions: [],
+  assets: [],
+  settings: {
+    adaptiveResolution: PERFORMANCE.ADAPTIVE_RESOLUTION_ON,
+    ramPreview: PERFORMANCE.RAM_PREVIEW_ON,
+    targetFps: PERFORMANCE.TARGET_FPS,
+    gridSnap: true,
+    snapToGuides: true,
+  },
+};
+
+export const DEFAULT_UI_STATE = {
+  activeWorkspace: 'layout',
+  panelVisibility: {
+    menubar: true,
+    toolbar: true,
+    timeline: true,
+    outliner: true,
+    properties: true,
+  },
+  panelSizes: {
+    toolbarWidth: 36,
+    outlinerRatio: 0.4,
+    timelineHeight: 150,
+    propertiesRatio: 0.6,
+  },
+};
+
+
+===== src\state\compositionStore.ts =====
+import { create } from 'zustand';
+import type { Composition } from '../types/composition';
+import type { Layer } from '../types/layer';
+import { DEFAULT_COMPOSITION } from '../config/defaults';
+
+function genId():string{return `comp_${Date.now()}_${Math.random().toString(36).slice(2,9)}`}
+
+export interface CompositionState{
+  compositions:Composition[]; activeCompositionId:string|null;
+  addComposition:(overrides?:Partial<Composition>)=>Composition;
+  removeComposition:(id:string)=>void;
+  setActiveComposition:(id:string)=>void;
+  updateComposition:(id:string,updates:Partial<Composition>)=>void;
+  addLayer:(compId:string,layer:Layer)=>void;
+  removeLayer:(compId:string,layerId:string)=>void;
+  updateLayer:(compId:string,layerId:string,updates:Partial<Layer>)=>void;
+  reorderLayers:(compId:string,from:number,to:number)=>void;
+  setCurrentTime:(compId:string,time:number)=>void;
+  getActiveComposition:()=>Composition|null;
+}
+
+export const useCompositionStore = create<CompositionState>((set,get)=>({
+  compositions:[], activeCompositionId:null,
+  addComposition:(overrides)=>{
+    const c:Composition={...DEFAULT_COMPOSITION,id:genId(),name:`Comp ${get().compositions.length+1}`,...overrides};
+    set(s=>({compositions:[...s.compositions,c],activeCompositionId:s.activeCompositionId??c.id}));
+    return c;
+  },
+  removeComposition:(id)=>set(s=>({compositions:s.compositions.filter(c=>c.id!==id),activeCompositionId:s.activeCompositionId===id?s.compositions.find(c=>c.id!==id)?.id??null:s.activeCompositionId})),
+  setActiveComposition:(id)=>set({activeCompositionId:id}),
+  updateComposition:(id,updates)=>set(s=>({compositions:s.compositions.map(c=>c.id===id?{...c,...updates}:c)})),
+  addLayer:(compId,layer)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,layers:[...c.layers,layer]}:c)})),
+  removeLayer:(compId,layerId)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,layers:c.layers.filter(l=>l.id!==layerId)}:c)})),
+  updateLayer:(compId,layerId,updates)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,layers:c.layers.map(l=>l.id===layerId?{...l,...updates}:l)}:c)})),
+  reorderLayers:(compId,from,to)=>set(s=>({compositions:s.compositions.map(c=>{if(c.id!==compId)return c;const layers=[...c.layers];const[m]=layers.splice(from,1);m&&layers.splice(to,0,m);return{...c,layers}})})),
+  setCurrentTime:(compId,time)=>set(s=>({compositions:s.compositions.map(c=>c.id===compId?{...c,currentTime:time}:c)})),
+  getActiveComposition:()=>{const s=get();return s.activeCompositionId?s.compositions.find(c=>c.id===s.activeCompositionId)??null:null},
+}));
+
+
+===== src\renderer\Renderer.ts =====
+import * as THREE from 'three';
+import { SceneManager } from './SceneManager';
+import { CameraManager } from './CameraManager';
+import { RenderLoop, type FrameStats } from './RenderLoop';
+import { ResizeHandler } from './ResizeHandler';
+import { Snapping } from './utils/Snapping';
+import { LayerSync } from './sync/LayerSync';
+import { HitTester } from './interaction/HitTest';
+import { SelectionOverlay } from './interaction/SelectionOverlay';
+import { ModalTransform } from './interaction/ModalTransform';
+import { EffectsRenderer } from './effects/EffectsRenderer';
+import type { Composition } from '../types/composition';
+
+export interface RendererState {
+  fps: number;
+  zoom: number;
+  frameCount: number;
+}
+
+export class Renderer {
+  public readonly renderer: THREE.WebGLRenderer;
+  public readonly sceneManager: SceneManager;
+  public readonly cameraManager: CameraManager;
+  public readonly renderLoop: RenderLoop;
+  public readonly resizeHandler: ResizeHandler;
+  public readonly snapping: Snapping;
+  public readonly layerSync: LayerSync;
+  public readonly hitTester: HitTester;
+  public readonly selectionOverlay: SelectionOverlay;
+  public readonly modalTransform: ModalTransform;
+  public readonly effectsRenderer: EffectsRenderer;
+
+  private _state: RendererState = { fps: 0, zoom: 1, frameCount: 0 };
+  private _onStateChange?: (state: RendererState) => void;
+  private _composition: Composition | null = null;
+
+  constructor(container: HTMLElement) {
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    this.renderer.setClearColor(0x1a1a1a, 1);
+    this.renderer.domElement.style.display = 'block';
+    this.renderer.domElement.style.width = '100%';
+    this.renderer.domElement.style.height = '100%';
+    container.appendChild(this.renderer.domElement);
+
+    this.sceneManager = new SceneManager();
+    this.cameraManager = new CameraManager();
+    this.snapping = new Snapping();
+    this.layerSync = new LayerSync(this.sceneManager);
+    this.hitTester = new HitTester(this.sceneManager, this.cameraManager);
+    this.selectionOverlay = new SelectionOverlay(container, this.cameraManager);
+    this.modalTransform = new ModalTransform(this.cameraManager);
+    this.effectsRenderer = new EffectsRenderer(this.renderer);
+
+    // Mount the selection overlay SVG
+    this.selectionOverlay.mount();
+
+    this.renderLoop = new RenderLoop(
+      this.renderer, this.sceneManager.scene, this.cameraManager.camera,
+    );
+
+    this.resizeHandler = new ResizeHandler(this.renderer, this.cameraManager, this.renderLoop);
+
+    // Wire CameraManager changes to trigger real-time viewport updates (M1)
+    this.cameraManager.onChanged = () => this.renderLoop.requestRender();
+
+    // Wire EffectsRenderer into the pre-render pipeline
+    this.renderLoop.beforeRender = () => this._processEffects();
+
+    this.renderLoop.onFrame = (stats: FrameStats) => {
+      const vp = this.cameraManager.getViewportTransform();
+      this._state = { fps: stats.fps, zoom: vp.zoom, frameCount: stats.frameCount };
+      this._onStateChange?.(this._state);
+    };
+
+    this.resizeHandler.observe(container);
+    this.renderLoop.start();
+  }
+
+  applyComposition(comp: Composition): void {
+    this._composition = comp;
+    this.sceneManager.applyComposition(comp.width, comp.height, comp.backgroundColor);
+    this.cameraManager.setCompositionSize(comp.width, comp.height);
+    // K3: Don't auto-fit camera to composition. Let user control zoom/pan.
+    // this.cameraManager.fitToComposition();
+    // Layer sync is handled by the dedicated layerSync effect in useRenderer
+    // â€” don't sync here to avoid double-sync conflicts.
+    this.renderLoop.requestRender();
+  }
+
+  get composition(): Composition | null { return this._composition; }
+
+  setGridVisible(visible: boolean): void {
+    if (visible) this.sceneManager.grid.show();
+    else this.sceneManager.grid.hide();
+    this.renderLoop.requestRender();
+  }
+
+  setSafeZonesVisible(visible: boolean): void {
+    if (visible) this.sceneManager.safeZones.show();
+    else this.sceneManager.safeZones.hide();
+    this.renderLoop.requestRender();
+  }
+
+  setSnappingEnabled(enabled: boolean): void {
+    this.snapping.enabled = enabled;
+  }
+
+  getState(): RendererState { return { ...this._state }; }
+
+  set onStateChange(cb: ((state: RendererState) => void) | undefined) {
+    this._onStateChange = cb;
+  }
+
+  /** Process effects for all layers before each frame render */
+  private _processEffects(): void {
+    const layerIds: string[] = [];
+    for (const child of this.sceneManager.layerGroup.children) {
+      const renderer = this.layerSync.getRenderer(child.name);
+      if (renderer) {
+        layerIds.push(renderer.id);
+        // Hide original mesh if effects are active (effect quad replaces it)
+        const hasFx = this.effectsRenderer.hasEffects(renderer.id);
+        this._toggleOriginalMesh(renderer, !hasFx);
+      }
+    }
+    this.effectsRenderer.prepareFrame(layerIds);
+
+    for (const child of this.sceneManager.layerGroup.children) {
+      const renderer = this.layerSync.getRenderer(child.name);
+      if (renderer && this.effectsRenderer.hasEffects(renderer.id)) {
+        const gn = (renderer as any).geometryWidth();
+        const gh = (renderer as any).geometryHeight();
+        this.effectsRenderer.renderLayer(
+          renderer.id, renderer.mesh, gn, gh,
+          renderer.group,
+        );
+      }
+    }
+  }
+
+  /** Toggle original mesh visibility (hide when effects active) */
+  private _toggleOriginalMesh(layerRenderer: { mesh: THREE.Mesh; group: THREE.Group }, visible: boolean): void {
+    if (layerRenderer.mesh.visible === visible) return;
+    layerRenderer.mesh.visible = visible;
+  }
+
+  get canvas(): HTMLCanvasElement { return this.renderer.domElement; }
+
+  dispose(): void {
+    this.renderLoop.dispose();
+    this.resizeHandler.dispose();
+    this.sceneManager.dispose();
+    this.cameraManager.dispose();
+    this.layerSync.clear();
+    this.effectsRenderer.dispose();
+    this.selectionOverlay.dispose();
+    this.renderer.dispose();
+    if (this.renderer.domElement.parentElement) {
+      this.renderer.domElement.parentElement.removeChild(this.renderer.domElement);
+    }
+  }
+}
+
+
+===== src\renderer\sync\LayerSync.ts =====
+import type { Layer } from '../../types/layer';
+import type { SceneManager } from '../SceneManager';
+import { LayerFactory } from '../layers/LayerFactory';
+import type { BaseLayerRenderer } from '../layers/BaseLayerRenderer';
+
+export class LayerSync {
+  private factory: LayerFactory;
+  private renderers = new Map<string, BaseLayerRenderer>();
+  private prevLayers: Layer[] = [];
+
+  constructor(sceneManager: SceneManager) {
+    this.factory = new LayerFactory(sceneManager);
+  }
+
+  sync(layers: Layer[]): void {
+    const prevMap = new Map<string, Layer>();
+    for (const l of this.prevLayers) prevMap.set(l.id, l);
+
+    const nextMap = new Map<string, Layer>();
+    for (const l of layers) nextMap.set(l.id, l);
+
+    for (const [id] of prevMap) {
+      if (!nextMap.has(id)) {
+        const renderer = this.renderers.get(id);
+        if (renderer) {
+          this.factory.remove(renderer);
+          this.renderers.delete(id);
+        }
+      }
+    }
+
+    for (const layer of layers) {
+      const prev = prevMap.get(layer.id);
+      if (!prev) {
+        const renderer = this.factory.create(layer);
+        this.renderers.set(layer.id, renderer);
+      } else {
+        this._updateRenderer(layer.id, prev, layer);
+      }
+    }
+
+    this._updateZOrder(layers);
+    this.prevLayers = layers.map(l => ({ ...l, transform: { ...l.transform } }));
+  }
+
+  /** Hide/show layers based on whether currentFrame is within their startFrameâ€“endFrame range */
+  updateFrameVisibility(currentFrame: number): void {
+    for (const [, layer] of this.prevLayers.entries()) {
+      const renderer = this.renderers.get(layer.id);
+      if (!renderer) continue;
+      const inRange = currentFrame >= layer.startFrame && currentFrame <= layer.endFrame;
+      const shouldBeVisible = layer.visible && inRange;
+      renderer.setVisible(shouldBeVisible);
+    }
+  }
+
+  clear(): void {
+    for (const renderer of this.renderers.values()) renderer.dispose();
+    this.renderers.clear();
+    this.prevLayers = [];
+    this.factory.clearAll();
+  }
+
+  getRenderer(layerId: string): BaseLayerRenderer | undefined {
+    return this.renderers.get(layerId);
+  }
+
+  getAllRenderers(): Map<string, BaseLayerRenderer> {
+    return this.renderers;
+  }
+
+  private _updateRenderer(layerId: string, prev: Layer, next: Layer): void {
+    const renderer = this.renderers.get(layerId);
+    if (!renderer) return;
+
+    if (this._transformChanged(prev.transform, next.transform))
+      renderer.updateTransform(next.transform);
+    if (prev.opacity !== next.opacity)
+      renderer.updateOpacity(next.opacity / 100);
+    if (prev.visible !== next.visible)
+      renderer.setVisible(next.visible);
+
+    if (prev.data === next.data) return;
+
+    if (next.type === 'solid') {
+      const sr = renderer as any;
+      const nd = next.data as any;
+      if (sr.setColor && nd?.color !== undefined) sr.setColor(nd.color);
+      if (sr.setSize && (nd?.width !== undefined || nd?.height !== undefined))
+        sr.setSize(nd.width ?? 100, nd.height ?? 100);
+    }
+
+    if (next.type === 'shape') {
+      const sr = renderer as any;
+      const nd = next.data as any;
+      if (!nd) return;
+      if (sr.setFillColor && nd.fillColor !== undefined) sr.setFillColor(nd.fillColor);
+      const w = 'width' in nd ? nd.width : ('radiusX' in nd ? nd.radiusX * 2 : (nd.radius ?? 50) * 2);
+      const h = 'height' in nd ? nd.height : ('radiusY' in nd ? nd.radiusY * 2 : (nd.radius ?? 50) * 2);
+      if (sr.setSize) sr.setSize(w, h);
+    }
+
+    if (next.type === 'text') {
+      const tr = renderer as any;
+      if (tr.setText && next.data) tr.setText(next.data);
+    }
+  }
+
+  private _transformChanged(a: Layer['transform'], b: Layer['transform']): boolean {
+    return (
+      a.position.x !== b.position.x || a.position.y !== b.position.y ||
+      a.scale.x !== b.scale.x || a.scale.y !== b.scale.y ||
+      a.rotation !== b.rotation ||
+      a.anchorPoint.x !== b.anchorPoint.x || a.anchorPoint.y !== b.anchorPoint.y
+    );
+  }
+
+  private _updateZOrder(layers: Layer[]): void {
+    layers.forEach((layer, index) => {
+      const renderer = this.renderers.get(layer.id);
+      if (renderer) renderer.group.position.z = -(index * 0.001);
+    });
+  }
+}
+
+===== src\ui\menubar\menus\addMenu.ts =====
+import type { MenuItemDefinition } from '../MenuDropdown';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useSelectionStore } from '../../../state/selectionStore';
+import { createLayerInstance } from '../../../utils/createLayerInstance';
+import { assetManager } from '../../../storage/AssetManager';
+import type { Layer } from '../../../types/layer';
+
+function addNewLayer(type: Layer['type']): void {
+  const state = useCompositionStore.getState();
+  const compId = state.activeCompositionId;
+  if (!compId) return;
+  const comp = state.compositions.find((c) => c.id === compId);
+  if (!comp) return;
+  const layer = createLayerInstance(type, comp);
+  state.addLayer(compId, layer);
+  useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+}
+
+async function importFromFile(): Promise<void> {
+  const state = useCompositionStore.getState();
+  const compId = state.activeCompositionId;
+  if (!compId) return;
+  const comp = state.compositions.find((c) => c.id === compId);
+  if (!comp) return;
+  const assets = await assetManager.importFromFilePicker();
+  for (const asset of assets) {
+    const type = asset.type === 'video' ? 'video' : 'image';
+    const layer = createLayerInstance(type, comp, {
+      name: asset.name,
+      data: type === 'video'
+        ? { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
+        : { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight },
+    });
+    state.addLayer(compId, layer);
+    useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+  }
+}
+
+export const addMenu: MenuItemDefinition[] = [
+  {
+    id: 'layer.newSolid',
+    label: 'New Solid',
+    shortcut: 'Ctrl+Y',
+    onClick: () => addNewLayer('solid'),
+  },
+  {
+    id: 'layer.newShape',
+    label: 'New Shape',
+    onClick: () => addNewLayer('shape'),
+  },
+  {
+    id: 'layer.newText',
+    label: 'New Text',
+    shortcut: 'Ctrl+T',
+    onClick: () => addNewLayer('text'),
+  },
+  {
+    id: 'layer.addSep1',
+    label: '',
+    divider: true,
+    onClick: () => {},
+  },
+  {
+    id: 'layer.importFile',
+    label: 'Import File...',
+    shortcut: 'Ctrl+I',
+    onClick: () => { importFromFile(); },
+  },
+  {
+    id: 'layer.addSep2',
+    label: '',
+    divider: true,
+    onClick: () => {},
+  },
+  {
+    id: 'layer.duplicate',
+    label: 'Duplicate',
+    shortcut: 'Ctrl+D',
+    onClick: () => {
+      const compState = useCompositionStore.getState();
+      const compId = compState.activeCompositionId;
+      if (!compId) return;
+      const comp = compState.compositions.find((c) => c.id === compId);
+      if (!comp) return;
+      const selectedIds = useSelectionStore.getState().getSelectedIds();
+      for (const id of selectedIds) {
+        const orig = comp.layers.find((l) => l.id === id);
+        if (orig) {
+          const dup: Layer = {
+            ...JSON.parse(JSON.stringify(orig)),
+            id: `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            name: `${orig.name} (copy)`,
+            zIndex: comp.layers.length + 1,
+          };
+          compState.addLayer(compId, dup);
+        }
+      }
+    },
+  },
+  {
+    id: 'layer.delete',
+    label: 'Delete',
+    shortcut: 'X',
+    onClick: () => {
+      const compState = useCompositionStore.getState();
+      const compId = compState.activeCompositionId;
+      if (!compId) return;
+      const selectedIds = useSelectionStore.getState().getSelectedIds();
+      for (const id of selectedIds) {
+        compState.removeLayer(compId, id);
+      }
+      useSelectionStore.getState().clearSelection();
+    },
+  },
+  {
+    id: 'layer.rename',
+    label: 'Rename',
+    shortcut: 'F2',
+    onClick: () => console.log('[Menu] Rename layer'),
+  },
+];
+
+
+

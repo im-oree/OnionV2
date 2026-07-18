@@ -6,12 +6,42 @@
 import React from 'react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useViewportStore } from '../../../state/viewportStore';
+import { useTimelineStore } from '../../../state/timelineStore';
 import { formatTime } from '../../../utils/time';
 import { VIEWPORT_CONFIG } from '../../../config/viewportConfig';
+
+/** Always-visible color-coded FPS indicator */
+const PlaybackFpsIndicator: React.FC<{ renderFps: number; targetFps: number }> = ({
+  renderFps, targetFps,
+}) => {
+  const isPlaying = useTimelineStore(s => s.playbackState === 'playing');
+  const ratio = targetFps > 0 ? renderFps / targetFps : 0;
+  let color = 'var(--text-disabled)';
+  let indicator = '○';
+  if (isPlaying) {
+    if (ratio >= 0.95) { color = '#4ade80'; indicator = '●'; }          /* green */
+    else if (ratio >= 0.75) { color = '#facc15'; indicator = '●'; }     /* yellow */
+    else { color = '#f87171'; indicator = '●'; }                         /* red */
+  }
+  return (
+    <span
+      className="inline-flex items-center gap-1 font-mono"
+      style={{ color }}
+      title={
+        isPlaying
+          ? `Rendering at ${renderFps} fps (target ${targetFps} fps)`
+          : `Idle — target ${targetFps} fps`
+      }
+    >
+      <span className="text-[8px] leading-none">{indicator}</span>
+      <span>{renderFps} / {targetFps} fps</span>
+    </span>
+  );
+};
+
 interface ViewportHUDProps {
   fps: number;
   zoom: number;
-  showStats: boolean;
   viewportSize: { width: number; height: number };
   selectedLayerIds?: string[];
   transformMode?: string | null;
@@ -22,7 +52,6 @@ interface ViewportHUDProps {
 export const ViewportHUD: React.FC<ViewportHUDProps> = ({
   fps,
   zoom,
-  showStats,
   viewportSize,
   selectedLayerIds,
   transformMode,
@@ -114,12 +143,8 @@ export const ViewportHUD: React.FC<ViewportHUDProps> = ({
           >+</button>
         </div>
         <span className="text-text-disabled mx-1">|</span>
-        {showStats && (
-          <>
-            <span>{fps} FPS</span>
-            <span className="text-text-disabled mx-1">|</span>
-          </>
-        )}
+        <PlaybackFpsIndicator renderFps={fps} targetFps={comp.fps} />
+        <span className="text-text-disabled mx-1">|</span>
         <span>{viewportSize.width}×{viewportSize.height}</span>
       </div>
     </div>

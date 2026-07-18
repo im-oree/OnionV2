@@ -1,0 +1,740 @@
+﻿===== src\ui\panels\viewport\hooks\useRenderer.ts =====
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { Renderer, type RendererState } from '../../../../renderer/Renderer';
+import { useCompositionStore } from '../../../../state/compositionStore';
+import { useSelectionStore } from '../../../../state/selectionStore';
+import { useViewportStore } from '../../../../state/viewportStore';
+import { useToolStore } from '../../../../state/toolStore';
+import { useKeyframeStore } from '../../../../state/keyframeStore';
+import { setRequestRender } from '../../../../state/uiStore';
+import { PropertyBinder } from '../../../../animation/PropertyBinder';
+import { TOOLS } from '../../../../config/constants';
+import type { GizmoMode } from '../../../../renderer/interaction/SelectionOverlay';
+import type { Composition } from '../../../../types/composition';
+
+interface UseRendererResult {
+  ready: boolean;
+  state: RendererState;
+  viewportState: {
+    fps: number;
+    zoom: number;
+    frameCount: number;
+    selectedLayerIds: string[];
+    transformMode: string | null;
+  };
+  renderer: Renderer | null;
+  zoomToFit: () => void;
+  setZoom: (zoom: number) => void;
+}
+
+export function useRenderer(container: HTMLElement | null): UseRendererResult {
+  const rendererRef = useRef<Renderer | null>(null);
+  const binderRef = useRef<PropertyBinder | null>(null);
+  const [ready, setReady] = useState(false);
+  const [state, setState] = useState<RendererState>({ fps: 0, zoom: 1, frameCount: 0 });
+  const [transformMode, setTransformMode] = useState<string | null>(null);
+
+  const composition = useCompositionStore((s) => {
+    const id = s.activeCompositionId;
+    return id ? s.compositions.find((c: Composition) => c.id === id) ?? null : null;
+  });
+
+  const layers = useCompositionStore((s) => {
+    if (!s.activeCompositionId) return [];
+    const comp = s.compositions.find((c) => c.id === s.activeCompositionId);
+    return comp?.layers ?? [];
+  });
+
+  const currentTime = useCompositionStore((s) => {
+    if (!s.activeCompositionId) return 0;
+    const comp = s.compositions.find((c) => c.id === s.activeCompositionId);
+    return comp?.currentTime ?? 0;
+  });
+
+  const compFps = useCompositionStore((s) => {
+    if (!s.activeCompositionId) return 30;
+    const comp = s.compositions.find((c) => c.id === s.activeCompositionId);
+    return comp?.fps ?? 30;
+  });
+
+  const selectedIds = useSelectionStore((s) =>
+    s.selected.filter((x) => x.type === 'layer').map((x) => x.id),
+  );
+
+  const activeTool = useToolStore((s) => s.activeTool);
+  const showGrid = useViewportStore((s) => s.settings.showGrid);
+  const showSafeZones = useViewportStore((s) => s.settings.showSafeZones);
+  const snappingEnabled = useViewportStore((s) => s.settings.snappingEnabled);
+
+  // Create renderer once
+  useEffect(() => {
+    if (!container) return;
+    const renderer = new Renderer(container);
+    renderer.onStateChange = (newState: RendererState) => setState(newState);
+    rendererRef.current = renderer;
+    setReady(true);
+    setRequestRender(() => renderer.renderLoop.requestRender());
+
+    return () => {
+      renderer.dispose();
+      rendererRef.current = null;
+      binderRef.current = null;
+      setReady(false);
+    };
+  }, [container]);
+
+  // Create PropertyBinder when keyframe engine is available
+  useEffect(() => {
+    const engine = useKeyframeStore.getState().engine;
+    binderRef.current = new PropertyBinder(engine);
+  }, []);
+
+  // Apply composition identity changes (dimensions, fps, bg color)
+  const compIdentityRef = useRef('');
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r || !composition) return;
+    const identity = `${composition.id}_${composition.width}_${composition.height}_${composition.fps}_${composition.backgroundColor}`;
+    if (compIdentityRef.current === identity) return;
+    compIdentityRef.current = identity;
+    r.applyComposition(composition);
+  }, [composition]);
+
+  // Sync layers whenever they change
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r || !composition) return;
+    r.layerSync.sync(layers);
+    r.renderLoop.requestRender();
+  }, [layers, composition?.id]);
+
+  // Apply keyframes when currentTime changes
+  useEffect(() => {
+    const r = rendererRef.current;
+    const binder = binderRef.current;
+    if (!r || !binder || !composition) return;
+    const frame = Math.round(currentTime * compFps);
+    binder.evaluateFrame(composition.id, frame);
+    r.renderLoop.requestRender();
+  }, [currentTime, composition?.id, compFps]);
+
+  // Gizmo mode
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r) return;
+    const mt = r.modalTransform;
+    let gizmo: GizmoMode = null;
+    if (mt.active) {
+      if (mt.mode === 'grab') gizmo = 'move';
+      else if (mt.mode === 'rotate') gizmo = 'rotate';
+      else if (mt.mode === 'scale') gizmo = 'scale';
+    } else {
+      if (activeTool === (TOOLS.MOVE as string)) gizmo = 'move';
+      else if (activeTool === (TOOLS.ROTATE as string)) gizmo = 'rotate';
+      else if (activeTool === (TOOLS.SCALE as string)) gizmo = 'scale';
+    }
+    r.selectionOverlay.gizmoMode = gizmo;
+    r.selectionOverlay.hideHandles = mt.active;
+  }, [activeTool, ready, transformMode]);
+
+  // Selection overlay
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r) return;
+    if (selectedIds.length === 0) {
+      r.selectionOverlay.hide();
+      r.renderLoop.requestRender();
+      return;
+    }
+    r.selectionOverlay.show();
+    const renderers = selectedIds
+      .map((id) => r.layerSync.getRenderer(id))
+      .filter(Boolean) as any[];
+    r.selectionOverlay.update(renderers);
+    r.renderLoop.requestRender();
+  }, [selectedIds, layers, state.zoom, transformMode]);
+
+  // Track transform mode
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r) return;
+    const updateMode = () => {
+      const mt = r.modalTransform;
+      setTransformMode(mt.active ? (mt.mode ?? null) : null);
+    };
+    document.addEventListener('transform:grab', updateMode);
+    document.addEventListener('transform:rotate', updateMode);
+    document.addEventListener('transform:scale', updateMode);
+    document.addEventListener('mouseup', updateMode);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.key === 'Enter') updateMode();
+    };
+    document.addEventListener('keyup', onKey);
+    return () => {
+      document.removeEventListener('transform:grab', updateMode);
+      document.removeEventListener('transform:rotate', updateMode);
+      document.removeEventListener('transform:scale', updateMode);
+      document.removeEventListener('mouseup', updateMode);
+      document.removeEventListener('keyup', onKey);
+    };
+  }, [ready]);
+
+  useEffect(() => {
+    if (!rendererRef.current) return;
+    rendererRef.current.setGridVisible(showGrid);
+  }, [showGrid]);
+
+  useEffect(() => {
+    if (!rendererRef.current) return;
+    rendererRef.current.setSafeZonesVisible(showSafeZones);
+  }, [showSafeZones]);
+
+  useEffect(() => {
+    if (!rendererRef.current) return;
+    rendererRef.current.setSnappingEnabled(snappingEnabled);
+  }, [snappingEnabled]);
+
+  useEffect(() => {
+    if (!rendererRef.current || !composition) return;
+    rendererRef.current.sceneManager.updateGrid(state.zoom);
+  }, [composition?.id, state.zoom]);
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    const onFrameAll = () => renderer.cameraManager.fitToComposition();
+    const onZoom100 = () => renderer.cameraManager.zoomTo100Percent();
+    const onGrab = () => {
+      const ids = useSelectionStore.getState().getSelectedIds();
+      if (ids.length > 0) renderer.modalTransform.start('grab', renderer.canvas);
+    };
+    const onRotate = () => {
+      const ids = useSelectionStore.getState().getSelectedIds();
+      if (ids.length > 0) renderer.modalTransform.start('rotate', renderer.canvas);
+    };
+    const onScale = () => {
+      const ids = useSelectionStore.getState().getSelectedIds();
+      if (ids.length > 0) renderer.modalTransform.start('scale', renderer.canvas);
+    };
+    document.addEventListener('viewport:frameAll', onFrameAll);
+    document.addEventListener('viewport:zoom100', onZoom100);
+    document.addEventListener('transform:grab', onGrab);
+    document.addEventListener('transform:rotate', onRotate);
+    document.addEventListener('transform:scale', onScale);
+    return () => {
+      document.removeEventListener('viewport:frameAll', onFrameAll);
+      document.removeEventListener('viewport:zoom100', onZoom100);
+      document.removeEventListener('transform:grab', onGrab);
+      document.removeEventListener('transform:rotate', onRotate);
+      document.removeEventListener('transform:scale', onScale);
+    };
+  }, [ready]);
+
+  const zoomToFit = useCallback(() => {
+    rendererRef.current?.cameraManager.fitToComposition();
+  }, []);
+
+  const setZoom = useCallback((zoom: number) => {
+    rendererRef.current?.cameraManager.setZoom(zoom);
+  }, []);
+
+  return {
+    ready,
+    state,
+    viewportState: {
+      fps: state.fps,
+      zoom: state.zoom,
+      frameCount: state.frameCount,
+      selectedLayerIds: selectedIds,
+      transformMode,
+    },
+    renderer: rendererRef.current,
+    zoomToFit,
+    setZoom,
+  };
+}
+
+===== src\ui\panels\viewport\ViewportHUD.tsx =====
+/**
+ * ViewportHUD â€” information overlay at the bottom of the viewport.
+ * Shows composition info, transform mode indicator, selected layer count,
+ * FPS, zoom controls (+/- buttons and percentage), and optional stats.
+ */
+import React from 'react';
+import { useCompositionStore } from '../../../state/compositionStore';
+import { useViewportStore } from '../../../state/viewportStore';
+import { formatTime } from '../../../utils/time';
+import { VIEWPORT_CONFIG } from '../../../config/viewportConfig';
+interface ViewportHUDProps {
+  fps: number;
+  zoom: number;
+  showStats: boolean;
+  viewportSize: { width: number; height: number };
+  selectedLayerIds?: string[];
+  transformMode?: string | null;
+  onZoomChange?: (zoom: number) => void;
+  onFitToViewport?: () => void;
+}
+
+export const ViewportHUD: React.FC<ViewportHUDProps> = ({
+  fps,
+  zoom,
+  showStats,
+  viewportSize,
+  selectedLayerIds,
+  transformMode,
+  onZoomChange,
+  onFitToViewport,
+}) => {
+  const comp = useCompositionStore((s) => {
+    const id = s.activeCompositionId;
+    return id ? s.compositions.find((c) => c.id === id) ?? null : null;
+  });
+
+  if (!comp) return null;
+
+  const zoomPercent = Math.round((1 / (zoom || 1)) * 100);
+  const currentFrame = Math.floor(comp.currentTime * comp.fps);
+  const totalFrames = Math.floor(comp.duration * comp.fps);
+  const selCount = selectedLayerIds?.length ?? 0;
+
+  const zoomIn = () => onZoomChange?.(zoom / VIEWPORT_CONFIG.ZOOM_FACTOR);
+  const zoomOut = () => onZoomChange?.(zoom * VIEWPORT_CONFIG.ZOOM_FACTOR);
+
+  return (
+    <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2 py-1 pointer-events-none z-20">
+      {/* Top-left: Grid toggle button (M6) */}
+      <div className="absolute top-0 left-0 -mt-8 flex items-center gap-1 pointer-events-auto">
+        <button onClick={() => useViewportStore.getState().toggleGrid()}
+          className={`w-5 h-5 flex items-center justify-center rounded-sm border-0 cursor-pointer text-[9px] ${useViewportStore.getState().settings.showGrid ? 'bg-accent text-white' : 'bg-panel-header text-text-secondary hover:bg-bg-hover'}`}
+          title="Toggle Grid">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="0.8">
+            <rect x="0.5" y="0.5" width="9" height="9" />
+            <line x1="3.5" y1="0.5" x2="3.5" y2="9.5" /><line x1="6.5" y1="0.5" x2="6.5" y2="9.5" />
+            <line x1="0.5" y1="3.5" x2="9.5" y2="3.5" /><line x1="0.5" y1="6.5" x2="9.5" y2="6.5" />
+          </svg>
+        </button>
+        <button onClick={() => useViewportStore.getState().toggleSnapping()}
+          className={`w-5 h-5 flex items-center justify-center rounded-sm border-0 cursor-pointer text-[9px] ${useViewportStore.getState().settings.snappingEnabled ? 'bg-accent text-white' : 'bg-panel-header text-text-secondary hover:bg-bg-hover'}`}
+          title="Toggle Snapping">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="0.8">
+            <circle cx="5" cy="5" r="4" /><circle cx="5" cy="5" r="1.5" fill="currentColor" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Left: composition info */}
+      <div className="flex items-center gap-3 text-ui-xs text-text-disabled font-mono">
+        <span className="text-text-primary font-medium">{comp.name}</span>
+        <span className="text-text-disabled">|</span>
+        <span>{comp.width}Ã—{comp.height}</span>
+        <span className="text-text-disabled">|</span>
+        <span>{comp.fps} fps</span>
+        <span className="text-text-disabled">|</span>
+        <span>{formatTime(comp.currentTime, comp.fps)} / {formatTime(comp.duration, comp.fps)}</span>
+        <span className="text-text-disabled">|</span>
+        <span>Frame {currentFrame}/{totalFrames}</span>
+      </div>
+
+      {/* Center: transform mode indicator + zoom controls */}
+      <div className="flex items-center gap-2">
+        {transformMode && (
+          <div className="flex items-center gap-1 px-1.5 py-0.5 bg-accent text-white rounded-sm text-ui-xs font-mono font-semibold">
+            <span>{transformMode}</span>
+          </div>
+        )}
+        {selCount > 0 && (
+          <span className="text-ui-xs text-text-secondary font-mono">
+            {selCount} layer{selCount !== 1 ? 's' : ''}
+          </span>
+        )}
+      </div>
+
+      {/* Right: zoom controls + viewport info */}
+      <div className="flex items-center gap-1 text-ui-xs text-text-disabled font-mono">
+        {/* Zoom controls â€” pointer-events re-enabled */}
+        <div className="flex items-center gap-0.5 pointer-events-auto">
+          <button
+            onClick={zoomOut}
+            className="w-4 h-4 flex items-center justify-center rounded-sm bg-panel-header hover:bg-bg-hover text-text-primary text-xs leading-none"
+            title="Zoom Out"
+          >âˆ’</button>
+          <button
+            onClick={onFitToViewport}
+            className="px-1 h-4 flex items-center justify-center rounded-sm bg-panel-header hover:bg-bg-hover text-text-primary text-xs leading-none"
+            title="Fit to Viewport (Home)"
+          >{zoomPercent}%</button>
+          <button
+            onClick={zoomIn}
+            className="w-4 h-4 flex items-center justify-center rounded-sm bg-panel-header hover:bg-bg-hover text-text-primary text-xs leading-none"
+            title="Zoom In"
+          >+</button>
+        </div>
+        <span className="text-text-disabled mx-1">|</span>
+        {showStats && (
+          <>
+            <span>{fps} FPS</span>
+            <span className="text-text-disabled mx-1">|</span>
+          </>
+        )}
+        <span>{viewportSize.width}Ã—{viewportSize.height}</span>
+      </div>
+    </div>
+  );
+};
+
+
+===== src\renderer\CameraManager.ts =====
+import * as THREE from 'three';
+import { VIEWPORT_CONFIG } from '../config/viewportConfig';
+
+export interface ViewportTransform {
+  panX: number;
+  panY: number;
+  zoom: number;
+}
+
+export class CameraManager {
+  public readonly camera: THREE.OrthographicCamera;
+  public viewportWidth = 1;
+  public viewportHeight = 1;
+
+  private _zoom = 1;
+  private _panX = 0;
+  private _panY = 0;
+  private compWidth = 1920;
+  private compHeight = 1080;
+  public onChanged: (() => void) | null = null;
+
+  constructor() {
+    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 1000);
+    this.camera.position.set(0, 0, 500);
+    this.camera.lookAt(0, 0, 0);
+  }
+
+  setCompositionSize(width: number, height: number): void {
+    this.compWidth = width;
+    this.compHeight = height;
+    this.updateProjection();
+  }
+
+  setViewportSize(width: number, height: number): void {
+    this.viewportWidth = Math.max(1, width);
+    this.viewportHeight = Math.max(1, height);
+    this.updateProjection();
+  }
+
+  private updateProjection(): void {
+    const aspect = this.viewportWidth / this.viewportHeight;
+    const compAspect = this.compWidth / this.compHeight;
+
+    let halfW: number;
+    let halfH: number;
+
+    if (aspect > compAspect) {
+      halfH = (this.compHeight / 2) / this._zoom;
+      halfW = halfH * aspect;
+    } else {
+      halfW = (this.compWidth / 2) / this._zoom;
+      halfH = halfW / aspect;
+    }
+
+    this.camera.left = -halfW + this._panX;
+    this.camera.right = halfW + this._panX;
+    this.camera.top = halfH + this._panY;
+    this.camera.bottom = -halfH + this._panY;
+    this.camera.updateProjectionMatrix();
+    this.onChanged?.();
+  }
+
+  get zoom(): number { return this._zoom; }
+
+  setZoom(zoom: number): void {
+    this._zoom = Math.max(VIEWPORT_CONFIG.MIN_ZOOM, Math.min(VIEWPORT_CONFIG.MAX_ZOOM, zoom));
+    this.updateProjection();
+  }
+
+  zoomIn(factor = 1.25): void { this.setZoom(this._zoom * factor); }
+  zoomOut(factor = 1.25): void { this.setZoom(this._zoom / factor); }
+
+  fitToComposition(): void {
+    this._zoom = 1;
+    this._panX = 0;
+    this._panY = 0;
+    this.updateProjection();
+  }
+
+  zoomTo100Percent(): void {
+    const zoomX = this.viewportWidth / this.compWidth;
+    const zoomY = this.viewportHeight / this.compHeight;
+    this.setZoom(Math.min(zoomX, zoomY));
+  }
+
+  pan(deltaX: number, deltaY: number): void {
+    this._panX += deltaX;
+    this._panY += deltaY;
+    this.updateProjection();
+  }
+
+  setPan(x: number, y: number): void {
+    this._panX = x;
+    this._panY = y;
+    this.updateProjection();
+  }
+
+  get panX(): number { return this._panX; }
+  get panY(): number { return this._panY; }
+
+  getViewportTransform(): ViewportTransform {
+    return { panX: this._panX, panY: this._panY, zoom: this._zoom };
+  }
+
+  screenToWorld(screenX: number, screenY: number): THREE.Vector2 {
+    const ndcX = (screenX / this.viewportWidth) * 2 - 1;
+    const ndcY = -(screenY / this.viewportHeight) * 2 + 1;
+    const halfW = (this.camera.right - this.camera.left) / 2;
+    const halfH = (this.camera.top - this.camera.bottom) / 2;
+    const cx = (this.camera.left + this.camera.right) / 2;
+    const cy = (this.camera.top + this.camera.bottom) / 2;
+    return new THREE.Vector2(ndcX * halfW + cx, ndcY * halfH + cy);
+  }
+
+  worldToScreen(worldX: number, worldY: number): THREE.Vector2 {
+    const halfW = (this.camera.right - this.camera.left) / 2;
+    const halfH = (this.camera.top - this.camera.bottom) / 2;
+    const cx = (this.camera.left + this.camera.right) / 2;
+    const cy = (this.camera.top + this.camera.bottom) / 2;
+    // FIX: NDC x = (worldX - cx) / halfW, NDC y = (worldY - cy) / halfH
+    // screen x = (ndcX + 1) / 2 * width
+    // screen y = (1 - ndcY) / 2 * height  <-- Y is flipped: NDC +Y is screen top
+    const ndcX = (worldX - cx) / halfW;
+    const ndcY = (worldY - cy) / halfH;
+    const screenX = (ndcX + 1) / 2 * this.viewportWidth;
+    const screenY = (1 - ndcY) / 2 * this.viewportHeight;
+    return new THREE.Vector2(screenX, screenY);
+  }
+
+  dispose(): void {}
+}
+
+===== src\renderer\ResizeHandler.ts =====
+/**
+ * ResizeHandler â€” observes a DOM element for size changes and updates
+ * the renderer and camera accordingly. Uses ResizeObserver.
+ * Caps devicePixelRatio at 2 for performance.
+ * CRITICAL: calls renderLoop.requestRender() on each resize frame
+ * to prevent the viewport from going blank (A2/A3 fix).
+ */
+import * as THREE from 'three';
+import { CameraManager } from './CameraManager';
+import { RenderLoop } from './RenderLoop';
+import { VIEWPORT_CONFIG } from '../config/viewportConfig';
+
+export class ResizeHandler {
+  private renderer: THREE.WebGLRenderer;
+  private cameraManager: CameraManager;
+  private renderLoop: RenderLoop;
+  private observer: ResizeObserver | null = null;
+  private onResize?: (width: number, height: number) => void;
+  private rafId = 0;
+
+  constructor(
+    renderer: THREE.WebGLRenderer,
+    cameraManager: CameraManager,
+    renderLoop: RenderLoop,
+  ) {
+    this.renderer = renderer;
+    this.cameraManager = cameraManager;
+    this.renderLoop = renderLoop;
+  }
+
+  /** Start observing a container element for resize events */
+  observe(el: HTMLElement): void {
+    this.disconnect();
+
+    this.observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (this.rafId) cancelAnimationFrame(this.rafId);
+        this.rafId = requestAnimationFrame(() => {
+          this.handleResize(Math.floor(width), Math.floor(height));
+          // Keep rendering during resize gesture
+          this.renderLoop.requestRender();
+        });
+      }
+    });
+
+    this.observer.observe(el);
+
+    // Initial resize
+    const rect = el.getBoundingClientRect();
+    this.handleResize(Math.floor(rect.width), Math.floor(rect.height));
+    this.renderLoop.requestRender();
+  }
+
+  /** Set a callback fired on resize */
+  setCallback(cb: (width: number, height: number) => void): void {
+    this.onResize = cb;
+  }
+
+  /** Update renderer pixel size and camera viewport */
+  private handleResize(cssWidth: number, cssHeight: number): void {
+    if (cssWidth === 0 || cssHeight === 0) return;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, VIEWPORT_CONFIG.MAX_DPR);
+    const pixelWidth = Math.floor(cssWidth * dpr);
+    const pixelHeight = Math.floor(cssHeight * dpr);
+
+    this.renderer.setSize(pixelWidth, pixelHeight);
+    this.renderer.setPixelRatio(dpr);
+    this.cameraManager.setViewportSize(cssWidth, cssHeight);
+    this.onResize?.(cssWidth, cssHeight);
+  }
+
+  /** Stop observing and clean up */
+  disconnect(): void {
+    if (this.observer) {
+      this.observer.disconnect();
+      this.observer = null;
+    }
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+  }
+
+  /** Dispose */
+  dispose(): void {
+    this.disconnect();
+  }
+}
+
+
+===== src\animation\PropertyBinder.ts =====
+/**
+ * PropertyBinder â€” at each frame, evaluates all animated properties for all layers
+ * and applies the results to the renderer's mesh transforms/uniforms.
+ * This runs every frame the playhead moves â€” must be very fast.
+ */
+import type { KeyframeEngine } from './KeyframeEngine';
+import type { Transform } from '../types/layer';
+import { useCompositionStore } from '../state/compositionStore';
+import { useEffectsStore } from '../state/effectsStore';
+
+/**
+ * Animation property paths map to layer transform/opacity/effect fields.
+ * "transform.position.x" â†’ layer.transform.position.x
+ * "effect.<effectId>.<paramId>" â†’ effectsStore parameter value
+ * "opacity"             â†’ layer.opacity
+ */
+export class PropertyBinder {
+  private engine: KeyframeEngine;
+
+  constructor(engine: KeyframeEngine) {
+    this.engine = engine;
+  }
+
+  /**
+   * Evaluate all animated properties for the active composition at the given frame.
+   * Returns number of properties updated (for perf tracking).
+   */
+  evaluateFrame(compId: string, frame: number): number {
+    const comp = useCompositionStore.getState().compositions.find((c) => c.id === compId);
+    if (!comp) return 0;
+
+    let updated = 0;
+
+    for (const layer of comp.layers) {
+      const paths = this.engine.getAllAnimatedProperties(layer.id);
+      if (paths.length === 0) continue;
+
+      const updates: Record<string, any> = {};
+      const transformUpdate: Partial<Transform> = {};
+      let transformNeedsUpdate = false;
+      let opacityUpdate: number | null = null;
+      // Phase 5: Track effect param updates
+      const effectUpdates: Array<{ effectId: string; paramId: string; value: any }> = [];
+
+      for (const path of paths) {
+        const result = this.engine.evaluate(layer.id, path, frame);
+        const val = result.value;
+
+        // Phase 5: Effect parameter keyframing
+        // propertyPath format: "effect.<effectId>.<paramId>"
+        if (path.startsWith('effect.')) {
+          const parts = path.split('.');
+          if (parts.length >= 3) {
+            const effectId = parts[1];
+            const paramId = parts.slice(2).join('.');
+            effectUpdates.push({ effectId, paramId, value: val });
+          }
+          continue;
+        }
+
+        // Determine which field to update based on path
+        if (path.startsWith('transform.')) {
+          const field = path.slice('transform.'.length);
+          if (field === 'position.x') {
+            transformUpdate.position = { ...layer.transform.position, x: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'position.y') {
+            transformUpdate.position = { ...layer.transform.position, y: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'position' && Array.isArray(val)) {
+            transformUpdate.position = { x: val[0], y: val[1] };
+            transformNeedsUpdate = true;
+          } else if (field === 'scale.x') {
+            transformUpdate.scale = { ...layer.transform.scale, x: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'scale.y') {
+            transformUpdate.scale = { ...layer.transform.scale, y: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'scale' && Array.isArray(val)) {
+            transformUpdate.scale = { x: val[0], y: val[1] };
+            transformNeedsUpdate = true;
+          } else if (field === 'rotation') {
+            transformUpdate.rotation = val as number;
+            transformNeedsUpdate = true;
+          } else if (field === 'anchorPoint.x') {
+            transformUpdate.anchorPoint = { ...layer.transform.anchorPoint, x: val as number };
+            transformNeedsUpdate = true;
+          } else if (field === 'anchorPoint.y') {
+            transformUpdate.anchorPoint = { ...layer.transform.anchorPoint, y: val as number };
+            transformNeedsUpdate = true;
+          }
+        } else if (path === 'opacity') {
+          opacityUpdate = val as number;
+        }
+      }
+
+      if (transformNeedsUpdate) {
+        const existing = layer.transform;
+        updates.transform = {
+          position: transformUpdate.position ?? existing.position,
+          scale: transformUpdate.scale ?? existing.scale,
+          rotation: transformUpdate.rotation ?? existing.rotation,
+          anchorPoint: transformUpdate.anchorPoint ?? existing.anchorPoint,
+        };
+      }
+      if (opacityUpdate !== null) {
+        updates.opacity = opacityUpdate;
+      }
+
+      // Apply effect param updates
+      for (const eu of effectUpdates) {
+        useEffectsStore.getState().setParameterValue(layer.id, eu.effectId, eu.paramId, eu.value);
+        updated++;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        useCompositionStore.getState().updateLayer(compId, layer.id, updates);
+        updated += Object.keys(updates).length;
+      }
+    }
+
+    return updated;
+  }
+}
+
+
+

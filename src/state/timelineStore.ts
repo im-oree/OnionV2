@@ -34,7 +34,7 @@ const DEFAULT_ZOOM=10;
 export const useTimelineStore = create<TimelineState>((set)=>({
   playbackState:'stopped', timeDisplay:TIME_DISPLAY.FRAMES as TimeDisplayMode,
   zoom:DEFAULT_ZOOM, scrollX:0, scrollY:0,
-  snapping:true, autoScroll:true, loop:false,
+  snapping:true, autoScroll:true, loop:true,
   workAreaStart:0, workAreaEnd:300,
   visibleTrackHeight:'normal', snapKeyframes:true, playbackRate:1,
   autoKey:false,

@@ -79,9 +79,14 @@ export const ProjectBrowserPanel: React.FC = () => {
                   key={comp.id}
                   name={comp.name}
                   info={`${comp.width}×${comp.height} @ ${comp.fps}fps`}
+                  compId={comp.id}
+                  activeCompId={activeCompId}
                   isActive={comp.id === activeCompId}
                   onClick={() => setActive(comp.id)}
-                  onDelete={() => removeComp(comp.id)}
+                  onDelete={() => {
+                    const r = removeComp(comp.id);
+                    if (!r.ok) alert(r.reason ?? 'Cannot delete');
+                  }}
                 />
               ))}
 
@@ -139,36 +144,51 @@ const FolderRow: React.FC<{
 const CompRow: React.FC<{
   name: string;
   info: string;
+  compId: string;
+  activeCompId: string | null;
   isActive: boolean;
   onClick: () => void;
   onDelete: () => void;
-}> = ({ name, info, isActive, onClick, onDelete }) => (
-  <div
-    onClick={onClick}
-    className={`group flex items-center h-[24px] pl-6 pr-2 gap-2 cursor-pointer text-ui-xs ${
-      isActive ? 'bg-accent/30 text-text-primary' : 'text-text-secondary hover:bg-panel-hover'
-    }`}
-  >
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <rect x="3" y="5" width="18" height="14" rx="1" />
-      <path d="M3 9 h18" />
-    </svg>
-    <span className="truncate flex-1">{name}</span>
-    <span className="text-[9px] text-text-disabled shrink-0">{info}</span>
-    <button
-      onClick={(e) => {
-        e.stopPropagation();
-        onDelete();
-      }}
-      className="w-3 h-3 border-0 bg-transparent cursor-pointer text-text-disabled hover:text-danger opacity-0 group-hover:opacity-100"
-      title="Delete"
+}> = ({ name, info, compId, activeCompId, isActive, onClick, onDelete }) => {
+  const addAsLayer = () => {
+    if (!activeCompId) return;
+    if (activeCompId === compId) {
+      alert('Cannot add a composition inside itself.');
+      return;
+    }
+    const result = useCompositionStore.getState().addCompLayer(activeCompId, compId);
+    if (!result.ok) alert(result.reason ?? 'Could not add composition as layer.');
+  };
+  return (
+    <div
+      onClick={onClick}
+      onDoubleClick={addAsLayer}
+      title={`Click to activate. Double-click to add as layer in ${activeCompId ? 'active comp' : '(no active comp)'}`}
+      className={`group flex items-center h-[24px] pl-6 pr-2 gap-2 cursor-pointer text-ui-xs ${
+        isActive ? 'bg-accent/30 text-text-primary' : 'text-text-secondary hover:bg-panel-hover'
+      }`}
     >
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
-        <line x1="2" y1="2" x2="8" y2="8" />
-        <line x1="8" y1="2" x2="2" y2="8" />
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <rect x="3" y="5" width="18" height="14" rx="1" />
+        <path d="M3 9 h18" />
       </svg>
-    </button>
-  </div>
-);
+      <span className="truncate flex-1">{name}</span>
+      <span className="text-[9px] text-text-disabled shrink-0">{info}</span>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+        className="w-3 h-3 border-0 bg-transparent cursor-pointer text-text-disabled hover:text-danger opacity-0 group-hover:opacity-100"
+        title="Delete"
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
+          <line x1="2" y1="2" x2="8" y2="8" />
+          <line x1="8" y1="2" x2="2" y2="8" />
+        </svg>
+      </button>
+    </div>
+  );
+};
 
 export default ProjectBrowserPanel;

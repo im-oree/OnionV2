@@ -83,18 +83,12 @@ export const addMenu: MenuItemDefinition[] = [
       const comp = compState.compositions.find((c) => c.id === compId);
       if (!comp) return;
       const selectedIds = useSelectionStore.getState().getSelectedIds();
-      for (const id of selectedIds) {
-        const orig = comp.layers.find((l) => l.id === id);
-        if (orig) {
-          const dup: Layer = {
-            ...JSON.parse(JSON.stringify(orig)),
-            id: `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-            name: `${orig.name} (copy)`,
-            zIndex: comp.layers.length + 1,
-          };
-          compState.addLayer(compId, dup);
-        }
-      }
+      const originals = selectedIds.map(id => comp.layers.find(l => l.id === id)).filter(Boolean) as Layer[];
+      if (originals.length === 0) return;
+      import('../../../utils/duplicateLayer').then(({ duplicateLayers }) => {
+        const dups = duplicateLayers(compId, originals);
+        useSelectionStore.getState().replaceSelection(dups.map(d => d.id), compId);
+      });
     },
   },
   {

@@ -5,9 +5,6 @@ import { useKeyframeStore } from '../../../state/keyframeStore';
 import { animationClock } from '../timeline/PlaybackControls';
 import type { Layer } from '../../../types/layer';
 
-function genId(): string {
-  return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-}
 function kfId(): string {
   return `kf_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
 }
@@ -92,9 +89,9 @@ export function buildViewportContextMenu(): ContextMenuItem[] {
 
   const dup = () => {
     if (!sel) return;
-    sel.layers.forEach(l => {
-      const d: Layer = { ...JSON.parse(JSON.stringify(l)), id: genId(), name: `${l.name} (copy)`, zIndex: l.zIndex + 1 };
-      useCompositionStore.getState().addLayer(sel.compId, d);
+    import('../../../utils/duplicateLayer').then(({ duplicateLayers }) => {
+      const dups = duplicateLayers(sel.compId, sel.layers);
+      useSelectionStore.getState().replaceSelection(dups.map(d => d.id), sel.compId);
     });
   };
   const del = () => {

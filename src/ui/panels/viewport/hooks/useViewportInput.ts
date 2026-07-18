@@ -4,11 +4,12 @@ import type { HitTester } from '../../../../renderer/interaction/HitTest';
 import type { ModalTransform } from '../../../../renderer/interaction/ModalTransform';
 import { VIEWPORT_CONFIG } from '../../../../config/viewportConfig';
 import { useCompositionStore } from '../../../../state/compositionStore';
+import { useNavigationStore } from '../../../../state/navigationStore';
 import { useSelectionStore } from '../../../../state/selectionStore';
 import { useToolStore, type ToolId } from '../../../../state/toolStore';
 import { TOOLS } from '../../../../config/constants';
 import { createDefaultLayer } from '../../../../config/defaults';
-import type { Layer } from '../../../../types/layer';
+import type { Layer, CompData } from '../../../../types/layer';
 
 function genId(): string {
   return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -26,7 +27,6 @@ export function useViewportInput({
   canvas, cameraManager, hitTester, modalTransform, requestRender,
 }: UseViewportInputOptions): void {
   const isPanning = useRef(false);
-  const isSpacePanning = useRef(false);
   const isBoxSelecting = useRef(false);
   const isDrawing = useRef(false);
   const lastMouse = useRef({ x: 0, y: 0 });
@@ -308,8 +308,8 @@ export function useViewportInput({
     if (container) container.addEventListener('mousedown', gizmoMouseDown);
 
     const onMouseDown = (e: MouseEvent) => {
-      // Middle mouse or ctrl+left = pan
-      if (e.button === 1 || (e.button === 0 && isSpacePanning.current)) {
+      // Middle mouse = pan
+      if (e.button === 1) {
         isPanning.current = true;
         lastMouse.current = { x: e.clientX, y: e.clientY };
         e.preventDefault();
@@ -428,7 +428,7 @@ export function useViewportInput({
         return;
       }
 
-      if ((isPanning.current || isSpacePanning.current) && cmRef.current) {
+      if (isPanning.current && cmRef.current) {
         const dx = e.clientX - lastMouse.current.x;
         const dy = e.clientY - lastMouse.current.y;
         lastMouse.current = { x: e.clientX, y: e.clientY };
@@ -554,20 +554,12 @@ export function useViewportInput({
       requestRender?.();
     };
 
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !e.repeat) {
-        isSpacePanning.current = true;
-        isPanning.current = true;
-        e.preventDefault();
-      }
+    const onKeyDown = (_e: KeyboardEvent) => {
+      // Space-to-pan removed — use middle mouse button instead.
+      // Space is reserved for play/pause.
     };
 
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space') {
-        isSpacePanning.current = false;
-        isPanning.current = false;
-      }
-    };
+    const onKeyUp = (_e: KeyboardEvent) => { /* no-op */ };
 
     const onTransformStart = () => {
       if (mtRef.current?.active) attachDocListeners();
@@ -585,10 +577,55 @@ export function useViewportInput({
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('keyup', onKeyUp);
 
+
     if (container) container.addEventListener('mousedown', gizmoMouseDown);
+
+    const onDblClick = (e: MouseEvent) => {
+      const cm = cmRef.current;
+      const ht = htRef.current;
+      if (!cm || !ht) return;
+      const rect = el.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      const compState = useCompositionStore.getState();
+      const compId = compState.activeCompositionId;
+      if (!compId) return;
+      const comp = compState.compositions.find((c) => c.id === compId);
+      if (!comp) return;
+
+      const visibleIds = [...comp.layers]
+        .filter((l) => l.visible && !l.locked)
+        .sort((a, b) => b.zIndex - a.zIndex)
+        .map((l) => l.id);
+
+      const hit = ht.hitTest(mouseX, mouseY, visibleIds);
+      if (!hit) return;
+
+      const hitLayer = comp.layers.find((l) => l.id === hit.layerId);
+      if (!hitLayer || hitLayer.type !== 'comp') return;
+
+      const data = hitLayer.data as CompData | undefined;
+      if (!data?.sourceCompId) return;
+
+      // Verify the source composition still exists
+      const sourceExists = compState.compositions.some(c => c.id === data.sourceCompId);
+      if (!sourceExists) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Navigate into the nested composition
+      useNavigationStore.getState().enterComp(data.sourceCompId);
+      useCompositionStore.getState().setActiveComposition(data.sourceCompId);
+      useSelectionStore.getState().clearSelection();
+    };
+
+    el.addEventListener('dblclick', onDblClick);
 
     return () => {
       if (container) container.removeEventListener('mousedown', gizmoMouseDown);
+      el.removeEventListener('dblclick', onDblClick);
       document.removeEventListener('transform:grab', onTransformStart);
       document.removeEventListener('transform:rotate', onTransformStart);
       document.removeEventListener('transform:scale', onTransformStart);

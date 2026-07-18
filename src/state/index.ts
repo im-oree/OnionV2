@@ -21,3 +21,6 @@ export type { HistoryState, HistoryEntry } from './historyStore';
 
 export { useMarkerStore } from './markerStore';
 export type { MarkerState } from './markerStore';
+
+export { useNavigationStore } from './navigationStore';
+export type { NavEntry } from './navigationStore';

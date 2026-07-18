@@ -4,7 +4,7 @@ import { Icon } from '../../common/Icon';
 
 const LAYER_ICONS: Record<string, string> = {
   solid: 'square', shape: 'triangle', text: 'type',
-  image: 'image', video: 'film', null: 'circle',
+  image: 'image', video: 'film', null: 'circle', comp: 'grid',
 };
 
 interface LayerRowProps {
@@ -21,6 +21,7 @@ interface LayerRowProps {
   onDuplicate?: (id: string) => void;
   onDelete?: (id: string) => void;
   forceRename?: boolean;
+  onDoubleClick?: (id: string) => void;
 }
 
 export const LayerRow: React.FC<LayerRowProps> = ({
@@ -28,6 +29,7 @@ export const LayerRow: React.FC<LayerRowProps> = ({
   onSelect, onToggleVisibility, onToggleLock, onToggleSolo,
   onRename, onDragStart, onDrop,
   onDuplicate, onDelete, forceRename,
+  onDoubleClick,
 }) => {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(layer.name);
@@ -47,7 +49,13 @@ export const LayerRow: React.FC<LayerRowProps> = ({
   }, [editing]);
   useEffect(() => { setName(layer.name); }, [layer.name]);
 
-  const handleDoubleClick = useCallback(() => { if (!layer.locked) setEditing(true); }, [layer.locked]);
+  const handleDoubleClickInternal = useCallback(() => {
+    if (layer.type === 'comp' && onDoubleClick) {
+      onDoubleClick(layer.id);
+      return;
+    }
+    if (!layer.locked) setEditing(true);
+  }, [layer.locked, layer.type, layer.id, onDoubleClick]);
 
   const handleRenameSubmit = useCallback(() => {
     setEditing(false);
@@ -124,7 +132,7 @@ export const LayerRow: React.FC<LayerRowProps> = ({
         }`}
         style={{ paddingLeft: indent }}
         onClick={handleClick}
-        onDoubleClick={handleDoubleClick}
+        onDoubleClick={handleDoubleClickInternal}
       >
         <Icon
           name={(LAYER_ICONS[layer.type] ?? 'circle') as any}
