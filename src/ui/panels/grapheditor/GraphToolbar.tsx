@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDown, Check, Magnet } from 'lucide-react';
+import { ChevronDown, Check, Magnet, Maximize2 } from 'lucide-react';
 import type { EasingPresetName } from '../../../animation/EasingPresets';
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
   setPropFilter: (s: Set<string>) => void;
   snapToFrame: boolean;
   setSnapToFrame: (v: boolean) => void;
+  graphMode: 'value' | 'speed';
+  setGraphMode: (m: 'value' | 'speed') => void;
   hasSelection: boolean;
   onFrameAll: () => void;
   onApplyPreset: (name: EasingPresetName) => void;
@@ -20,10 +22,24 @@ const LABELS: Record<EasingPresetName, string> = {
   easeOut: 'Out', fastEase: 'Fast', slowEase: 'Slow',
 };
 
+const IconBtn: React.FC<{ onClick: (e:any)=>void; active?: boolean; title?: string; children: React.ReactNode }> =
+  ({ onClick, active, title, children }) => (
+  <button onClick={onClick} title={title}
+    className="flex items-center justify-center border-0 cursor-pointer transition-colors shrink-0"
+    style={{
+      width: 26, height: 26, borderRadius: 'var(--radius-sm)',
+      background: active ? 'var(--color-accent-muted)' : 'transparent',
+      color: active ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+    }}
+    onMouseEnter={(e)=>{ if(!active) (e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'; }}
+    onMouseLeave={(e)=>{ if(!active) (e.currentTarget as HTMLElement).style.background='transparent'; }}
+  >{children}</button>
+);
+
 export const GraphToolbar: React.FC<Props> = ({
   curveCount, propOptions, propFilter, setPropFilter,
-  snapToFrame, setSnapToFrame, hasSelection,
-  onFrameAll, onApplyPreset, presets,
+  snapToFrame, setSnapToFrame, graphMode, setGraphMode,
+  hasSelection, onFrameAll, onApplyPreset, presets,
 }) => {
   const [filterOpen, setFilterOpen] = useState(false);
   const filterRef = useRef<HTMLDivElement>(null);
@@ -44,52 +60,53 @@ export const GraphToolbar: React.FC<Props> = ({
   };
 
   return (
-    <div className="flex items-center px-3 gap-2 flex-shrink-0"
-      style={{ height: 36, borderBottom: '1px solid var(--color-border)' }}>
-      <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 500, color: 'var(--color-text-primary)' }}>
+    <div className="flex items-center px-3 gap-1.5 flex-shrink-0"
+      style={{ height: 40, borderBottom: '1px solid var(--color-border)' }}>
+      <span style={{ fontSize: 'var(--font-size-md)', fontWeight: 600, color: 'var(--color-text-primary)', letterSpacing: '-0.01em' }}>
         Graph
       </span>
-      <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-disabled)' }}>
-        {curveCount > 0 ? `${curveCount} curve${curveCount === 1 ? '' : 's'}` : 'no animation'}
+      <span style={{
+        fontSize: 10, color: 'var(--color-accent)',
+        background: 'var(--color-accent-muted)', padding: '2px 7px',
+        borderRadius: 999, fontFamily: 'var(--font-family-mono)', fontWeight: 600,
+      }}>
+        {curveCount}
       </span>
 
-      {/* Property filter */}
+      <div style={{ width: 1, height: 18, background: 'var(--color-border)', margin: '0 4px' }} />
+
       {propOptions.length > 0 && (
         <div ref={filterRef} className="relative">
           <button onClick={() => setFilterOpen(!filterOpen)}
-            className="flex items-center gap-1 border-0 bg-transparent cursor-pointer transition-colors"
+            className="flex items-center gap-1.5 border-0 cursor-pointer transition-colors"
             style={{
-              padding: '4px 8px', height: 24, borderRadius: 'var(--radius-sm)',
+              padding: '0 10px', height: 26, borderRadius: 'var(--radius-sm)',
               fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)',
               background: propFilter.size > 0 ? 'var(--color-accent-muted)' : 'transparent',
             }}
             onMouseEnter={(e)=>{ if(propFilter.size===0)(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'; }}
             onMouseLeave={(e)=>{ if(propFilter.size===0)(e.currentTarget as HTMLElement).style.background='transparent'; }}
           >
-            <span>{propFilter.size === 0 ? 'All Properties' : `${propFilter.size} filtered`}</span>
+            <span>{propFilter.size === 0 ? 'All Properties' : `${propFilter.size} shown`}</span>
             <ChevronDown size={11} strokeWidth={2} />
           </button>
           {filterOpen && (
-            <div className="absolute z-50 min-w-[220px] py-1.5"
+            <div className="absolute z-50 min-w-[240px] py-1.5"
               style={{
-                top: 'calc(100% + 4px)', left: 0,
+                top: 'calc(100% + 6px)', left: 0,
                 background: 'var(--color-panel-raised)', borderRadius: 'var(--radius-md)',
-                boxShadow: 'var(--shadow-dropdown)',
-                animation: 'dropdown-in 140ms var(--ease-out)',
-              }}
-            >
+                boxShadow: 'var(--shadow-dropdown)', animation: 'dropdown-in 140ms var(--ease-out)',
+              }}>
               <button onClick={() => setPropFilter(new Set())}
-                className="flex items-center w-full text-left border-0 bg-transparent cursor-pointer transition-colors"
+                className="flex items-center w-full text-left border-0 bg-transparent cursor-pointer"
                 style={{ height: 28, padding: '0 12px', fontSize: 'var(--font-size-sm)', color: 'var(--color-accent)', gap: 8 }}
                 onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'}
                 onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
-              >
-                Show All
-              </button>
+              >Show All</button>
               <div className="h-px my-1 mx-2" style={{ background: 'var(--color-divider)' }} />
               {propOptions.map(opt => (
                 <button key={opt.key} onClick={() => toggleProp(opt.key)}
-                  className="flex items-center w-full text-left border-0 bg-transparent cursor-pointer transition-colors"
+                  className="flex items-center w-full text-left border-0 bg-transparent cursor-pointer"
                   style={{ height: 28, padding: '0 12px', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-primary)', gap: 8 }}
                   onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'}
                   onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
@@ -105,48 +122,47 @@ export const GraphToolbar: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Snap toggle */}
-      <button onClick={() => setSnapToFrame(!snapToFrame)}
-        title={snapToFrame ? 'Snap to Frame ON' : 'Snap to Frame OFF'}
-        className="flex items-center justify-center border-0 cursor-pointer transition-colors"
-        style={{
-          width: 24, height: 24, borderRadius: 'var(--radius-sm)',
-          background: snapToFrame ? 'var(--color-accent-muted)' : 'transparent',
-          color: snapToFrame ? 'var(--color-accent)' : 'var(--color-text-disabled)',
-        }}
-      >
+      <IconBtn onClick={() => setSnapToFrame(!snapToFrame)} active={snapToFrame}
+        title={snapToFrame ? 'Snap to Frame: ON' : 'Snap to Frame: OFF'}>
         <Magnet size={13} strokeWidth={1.75} />
-      </button>
+      </IconBtn>
+
+      <div className="flex overflow-hidden"
+        style={{ borderRadius: 'var(--radius-sm)', border: '1px solid var(--color-border)', height: 26 }}>
+        {(['value', 'speed'] as const).map((m) => (
+          <button key={m} onClick={() => setGraphMode(m)}
+            className="border-0 cursor-pointer transition-colors"
+            style={{
+              padding: '0 10px', fontSize: 'var(--font-size-xs)', fontWeight: 500,
+              background: graphMode === m ? 'var(--color-accent-muted)' : 'transparent',
+              color: graphMode === m ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+            }}
+          >{m === 'value' ? 'Value' : 'Speed'}</button>
+        ))}
+      </div>
 
       <div className="flex-1" />
 
-      {/* Easing preset buttons */}
       {presets.map(name => (
-        <button key={name}
-          onClick={() => onApplyPreset(name)}
-          disabled={!hasSelection}
-          title={LABELS[name]}
+        <button key={name} onClick={() => onApplyPreset(name)} disabled={!hasSelection}
+          title={`Apply ${LABELS[name]}`}
           className="border-0 transition-colors"
           style={{
-            padding: '4px 8px', fontSize: 'var(--font-size-xs)',
+            padding: '0 10px', height: 26, fontSize: 'var(--font-size-xs)', fontWeight: 500,
             background: 'transparent', borderRadius: 'var(--radius-sm)',
             color: hasSelection ? 'var(--color-text-secondary)' : 'var(--color-text-disabled)',
             cursor: hasSelection ? 'pointer' : 'not-allowed',
           }}
           onMouseEnter={(e)=>{ if(hasSelection)(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'; }}
-          onMouseLeave={(e)=>{ (e.currentTarget as HTMLElement).style.background='transparent'; }}
-        >
-          {LABELS[name]}
-        </button>
+          onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+        >{LABELS[name]}</button>
       ))}
+
       <div style={{ width: 1, height: 18, background: 'var(--color-border)', margin: '0 4px' }} />
-      <button onClick={onFrameAll}
-        className="border-0 bg-transparent cursor-pointer"
-        style={{
-          padding: '4px 8px', fontSize: 'var(--font-size-xs)',
-          color: 'var(--color-text-secondary)', borderRadius: 'var(--radius-sm)',
-        }}
-      >Frame All (A)</button>
+
+      <IconBtn onClick={onFrameAll} title="Frame All (A)">
+        <Maximize2 size={12} strokeWidth={1.75} />
+      </IconBtn>
     </div>
   );
 };

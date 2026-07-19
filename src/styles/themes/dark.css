@@ -1,0 +1,18 @@
+/* Dark theme — default */
+[data-theme="dark"] {
+  --color-app-bg: #16181d;
+  --color-panel: #1f2229;
+  --color-panel-raised: #262a33;
+  --color-panel-header: #1f2229;
+  --color-panel-hover: #2a2e38;
+  --color-panel-active: #323744;
+  --color-input-bg: #191c22;
+  --color-border: rgba(255, 255, 255, 0.05);
+  --color-border-strong: rgba(255, 255, 255, 0.09);
+  --color-text-primary: rgba(255, 255, 255, 0.90);
+  --color-text-secondary: rgba(255, 255, 255, 0.55);
+  --color-text-disabled: rgba(255, 255, 255, 0.22);
+  --color-accent: #5865ff;
+  --color-accent-hover: #6f7bff;
+  --color-accent-muted: rgba(88, 101, 255, 0.16);
+}

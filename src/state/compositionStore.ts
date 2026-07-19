@@ -4,6 +4,8 @@ import type { Layer, CompData } from '../types/layer';
 import { DEFAULT_COMPOSITION } from '../config/defaults';
 import { canNestComposition, findCompositionsUsing } from '../utils/compositionGraph';
 import { markProjectDirty } from '../storage/StorageManager';
+import { captureSnapshot } from './historyStore';
+import { useHistoryStore } from './historyStore';
 
 function genId(): string { return `comp_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`; }
 
@@ -21,7 +23,7 @@ export interface CompositionState {
    */
   addCompLayer: (parentCompId: string, sourceCompId: string) => { ok: boolean; reason?: string; layer?: Layer };
   removeLayer: (compId: string, layerId: string) => void;
-  updateLayer: (compId: string, layerId: string, updates: Partial<Layer>) => void;
+  updateLayer: (compId: string, layerId: string, updates: Partial<Layer>, skipHistory?: boolean) => void;
   reorderLayers: (compId: string, from: number, to: number) => void;
   setCurrentTime: (compId: string, time: number) => void;
   getActiveComposition: () => Composition | null;
@@ -32,6 +34,7 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
   activeCompositionId: null,
 
   addComposition: (overrides) => {
+    const snapshot = captureSnapshot();
     const c: Composition = {
       ...DEFAULT_COMPOSITION,
       id: genId(),
@@ -43,6 +46,7 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
       activeCompositionId: s.activeCompositionId ?? c.id,
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Add Composition', snapshot);
     return c;
   },
 
@@ -55,6 +59,7 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
         reason: `Composition is used as a layer in: ${uses.map(c => c.name).join(', ')}`,
       };
     }
+    const snapshot = captureSnapshot();
     set(s => ({
       compositions: s.compositions.filter(c => c.id !== id),
       activeCompositionId: s.activeCompositionId === id
@@ -62,6 +67,7 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
         : s.activeCompositionId,
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Remove Composition', snapshot);
     return { ok: true };
   },
 
@@ -71,6 +77,8 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
     const state = get();
     const current = state.compositions.find(c => c.id === id);
     if (!current) return;
+
+    const snapshot = captureSnapshot();
 
     // If fps is changing, remap all keyframes proportionally
     if (updates.fps !== undefined && updates.fps !== current.fps && updates.fps > 0) {
@@ -96,13 +104,16 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
       compositions: s.compositions.map(c => c.id === id ? { ...c, ...updates } : c),
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Update Composition', snapshot);
   },
 
   addLayer: (compId, layer) => {
+    const snapshot = captureSnapshot();
     set(s => ({
       compositions: s.compositions.map(c => c.id === compId ? { ...c, layers: [...c.layers, layer] } : c),
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Add Layer', snapshot);
   },
 
   addCompLayer: (parentCompId, sourceCompId) => {
@@ -113,6 +124,8 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
     const source = state.compositions.find(c => c.id === sourceCompId);
     const parent = state.compositions.find(c => c.id === parentCompId);
     if (!source || !parent) return { ok: false, reason: 'Composition not found' };
+
+    const snapshot = captureSnapshot();
 
     const data: CompData = { sourceCompId, loop: false, timeScale: 1, timeOffset: 0 };
     const layer: Layer = {
@@ -145,29 +158,40 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
       ),
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Add Comp Layer', snapshot);
     return { ok: true, layer };
   },
 
   removeLayer: (compId, layerId) => {
+    const snapshot = captureSnapshot();
     set(s => ({
       compositions: s.compositions.map(c =>
         c.id === compId ? { ...c, layers: c.layers.filter(l => l.id !== layerId) } : c,
       ),
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Remove Layer', snapshot);
   },
 
-  updateLayer: (compId, layerId, updates) => {
+  updateLayer: (compId, layerId, updates, skipHistory?: boolean) => {
+    // Skip history capture for high-frequency updates (e.g. mouse drag) to avoid
+    // serializing the entire project state 60 times/second. The caller (e.g.
+    // ModalTransform.confirm()) is responsible for capturing a snapshot on completion.
+    const snapshot = !skipHistory ? captureSnapshot() : null;
     set(s => ({
       compositions: s.compositions.map(c =>
         c.id === compId ? { ...c, layers: c.layers.map(l => l.id === layerId ? { ...l, ...updates } : l) } : c,
       ),
     }));
     markProjectDirty();
+    if (!skipHistory && snapshot) {
+      useHistoryStore.getState().pushEntry('Update Layer', snapshot);
+    }
   },
 
 
   reorderLayers: (compId, from, to) => {
+    const snapshot = captureSnapshot();
     set(s => ({
       compositions: s.compositions.map(c => {
         if (c.id !== compId) return c;
@@ -178,6 +202,7 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
       }),
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Reorder Layers', snapshot);
   },
 
   setCurrentTime: (compId, time) => {

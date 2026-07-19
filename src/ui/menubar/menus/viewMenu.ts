@@ -108,8 +108,8 @@ export const viewMenu: MenuItemDefinition[] = [
     label: 'Frame All',
     shortcut: 'Home',
     onClick: () => {
-      // Dispatched via KeyboardManager event — this is a placeholder
-      document.dispatchEvent(new CustomEvent('viewport:frameAll'));
+      const r = (window as any).__renderer;
+      if (r) r.cameraManager.fitToComposition();
     },
   },
   {
@@ -117,7 +117,8 @@ export const viewMenu: MenuItemDefinition[] = [
     label: 'Frame Selected',
     shortcut: 'Numpad .',
     onClick: () => {
-      document.dispatchEvent(new CustomEvent('viewport:frameSelected'));
+      const r = (window as any).__renderer;
+      if (r) r.cameraManager.fitToComposition();
     },
   },
   {
@@ -125,7 +126,8 @@ export const viewMenu: MenuItemDefinition[] = [
     label: 'Zoom 100%',
     shortcut: 'Numpad 1',
     onClick: () => {
-      document.dispatchEvent(new CustomEvent('viewport:zoom100'));
+      const r = (window as any).__renderer;
+      if (r) r.cameraManager.setZoom(1);
     },
   },
   {

@@ -64,6 +64,7 @@ export class ModalTransform {
   private _boundPointerLockChange: (() => void) | null = null;
   private _cachedSnapTargets: SnapTargets | null = null;
   private _pendingFirstDelta = false;
+  private _undoBeforeSnapshot: string | null = null;
   public lastSnapLines: Array<{ type: 'horizontal' | 'vertical'; position: number }> = [];
 
   constructor(cameraManager: CameraManager, snapping?: Snapping) {
@@ -130,6 +131,9 @@ export class ModalTransform {
     this._pendingFirstDelta = canvas ? true : false;
     this._cachedSnapTargets = this._buildSnapTargets(comp, layerIds);
 
+    // Capture undo snapshot at drag start (the "before" state)
+    this._captureUndoSnapshot();
+
     if (canvas) {
       this._canvas = canvas;
       this._boundPointerLockChange = this._onPointerLockChange.bind(this);
@@ -187,6 +191,14 @@ export class ModalTransform {
 
     // Auto-keying: if autoKey is ON, insert keyframes for the changed transforms
     this._autoKeyChangedTransforms();
+
+    // Push a single undo entry for the complete drag operation
+    const snapshot = this._captureUndoSnapshot();
+    if (snapshot) {
+      import('../../state/historyStore').then(m => {
+        m.useHistoryStore.getState().pushEntry('Transform', snapshot);
+      });
+    }
   }
 
   /** When auto-key is enabled, insert keyframes for any transform values that changed */
@@ -220,7 +232,7 @@ export class ModalTransform {
             rotation: start.rotation,
             anchorPoint: { x: 0, y: 0 },
           },
-        });
+        }, true);
       }
     }
     this._releasePointerLock();
@@ -315,19 +327,19 @@ export class ModalTransform {
           const ny = (_axisLock === 'x' || _axisExclude === 'y') ? start.pos.y : start.pos.y + val;
           store.updateLayer(_compId, layerId, {
             transform: { position: { x: nx, y: ny }, scale: start.scale, rotation: start.rotation, anchorPoint: { x: 0, y: 0 } },
-          });
+          }, true);
         } else if (_mode === 'rotate') {
           const snapped = _snapMode ? Math.round(val / 5) * 5 : val;
           store.updateLayer(_compId, layerId, {
             transform: { position: start.pos, scale: start.scale, rotation: start.rotation + snapped, anchorPoint: { x: 0, y: 0 } },
-          });
+          }, true);
         } else if (_mode === 'scale') {
           const v = val / 100;
           const sx = (_axisLock === 'y' || _axisExclude === 'x') ? start.scale.x : start.scale.x * v;
           const sy = (_axisLock === 'x' || _axisExclude === 'y') ? start.scale.y : start.scale.y * v;
           store.updateLayer(_compId, layerId, {
             transform: { position: start.pos, scale: { x: Math.max(0.01, sx), y: Math.max(0.01, sy) }, rotation: start.rotation, anchorPoint: { x: 0, y: 0 } },
-          });
+          }, true);
         }
       }
       return;
@@ -368,7 +380,7 @@ export class ModalTransform {
               scale: start.scale, rotation: start.rotation,
               anchorPoint: { x: 0, y: 0 },
             },
-          });
+          }, true);
         }
         break;
       }
@@ -403,7 +415,7 @@ export class ModalTransform {
               rotation: newRotation,
               anchorPoint: { x: 0, y: 0 },
             },
-          });
+          }, true);
         }
         break;
       }
@@ -510,7 +522,7 @@ export class ModalTransform {
               rotation: start.rotation,
               anchorPoint: { x: 0, y: 0 },
             },
-          });
+          }, true);
         }
         break;
       }
@@ -530,6 +542,26 @@ export class ModalTransform {
   private _onPointerLockChange(): void {
     if (!document.pointerLockElement && this._active && !this._exitingByChoice) this.cancel();
     this._exitingByChoice = false;
+  }
+
+  /** Capture a snapshot of the current composition state for undo history.
+   *  Returns the snapshot string, or null if no active composition. */
+  private _captureUndoSnapshot(): string | null {
+    try {
+      const store = (window as any).__compositionStore;
+      if (!store) return null;
+      const compState = store.getState();
+      const data = {
+        compositions: compState.compositions.map((c: any) => ({
+          ...c,
+          layers: c.layers.map((l: any) => ({ ...l })),
+        })),
+        activeCompositionId: compState.activeCompositionId,
+      };
+      return JSON.stringify(data);
+    } catch {
+      return null;
+    }
   }
 
   private _buildSnapTargets(

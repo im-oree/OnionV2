@@ -16,7 +16,7 @@ export type { SelectionState, SelectionItem, SelectableType } from './selectionS
 export { useToolStore } from './toolStore';
 export type { ToolState, ToolId, ToolSettings } from './toolStore';
 
-export { useHistoryStore } from './historyStore';
+export { useHistoryStore, captureSnapshot } from './historyStore';
 export type { HistoryState, HistoryEntry } from './historyStore';
 
 export { useMarkerStore } from './markerStore';

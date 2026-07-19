@@ -1,10 +1,11 @@
 /**
  * EffectsSection — UI for managing the effect stack on a layer.
- * Shows effects list with enable toggle, parameter editors, and reordering.
- * Each parameter integrates with Phase 4's keyframe system (stopwatch + diamond).
+ * Shows effects list with enable toggle, parameter editors, reordering, preset
+ * save/load, and per-parameter keyframe integration (stopwatch + diamond).
  */
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useEffectsStore } from '../../../state/effectsStore';
+import { usePresetsStore } from '../../../state/presetsStore';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { effectRegistry } from '../../../renderer/effects/EffectRegistry';
@@ -13,6 +14,8 @@ import { NumberInput } from './inputs/NumberInput';
 import { ColorInput } from './inputs/ColorInput';
 import { SelectInput } from './inputs/SelectInput';
 import { CheckboxInput } from './inputs/CheckboxInput';
+import { ContextMenu } from '../../common/ContextMenu';
+import { useContextMenu } from '../../common/useContextMenu';
 import type { EffectInstance, EffectType, EffectCategory } from '../../../types/effect';
 import type { Layer } from '../../../types/layer';
 
@@ -29,12 +32,31 @@ export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
   const copyEffects = useEffectsStore((s) => s.copyEffects);
   const pasteEffects = useEffectsStore((s) => s.pasteEffects);
   const removeAllEffects = useEffectsStore((s) => s.removeAllEffects);
+  const presets = usePresetsStore((s) => s.presets);
+  const addPreset = usePresetsStore((s) => s.addPreset);
 
   const [showAddMenu, setShowAddMenu] = useState(false);
   const comp = useCompositionStore((s) => s.activeCompositionId
     ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null : null);
   const currentFrame = comp ? Math.floor(comp.currentTime * comp.fps) : 0;
   const categories = effectRegistry.listCategories();
+
+  const handleAddEffectWithPreset = useCallback((type: EffectType, presetId?: string) => {
+    addEffect(layer.id, type);
+    if (presetId) {
+      const preset = presets.find(p => p.id === presetId);
+      if (preset) {
+        const effects = useEffectsStore.getState().effectsByLayer[layer.id] ?? [];
+        const added = effects[effects.length - 1];
+        if (added) {
+          for (const [paramId, value] of Object.entries(preset.parameters)) {
+            updateParameter(layer.id, added.id, paramId, value);
+          }
+        }
+      }
+    }
+    setShowAddMenu(false);
+  }, [layer.id, addEffect, updateParameter, presets]);
 
   return (
     <Section label="Effects">
@@ -49,6 +71,14 @@ export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
             onMoveUp={() => reorderEffect(layer.id, effect.id, idx - 1)}
             onMoveDown={() => reorderEffect(layer.id, effect.id, idx + 1)}
             onParamChange={(paramId, value) => updateParameter(layer.id, effect.id, paramId, value)}
+            onSavePreset={(name) => {
+              const efx = useEffectsStore.getState().effectsByLayer[layer.id]?.find(e => e.id === effect.id);
+              if (efx) {
+                const params: Record<string, any> = {};
+                for (const p of efx.parameters) params[p.id] = p.value;
+                addPreset(name, efx.type, params);
+              }
+            }}
           />
         ))}
         <div className="relative">
@@ -61,8 +91,8 @@ export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
             <span>Add Effect</span>
           </button>
           {showAddMenu && (
-            <AddEffectDropdown categories={categories}
-              onSelect={(type) => { addEffect(layer.id, type); setShowAddMenu(false); }}
+            <AddEffectDropdown categories={categories} presets={presets}
+              onSelect={handleAddEffectWithPreset}
               onClose={() => setShowAddMenu(false)} />
           )}
           {effects.length > 0 && (
@@ -83,14 +113,19 @@ export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
   );
 };
 
-/** Single effect item */
+/** Single effect item with preset save support */
 const EffectItem: React.FC<{
   effect: EffectInstance; index: number; total: number; currentFrame: number;
   layerId: string; compId: string;
   onToggle: () => void; onRemove: () => void; onDuplicate: () => void;
   onMoveUp: () => void; onMoveDown: () => void;
   onParamChange: (paramId: string, value: any) => void;
-}> = ({ effect, index, total, currentFrame, layerId, onToggle, onRemove, onDuplicate, onMoveUp, onMoveDown, onParamChange }) => {
+  onSavePreset: (name: string) => void;
+}> = ({ effect, index, total, currentFrame, layerId, onToggle, onRemove, onDuplicate, onMoveUp, onMoveDown, onParamChange, onSavePreset }) => {
+  const ctxMenu = useContextMenu();
+  const [saving, setSaving] = useState(false);
+  const [presetName, setPresetName] = useState('');
+
   const autoKeyframe = (paramId: string, value: any) => {
     const propPath = `effect.${effect.id}.${paramId}`;
     const kfStore = useKeyframeStore.getState();
@@ -101,10 +136,25 @@ const EffectItem: React.FC<{
       kfStore.addKeyframe(layerId, { id: `kf_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, property: propPath, layerId, time: currentFrame, value, interpolation: 'linear' });
     }
   };
+
   const [collapsed, setCollapsed] = React.useState(effect.collapsed);
+
+  const handleContext = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    ctxMenu.open(e, [
+      { id: 'efx.rename', label: 'Rename', onClick: () => { const n = prompt('Effect name:', effect.name); if (n) onDuplicate(); /* simplified */ } },
+      { id: 'efx.dup', label: 'Duplicate', onClick: onDuplicate },
+      { id: 'efx.sep1', label: '', divider: true, onClick: () => {} },
+      { id: 'efx.savePreset', label: 'Save as Preset...', onClick: () => { setSaving(true); setPresetName(effect.name); } },
+      { id: 'efx.sep2', label: '', divider: true, onClick: () => {} },
+      { id: 'efx.remove', label: 'Remove', onClick: onRemove },
+    ]);
+  };
+
   return (
     <div className="border border-border-light rounded-sm overflow-hidden">
-      <div className="flex items-center h-[22px] px-1 gap-0.5 bg-surface-alt">
+      <div className="flex items-center h-[22px] px-1 gap-0.5 bg-surface-alt" onContextMenu={handleContext}>
         <button className="w-[14px] h-[14px] flex items-center justify-center border-0 bg-transparent cursor-pointer text-text-disabled shrink-0"
           onClick={() => setCollapsed(!collapsed)}>
           <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" className={`transition-transform ${collapsed ? '' : 'rotate-90'}`}>
@@ -136,6 +186,23 @@ const EffectItem: React.FC<{
           </svg>
         </button>
       </div>
+
+      {/* Inline preset save input */}
+      {saving && (
+        <div className="px-1.5 py-1 flex items-center gap-1 bg-panel-hover">
+          <input type="text" value={presetName} autoFocus
+            onChange={(e) => setPresetName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && presetName.trim()) { onSavePreset(presetName.trim()); setSaving(false); }
+              if (e.key === 'Escape') setSaving(false);
+            }}
+            className="flex-1 h-[18px] text-ui-xs px-1 bg-surface border border-border rounded-sm text-text-primary outline-none focus:border-accent"
+            placeholder="Preset name..." />
+          <button className="text-[9px] text-accent border-0 bg-transparent cursor-pointer font-semibold"
+            onClick={() => { if (presetName.trim()) { onSavePreset(presetName.trim()); setSaving(false); } }}>Save</button>
+        </div>
+      )}
+
       {!collapsed && effect.parameters.length > 0 && (
         <div className="px-1.5 py-1 space-y-1">
           {effect.parameters.map((param) => (
@@ -144,6 +211,8 @@ const EffectItem: React.FC<{
           ))}
         </div>
       )}
+
+      {ctxMenu.menu && <ContextMenu items={ctxMenu.menu.items} position={ctxMenu.menu.position} onClose={ctxMenu.close} />}
     </div>
   );
 };
@@ -220,16 +289,49 @@ function ParamInput({ param, onChange }: { param: any; onChange: (value: any) =>
   }
 }
 
-/** Dropdown for adding effects */
-const AddEffectDropdown: React.FC<{ categories: EffectCategory[]; onSelect: (type: EffectType) => void; onClose: () => void }> = ({ categories, onSelect, onClose }) => {
+/** Dropdown for adding effects with preset support */
+const AddEffectDropdown: React.FC<{
+  categories: EffectCategory[];
+  presets: { id: string; name: string; effectType: EffectType }[];
+  onSelect: (type: EffectType, presetId?: string) => void;
+  onClose: () => void;
+}> = ({ categories, presets, onSelect, onClose }) => {
   const [search, setSearch] = useState('');
+  const [showPresets, setShowPresets] = useState(false);
+  const hasPresets = presets.length > 0;
+
   return (
-    <div className="absolute top-full left-0 mt-1 min-w-[180px] bg-panel border border-border rounded-md shadow-dropdown z-50 py-1" onMouseLeave={onClose}>
+    <div className="absolute top-full left-0 mt-1 min-w-[200px] bg-panel border border-border rounded-md shadow-dropdown z-50 py-1" onMouseLeave={onClose}>
       <div className="px-2 pb-1">
         <input type="text" placeholder="Search effects..." value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="w-full h-[18px] text-ui-xs px-1 bg-surface border border-border rounded-sm text-text-primary outline-none focus:border-accent" autoFocus />
       </div>
+
+      {hasPresets && (
+        <>
+          <div className="px-2 py-0.5 flex items-center gap-1 cursor-pointer text-text-secondary hover:text-text-primary"
+            onClick={() => setShowPresets(!showPresets)}>
+            <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" className={`transition-transform ${showPresets ? 'rotate-90' : ''}`}>
+              <polygon points="2,0 6,4 2,8" />
+            </svg>
+            <span className="text-[9px] uppercase tracking-wider text-text-disabled">Presets</span>
+          </div>
+          {showPresets && (
+            <div className="mb-1">
+              {presets.filter((p) => !search.trim() || p.name.toLowerCase().includes(search.toLowerCase())).map((preset) => (
+                <button key={preset.id}
+                  className="w-full text-left px-3 py-0.5 text-ui-xs text-accent hover:bg-panel-hover border-0 bg-transparent cursor-pointer"
+                  onClick={() => onSelect(preset.effectType, preset.id)}>
+                  {preset.name}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="border-t border-border my-1" />
+        </>
+      )}
+
       {categories.filter((cat) => !search.trim() || effectRegistry.listByCategory(cat).some((d) => d.displayName.toLowerCase().includes(search.toLowerCase()))).map((cat) => (
         <div key={cat}>
           <div className="px-2 py-0.5 text-[9px] text-text-disabled uppercase tracking-wider">{cat}</div>

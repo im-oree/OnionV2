@@ -6,6 +6,7 @@
 import { create } from 'zustand';
 import type { EffectInstance, EffectType } from '../types/effect';
 import { effectRegistry } from '../renderer/effects/EffectRegistry';
+import { captureSnapshot, useHistoryStore } from './historyStore';
 
 function genId(): string {
   return `efx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -41,6 +42,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
   addEffect: (layerId, effectType) => {
     const def = effectRegistry.get(effectType);
     if (!def) return;
+    const snapshot = captureSnapshot();
     const existing = get().effectsByLayer[layerId] ?? [];
     const newEffect: EffectInstance = {
       id: genId(),
@@ -53,16 +55,20 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
     set((s) => ({
       effectsByLayer: { ...s.effectsByLayer, [layerId]: [...existing, newEffect] },
     }));
+    useHistoryStore.getState().pushEntry('Add Effect', snapshot);
   },
 
   removeEffect: (layerId, effectId) => {
+    const snapshot = captureSnapshot();
     set((s) => {
       const list = (s.effectsByLayer[layerId] ?? []).filter((e) => e.id !== effectId);
       return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
     });
+    useHistoryStore.getState().pushEntry('Remove Effect', snapshot);
   },
 
   reorderEffect: (layerId, effectId, newIndex) => {
+    const snapshot = captureSnapshot();
     set((s) => {
       const list = [...(s.effectsByLayer[layerId] ?? [])];
       const idx = list.findIndex((e) => e.id === effectId);
@@ -71,9 +77,11 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       list.splice(newIndex, 0, item);
       return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
     });
+    useHistoryStore.getState().pushEntry('Reorder Effect', snapshot);
   },
 
   updateParameter: (layerId, effectId, paramId, value) => {
+    const snapshot = captureSnapshot();
     set((s) => {
       const list = (s.effectsByLayer[layerId] ?? []).map((e) => {
         if (e.id !== effectId) return e;
@@ -86,18 +94,22 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       });
       return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
     });
+    useHistoryStore.getState().pushEntry('Update Effect Parameter', snapshot);
   },
 
   toggleEffect: (layerId, effectId) => {
+    const snapshot = captureSnapshot();
     set((s) => {
       const list = (s.effectsByLayer[layerId] ?? []).map((e) =>
         e.id === effectId ? { ...e, enabled: !e.enabled } : e,
       );
       return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
     });
+    useHistoryStore.getState().pushEntry('Toggle Effect', snapshot);
   },
 
   duplicateEffect: (layerId, effectId) => {
+    const snapshot = captureSnapshot();
     const list = get().effectsByLayer[layerId] ?? [];
     const orig = list.find((e) => e.id === effectId);
     if (!orig) return;
@@ -110,6 +122,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
     const newList = [...list];
     newList.splice(idx + 1, 0, dup);
     set((s) => ({ effectsByLayer: { ...s.effectsByLayer, [layerId]: newList } }));
+    useHistoryStore.getState().pushEntry('Duplicate Effect', snapshot);
   },
 
   copyEffects: (layerId) => {
@@ -120,6 +133,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
   pasteEffects: (layerId) => {
     const clip = get().clipboard;
     if (!clip) return;
+    const snapshot = captureSnapshot();
     const newEffects = clip.map((e) => ({
       ...JSON.parse(JSON.stringify(e)),
       id: genId(),
@@ -130,13 +144,16 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
         [layerId]: [...(s.effectsByLayer[layerId] ?? []), ...newEffects],
       },
     }));
+    useHistoryStore.getState().pushEntry('Paste Effects', snapshot);
   },
 
   removeAllEffects: (layerId) => {
+    const snapshot = captureSnapshot();
     set((s) => {
       const { [layerId]: _, ...rest } = s.effectsByLayer;
       return { effectsByLayer: rest };
     });
+    useHistoryStore.getState().pushEntry('Remove All Effects', snapshot);
   },
 
   getEffectsForLayer: (layerId) => get().effectsByLayer[layerId] ?? [],

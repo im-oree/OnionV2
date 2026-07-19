@@ -1,0 +1,18 @@
+/* High Contrast theme — accessibility focused */
+[data-theme="high-contrast"] {
+  --color-app-bg: #000000;
+  --color-panel: #0d0d0d;
+  --color-panel-raised: #1a1a1a;
+  --color-panel-header: #0d0d0d;
+  --color-panel-hover: #222222;
+  --color-panel-active: #2a2a2a;
+  --color-input-bg: #000000;
+  --color-border: rgba(255, 255, 255, 0.20);
+  --color-border-strong: rgba(255, 255, 255, 0.35);
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #cccccc;
+  --color-text-disabled: #666666;
+  --color-accent: #4d9aff;
+  --color-accent-hover: #6badff;
+  --color-accent-muted: rgba(77, 154, 255, 0.25);
+}

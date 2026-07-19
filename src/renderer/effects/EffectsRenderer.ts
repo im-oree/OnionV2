@@ -143,10 +143,13 @@ export class EffectsRenderer {
       (quad.material as THREE.MeshBasicMaterial).needsUpdate = true;
     }
 
-    // Match the layer mesh's scale so the effect quad respects the Scale property
+    // Reset quad position/rotation within the group (group handles transform).
+    // Only copy the mesh's scale so the effect quad matches the visual size.
     quad.position.set(0, 0, 0);
-    quad.scale.copy(layerMesh.scale);
     quad.rotation.set(0, 0, 0);
+    // Scale from mesh (which is percentage/100) — already applied via the parent group's
+    // children, so don't double-apply. The quad geometry is already at layerWidth/layerHeight.
+    quad.scale.set(1, 1, 1);
   }
 
   /** Hide/remove the effect quad, revealing the original mesh */

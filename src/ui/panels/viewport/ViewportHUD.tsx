@@ -1,7 +1,8 @@
 import React from 'react';
-import { Minus, Plus, Grid3X3, Magnet } from 'lucide-react';
+import { Minus, Plus, Grid3X3, Magnet, Layers as LayersIcon } from 'lucide-react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useViewportStore } from '../../../state/viewportStore';
+import { useOnionSkinStore } from '../../../state/onionSkinStore';
 import { formatTime } from '../../../utils/time';
 import { VIEWPORT_CONFIG } from '../../../config/viewportConfig';
 
@@ -52,6 +53,7 @@ export const ViewportHUD: React.FC<ViewportHUDProps> = ({
         <button style={snapEnabled ? activeChip : chipBtn} onClick={() => useViewportStore.getState().toggleSnapping()} title="Toggle Snapping">
           <Magnet size={13} strokeWidth={1.75} />
         </button>
+        <OnionSkinToggle chipBtn={chipBtn} activeChip={activeChip} />
       </div>
 
       {/* Bottom bar */}
@@ -90,5 +92,15 @@ export const ViewportHUD: React.FC<ViewportHUDProps> = ({
         </div>
       </div>
     </div>
+  );
+};
+
+const OnionSkinToggle: React.FC<{ chipBtn: React.CSSProperties; activeChip: React.CSSProperties }> = ({ chipBtn, activeChip }) => {
+  const enabled = useOnionSkinStore((s) => s.settings.enabled);
+  const toggle = useOnionSkinStore((s) => s.toggle);
+  return (
+    <button style={enabled ? activeChip : chipBtn} onClick={toggle} title="Toggle Onion Skinning">
+      <LayersIcon size={13} strokeWidth={1.75} />
+    </button>
   );
 };

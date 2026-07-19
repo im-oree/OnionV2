@@ -5,7 +5,6 @@ import type { FlatCurve } from './GraphCurves';
 
 export interface ViewState { x: number; y: number; w: number; h: number; }
 export interface BoxRect { x: number; y: number; w: number; h: number; }
-
 type DragType = 'pan' | 'keyframe' | 'handleIn' | 'handleOut' | 'box-select' | null;
 
 interface DragState {
@@ -17,6 +16,7 @@ interface DragState {
   origValue?: number | number[];
   origHandle?: { x: number; y: number };
   boxAdd?: boolean;
+  multiSnapshot?: Map<string, { time: number; value: number | number[] }>;
 }
 
 interface Options {
@@ -27,10 +27,21 @@ interface Options {
   curves: FlatCurve[];
   totalFrames: number;
   snapToFrame: boolean;
+  svgWidth: number;
+  svgHeight: number;
+}
+
+function findKf(engine: any, id: string): Keyframe | null {
+  const data: Map<string, Map<string, Keyframe[]>> = engine._data;
+  for (const [, propMap] of data)
+    for (const [, arr] of propMap)
+      for (const k of arr) if (k.id === id) return k;
+  return null;
 }
 
 export function useGraphInteraction({
   svgRef, viewBox, setViewBox, engine, curves, totalFrames, snapToFrame,
+  svgWidth, svgHeight,
 }: Options) {
   const dragRef = useRef<DragState | null>(null);
   const [dragType, setDragType] = useState<DragType>(null);
@@ -38,16 +49,21 @@ export function useGraphInteraction({
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
-    const factor = e.deltaY > 0 ? 1.1 : 0.9;
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const mx = (e.clientX - rect.left) / rect.width;
+    const my = (e.clientY - rect.top) / rect.height;
+    const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
     setViewBox((vb) => {
-      if (e.shiftKey) {
-        const dh = vb.h * factor;
-        return { ...vb, y: vb.y - (dh - vb.h) / 2, h: dh };
-      }
-      const dw = vb.w * factor;
-      return { ...vb, x: vb.x - (dw - vb.w) / 2, w: dw };
+      const zoomY = e.shiftKey || e.altKey;
+      const zoomX = !e.shiftKey;
+      const nw = zoomX ? vb.w * factor : vb.w;
+      const nh = zoomY ? vb.h * factor : vb.h;
+      const anchorF = vb.x + vb.w * mx;
+      const anchorV = vb.y + vb.h * (1 - my);
+      return { x: anchorF - nw * mx, y: anchorV - nh * (1 - my), w: nw, h: nh };
     });
-  }, [setViewBox]);
+  }, [setViewBox, svgRef]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const rect = svgRef.current?.getBoundingClientRect();
@@ -58,8 +74,7 @@ export function useGraphInteraction({
 
     if (kfId && (handleType === 'in' || handleType === 'out')) {
       e.stopPropagation();
-      const kf = findKf(engine, kfId);
-      if (!kf) return;
+      const kf = findKf(engine, kfId); if (!kf) return;
       const orig = handleType === 'in' ? kf.inTangent : kf.outTangent;
       dragRef.current = {
         type: handleType === 'in' ? 'handleIn' : 'handleOut',
@@ -76,14 +91,22 @@ export function useGraphInteraction({
       const store = useKeyframeStore.getState();
       if (e.shiftKey || e.ctrlKey || e.metaKey) store.toggleKeyframeSelection(kfId);
       else if (!store.selectedKeyframeIds.has(kfId)) store.selectKeyframe(kfId, false);
-      const kf = findKf(engine, kfId);
-      if (!kf) return;
+      const kf = findKf(engine, kfId); if (!kf) return;
+      const snap = new Map<string, { time: number; value: number | number[] }>();
+      const sel = useKeyframeStore.getState().selectedKeyframeIds;
+      const data: Map<string, Map<string, Keyframe[]>> = engine._data;
+      for (const [, propMap] of data)
+        for (const [, arr] of propMap)
+          for (const k of arr)
+            if (sel.has(k.id))
+              snap.set(k.id, { time: k.time, value: Array.isArray(k.value) ? [...k.value] : k.value });
       dragRef.current = {
         type: 'keyframe',
         startMouse: { x: e.clientX, y: e.clientY },
         startView: { ...viewBox },
         kfId, origTime: kf.time,
         origValue: Array.isArray(kf.value) ? [...kf.value] : kf.value,
+        multiSnapshot: snap,
       };
       setDragType('keyframe');
       return;
@@ -97,56 +120,56 @@ export function useGraphInteraction({
     }
 
     if (e.button === 0) {
-      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey)
         useKeyframeStore.getState().clearKeyframeSelection();
-      }
-      // Start box select
-      const rx = e.clientX - rect.left;
-      const ry = e.clientY - rect.top;
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
       dragRef.current = {
         type: 'box-select',
-        startMouse: { x: rx, y: ry },
+        startMouse: { x: px, y: py },
         startView: { ...viewBox },
         boxAdd: e.shiftKey || e.ctrlKey || e.metaKey,
       };
       setDragType('box-select');
-      setBoxSelectRect({ x: rx, y: ry, w: 0, h: 0 });
+      setBoxSelectRect({ x: px, y: py, w: 0, h: 0 });
     }
   }, [engine, viewBox, svgRef]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      const d = dragRef.current;
-      if (!d) return;
-      const rect = svgRef.current?.getBoundingClientRect();
-      if (!rect) return;
+      const d = dragRef.current; if (!d) return;
+      const rect = svgRef.current?.getBoundingClientRect(); if (!rect) return;
       const dxPx = e.clientX - d.startMouse.x;
       const dyPx = e.clientY - d.startMouse.y;
 
       if (d.type === 'pan') {
         const dxView = (dxPx / rect.width) * d.startView.w;
-        const dyView = -(dyPx / rect.height) * d.startView.h;
+        const dyView = (dyPx / rect.height) * d.startView.h;
         setViewBox(() => ({ ...d.startView, x: d.startView.x - dxView, y: d.startView.y + dyView }));
-      } else if (d.type === 'keyframe' && d.kfId) {
-        const dFrames = snapToFrame
-          ? Math.round((dxPx / rect.width) * d.startView.w)
-          : (dxPx / rect.width) * d.startView.w;
+      } else if (d.type === 'keyframe' && d.kfId && d.multiSnapshot) {
+        const dFramesRaw = (dxPx / rect.width) * d.startView.w;
+        const dFrames = snapToFrame ? Math.round(dFramesRaw) : dFramesRaw;
         const dValue = -(dyPx / rect.height) * d.startView.h;
-        let newTime = (d.origTime ?? 0) + dFrames;
-        newTime = Math.max(0, Math.min(totalFrames, newTime));
-        const patch: Partial<Keyframe> = { time: Math.round(newTime) };
-        if (typeof d.origValue === 'number') patch.value = d.origValue + dValue;
-        else if (Array.isArray(d.origValue)) patch.value = d.origValue.map(v => v + dValue);
-        useKeyframeStore.getState().engine.updateKeyframe(d.kfId, patch);
+        const eng = useKeyframeStore.getState().engine;
+        for (const [id, snap] of d.multiSnapshot) {
+          let nt = snap.time + dFrames;
+          nt = Math.max(0, Math.min(totalFrames, snapToFrame ? Math.round(nt) : nt));
+          const patch: Partial<Keyframe> = { time: nt };
+          if (typeof snap.value === 'number') patch.value = snap.value + dValue;
+          else if (Array.isArray(snap.value)) patch.value = snap.value.map(v => v + dValue);
+          eng.updateKeyframe(id, patch);
+        }
         useKeyframeStore.setState(s => ({ revision: s.revision + 1 }));
       } else if ((d.type === 'handleIn' || d.type === 'handleOut') && d.kfId && d.origHandle) {
-        const dxNorm = (dxPx / rect.width) * (d.startView.w / 50);
-        const dyNorm = (dyPx / rect.height) * (d.startView.h / 200);
+        // Constant sensitivity: ~0.4 tangent-x units per full SVG width drag,
+        // ~1.2 tangent-y units per full SVG height drag
+        const dxNorm = (dxPx / rect.width) * 0.4;
+        const dyNorm = (dyPx / rect.height) * 1.2;
         const signX = d.type === 'handleOut' ? 1 : -1;
         const signY = d.type === 'handleOut' ? -1 : 1;
         const newHandle = {
           x: Math.max(0, Math.min(1, d.origHandle.x + signX * dxNorm)),
-          y: Math.max(-2, Math.min(2, d.origHandle.y + signY * dyNorm)),
+          y: Math.max(-3, Math.min(3, d.origHandle.y + signY * dyNorm)),
         };
         const patch: any = d.type === 'handleIn'
           ? { inTangent: newHandle, interpolation: 'bezier' }
@@ -154,40 +177,32 @@ export function useGraphInteraction({
         useKeyframeStore.getState().engine.updateKeyframe(d.kfId, patch);
         useKeyframeStore.setState(s => ({ revision: s.revision + 1 }));
       } else if (d.type === 'box-select') {
-        const rx = e.clientX - rect.left;
-        const ry = e.clientY - rect.top;
-        const x = Math.min(d.startMouse.x, rx);
-        const y = Math.min(d.startMouse.y, ry);
-        const w = Math.abs(rx - d.startMouse.x);
-        const h = Math.abs(ry - d.startMouse.y);
-        setBoxSelectRect({ x, y, w, h });
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+        setBoxSelectRect({
+          x: Math.min(d.startMouse.x, px), y: Math.min(d.startMouse.y, py),
+          w: Math.abs(px - d.startMouse.x), h: Math.abs(py - d.startMouse.y),
+        });
       }
     };
 
     const onUp = () => {
       const d = dragRef.current;
-      if (d?.type === 'box-select' && boxSelectRect) {
-        const rect = svgRef.current?.getBoundingClientRect();
-        if (rect) {
-          // Convert box screen rect → data range
-          const box = boxSelectRect;
-          const minF = ((box.x) / rect.width) * viewBox.w + viewBox.x;
-          const maxF = ((box.x + box.w) / rect.width) * viewBox.w + viewBox.x;
-          const maxV = viewBox.y + viewBox.h - ((box.y) / rect.height) * viewBox.h;
-          const minV = viewBox.y + viewBox.h - ((box.y + box.h) / rect.height) * viewBox.h;
-          const store = useKeyframeStore.getState();
-          const newSel = new Set(d.boxAdd ? store.selectedKeyframeIds : []);
-          for (const curve of curves) {
-            for (const kf of curve.keyframes) {
-              const v = Array.isArray(kf.value) ? (kf.value[curve.dimension] ?? 0) : kf.value;
-              if (typeof v !== 'number') continue;
-              if (kf.time >= minF && kf.time <= maxF && v >= minV && v <= maxV) {
-                newSel.add(kf.id);
-              }
-            }
+      if (d?.type === 'box-select' && boxSelectRect && svgWidth > 0 && svgHeight > 0) {
+        const box = boxSelectRect;
+        const minF = (box.x / svgWidth) * viewBox.w + viewBox.x;
+        const maxF = ((box.x + box.w) / svgWidth) * viewBox.w + viewBox.x;
+        const maxV = viewBox.y + viewBox.h - (box.y / svgHeight) * viewBox.h;
+        const minV = viewBox.y + viewBox.h - ((box.y + box.h) / svgHeight) * viewBox.h;
+        const store = useKeyframeStore.getState();
+        const newSel = new Set(d.boxAdd ? store.selectedKeyframeIds : []);
+        for (const curve of curves)
+          for (const kf of curve.keyframes) {
+            const v = Array.isArray(kf.value) ? (kf.value[curve.dimension] ?? 0) : kf.value;
+            if (typeof v !== 'number') continue;
+            if (kf.time >= minF && kf.time <= maxF && v >= minV && v <= maxV) newSel.add(kf.id);
           }
-          useKeyframeStore.setState({ selectedKeyframeIds: newSel });
-        }
+        useKeyframeStore.setState({ selectedKeyframeIds: newSel });
       }
       dragRef.current = null;
       setDragType(null);
@@ -200,17 +215,7 @@ export function useGraphInteraction({
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     };
-  }, [totalFrames, snapToFrame, viewBox, curves, boxSelectRect, svgRef, setViewBox]);
+  }, [totalFrames, snapToFrame, viewBox, curves, boxSelectRect, svgRef, setViewBox, svgWidth, svgHeight]);
 
   return { handleMouseDown, handleWheel, dragType, boxSelectRect };
-}
-
-function findKf(engine: any, id: string): Keyframe | null {
-  const data: Map<string, Map<string, Keyframe[]>> = engine._data;
-  for (const [, propMap] of data) {
-    for (const [, arr] of propMap) {
-      for (const k of arr) if (k.id === id) return k;
-    }
-  }
-  return null;
 }

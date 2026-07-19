@@ -6,10 +6,8 @@ import type { Composition } from '../../../types/composition';
 
 interface Props { comp: Composition; totalFrames: number; currentFrame: number; }
 
-/** Global clock singleton */
 export const animationClock = new AnimationClock();
 
-/** Handles wiring the clock to comp/store — no visible UI (header owns transport). */
 export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
   const loop = useTimelineStore(s => s.loop);
   const setPlaybackState = useTimelineStore(s => s.setPlaybackState);
@@ -21,40 +19,42 @@ export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
 
     const onFrame = (ev: { frame: number }) => {
       useCompositionStore.getState().setCurrentTime(comp.id, ev.frame / comp.fps);
+      const renderer = (window as any).__renderer;
+      if (renderer) renderer.renderLoop.requestRender();
     };
-    // Auto-cache interval re-trigger (only when autoCache toggle is ON)
+
     let autoCacheInterval: ReturnType<typeof setInterval> | null = null;
+    const _stopAutoCache = () => {
+      if (autoCacheInterval !== null) { clearInterval(autoCacheInterval); autoCacheInterval = null; }
+    };
+    const _triggerPrefetch = (cid: string) => {
+      // Check autoCache flag on every tick — toggling it off while
+      // playing stops the interval and prevents further prefetches.
+      if (!useTimelineStore.getState().autoCache) {
+        _stopAutoCache();
+        // Also cancel any ongoing background prefetch build loop
+        // (it runs asynchronously via setTimeout and won't stop on its own)
+        const builder = (window as any).__ramPreviewBuilder;
+        if (builder && builder.isBuilding) builder.cancel();
+        return;
+      }
+      const builder = (window as any).__ramPreviewBuilder;
+      if (!builder || builder.isBuilding) return;
+      builder.startBackgroundPrefetch(cid, animationClock.currentFrame, 90);
+    };
     const _startAutoCache = (cid: string) => {
       _stopAutoCache();
       _triggerPrefetch(cid);
       autoCacheInterval = setInterval(() => _triggerPrefetch(cid), 2000);
     };
-    const _stopAutoCache = () => {
-      if (autoCacheInterval !== null) {
-        clearInterval(autoCacheInterval);
-        autoCacheInterval = null;
-      }
-    };
-    const _triggerPrefetch = (cid: string) => {
-      const builder = (window as any).__ramPreviewBuilder;
-      if (!builder) return;
-      // Don't interrupt a manual preview build (background prefetch will auto-pause during transforms)
-      if (builder.isBuilding) return;
-      const frame = animationClock.currentFrame;
-      builder.startBackgroundPrefetch(cid, frame, 90);
-    };
 
     const onPlay = () => {
       setPlaybackState('playing');
-      // M11: Activate property binder for runtime animation overrides
       const renderer = (window as any).__renderer;
-      if (renderer?.propertyBinder) {
-        renderer.propertyBinder.setActive(true);
-      }
-      if (useTimelineStore.getState().autoCache) {
-        _startAutoCache(comp.id);
-      }
+      if (renderer?.propertyBinder) renderer.propertyBinder.setActive(true);
+      if (useTimelineStore.getState().autoCache) _startAutoCache(comp.id);
     };
+
     const onPause = () => {
       setPlaybackState('paused');
       _stopAutoCache();
@@ -65,12 +65,12 @@ export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
           renderer.layerSync.restoreFromOverrides();
           renderer.layerSync.setRuntimeOverridesActive(false);
         }
-        // Ensure 3D scene is visible after playback stops
         renderer.sceneManager.compBounds.show();
         renderer.sceneManager.layerGroup.visible = true;
         renderer.renderLoop.requestRender();
       }
     };
+
     const onStop = () => {
       setPlaybackState('stopped');
       _stopAutoCache();
@@ -81,18 +81,17 @@ export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
           renderer.layerSync.restoreFromOverrides();
           renderer.layerSync.setRuntimeOverridesActive(false);
         }
-        // Ensure 3D scene is visible after playback stops
         renderer.sceneManager.compBounds.show();
         renderer.sceneManager.layerGroup.visible = true;
         renderer.renderLoop.requestRender();
       }
     };
+
     animationClock.on('frame-changed', onFrame);
     animationClock.on('play', onPlay);
     animationClock.on('pause', onPause);
     animationClock.on('stop', onStop);
 
-    // Wire header prev/next keyframe events
     const onPrevKf = () => {
       const cs = useCompositionStore.getState();
       const c = cs.activeCompositionId ? cs.compositions.find(x => x.id === cs.activeCompositionId) : null;
@@ -109,6 +108,7 @@ export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
         });
       });
     };
+
     const onNextKf = () => {
       const cs = useCompositionStore.getState();
       const c = cs.activeCompositionId ? cs.compositions.find(x => x.id === cs.activeCompositionId) : null;
@@ -125,14 +125,12 @@ export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
         });
       });
     };
+
+    const onRAMPreviewComplete = () => { animationClock.stop(); };
+
     document.addEventListener('playback:prevKeyframe', onPrevKf);
-    // RAM preview complete — just notify, don't auto-play
-    const onRAMPreviewComplete = () => {
-      // Stop playback if it was running, and seek to start
-      animationClock.stop();
-    };
-    document.addEventListener('rampreview:complete', onRAMPreviewComplete);
     document.addEventListener('playback:nextKeyframe', onNextKf);
+    document.addEventListener('rampreview:complete', onRAMPreviewComplete);
 
     return () => {
       _stopAutoCache();

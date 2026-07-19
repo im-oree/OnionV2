@@ -9,6 +9,7 @@ import { useTimelineExpanded } from './useTimelineExpanded';
 import { useContextMenu } from '../../common/useContextMenu';
 import { ContextMenu } from '../../common/ContextMenu';
 import { buildKeyframeContextMenu } from './keyframeContextMenu';
+import { LAYER_COLORS } from './layerColors';
 
 interface Props {
   layers: Layer[];
@@ -18,8 +19,8 @@ interface Props {
   compId: string;
 }
 
-const LAYER_ROW_H = 30;
-const PROP_ROW_H = 24;
+const LAYER_ROW_H = 32;
+const PROP_ROW_H = 26;
 
 export const KeyframeArea: React.FC<Props> = ({ layers, zoom, totalFrames, compId }) => {
   const revision = useKeyframeStore(s => s.revision);
@@ -43,7 +44,7 @@ export const KeyframeArea: React.FC<Props> = ({ layers, zoom, totalFrames, compI
     boxSelectState.current = { startX: e.clientX, startY: e.clientY };
 
     const overlay = document.createElement('div');
-    overlay.style.cssText = `position:fixed;pointer-events:none;border:1px dashed var(--color-accent);background:rgba(88,101,255,0.12);z-index:9999;border-radius:var(--radius-xs)`;
+    overlay.style.cssText = 'position:fixed;pointer-events:none;border:1px dashed var(--color-accent);background:rgba(88,101,255,0.10);z-index:9999;border-radius:3px';
     document.body.appendChild(overlay);
 
     const onMove = (ev: MouseEvent) => {
@@ -59,11 +60,17 @@ export const KeyframeArea: React.FC<Props> = ({ layers, zoom, totalFrames, compI
       for (const d of diamonds) {
         const r = d.getBoundingClientRect();
         const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-        if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) { const id = d.getAttribute('data-kf-id'); if (id) newSel.add(id); }
+        if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) {
+          const id = d.getAttribute('data-kf-id'); if (id) newSel.add(id);
+        }
       }
       useKeyframeStore.setState({ selectedKeyframeIds: newSel });
     };
-    const onUp = () => { boxSelectState.current = null; overlay.remove(); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+    const onUp = () => {
+      boxSelectState.current = null; overlay.remove();
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   }, []);
@@ -73,12 +80,12 @@ export const KeyframeArea: React.FC<Props> = ({ layers, zoom, totalFrames, compI
     const diamond = t.closest('[data-kf-diamond]');
     if (!diamond) return;
     const id = diamond.getAttribute('data-kf-id');
-    if (id && !useKeyframeStore.getState().selectedKeyframeIds.has(id)) useKeyframeStore.getState().selectKeyframe(id, false);
+    if (id && !useKeyframeStore.getState().selectedKeyframeIds.has(id))
+      useKeyframeStore.getState().selectKeyframe(id, false);
     e.preventDefault(); e.stopPropagation();
     ctx.open(e, buildKeyframeContextMenu());
   }, [ctx]);
 
-  // Work area bounds (from composition store, in frames)
   const workArea = useCompositionStore(s => {
     const c = s.compositions.find(c => c.id === compId);
     if (!c) return null;
@@ -90,56 +97,33 @@ export const KeyframeArea: React.FC<Props> = ({ layers, zoom, totalFrames, compI
 
   return (
     <div ref={boxRef} data-timeline-tracks="1" className="relative" onMouseDown={onMouseDown} onContextMenu={onContextMenu}>
-      {/* Work area overlay */}
-      {compId && workArea && (
+      {compId && workArea && workArea.start !== undefined && workArea.end !== undefined && (
         <>
-          {workArea.start !== undefined && workArea.end !== undefined && (
-            <>
-              {workArea.start > 0 && (
-                <div
-                  className="absolute top-0 bottom-0 pointer-events-none"
-                  style={{
-                    left: 0,
-                    width: workArea.start * zoom,
-                    background: 'rgba(0,0,0,0.25)',
-                  }}
-                />
-              )}
-
-              <div
-                className="absolute top-0 bottom-0 pointer-events-none"
-                style={{
-                  left: workArea.start * zoom,
-                  width: (workArea.end - workArea.start) * zoom,
-                  background: 'rgba(255,255,255,0.02)',
-                }}
-              />
-
-              {workArea.end < totalFrames && (
-                <div
-                  className="absolute top-0 bottom-0 pointer-events-none"
-                  style={{
-                    left: workArea.end * zoom,
-                    width: (totalFrames - workArea.end) * zoom,
-                    background: 'rgba(0,0,0,0.25)',
-                  }}
-                />
-              )}
-            </>
+          {workArea.start > 0 && (
+            <div className="absolute top-0 bottom-0 pointer-events-none"
+              style={{ left: 0, width: workArea.start * zoom, background: 'rgba(0,0,0,0.25)' }} />
+          )}
+          <div className="absolute top-0 bottom-0 pointer-events-none"
+            style={{ left: workArea.start * zoom, width: (workArea.end - workArea.start) * zoom, background: 'rgba(255,255,255,0.02)' }} />
+          {workArea.end < totalFrames && (
+            <div className="absolute top-0 bottom-0 pointer-events-none"
+              style={{ left: workArea.end * zoom, width: (totalFrames - workArea.end) * zoom, background: 'rgba(0,0,0,0.25)' }} />
           )}
         </>
       )}
 
-      {sortedLayers.map(layer => {
+      {sortedLayers.map((layer, li) => {
         const expanded = expandedSet.has(layer.id);
         const allKfs = engine.getAllKeyframesForLayer(layer.id);
         const props = engine.getAllAnimatedProperties(layer.id);
         return (
           <div key={layer.id}>
-            <LayerTrackBar layer={layer} zoom={zoom} compId={compId} totalFrames={totalFrames} summaryKfs={allKfs} />
+            <LayerTrackBar layer={layer} zoom={zoom} compId={compId}
+              totalFrames={totalFrames} summaryKfs={allKfs} colorIdx={li} />
             {expanded && props.map(propPath => {
               const propKfs = allKfs.filter(k => k.property === propPath);
-              return <PropertyKeyframeTrack key={propPath} keyframes={propKfs} zoom={zoom} onKfDown={kfDrag.onDown} />;
+              return <PropertyKeyframeTrack key={propPath} keyframes={propKfs}
+                zoom={zoom} onKfDown={kfDrag.onDown} />;
             })}
           </div>
         );
@@ -150,49 +134,60 @@ export const KeyframeArea: React.FC<Props> = ({ layers, zoom, totalFrames, compI
 };
 
 const LayerTrackBar: React.FC<{
-  layer: Layer; zoom: number; compId: string; totalFrames: number; summaryKfs: Keyframe[];
-}> = ({ layer, zoom, compId, totalFrames, summaryKfs }) => {
+  layer: Layer; zoom: number; compId: string; totalFrames: number;
+  summaryKfs: Keyframe[]; colorIdx: number;
+}> = ({ layer, zoom, compId, totalFrames, summaryKfs, colorIdx }) => {
   const { onMouseDown } = useLayerBarDrag(layer, compId, zoom, totalFrames);
   const left = layer.startFrame * zoom;
-  const width = Math.max(4, (layer.endFrame - layer.startFrame) * zoom);
+  const width = Math.max(8, (layer.endFrame - layer.startFrame) * zoom);
   const uniqueFrames = Array.from(new Set(summaryKfs.map(k => k.time))).sort((a, b) => a - b);
+  const palette = LAYER_COLORS[colorIdx % LAYER_COLORS.length];
+
   return (
     <div className="relative" style={{ height: LAYER_ROW_H, borderBottom: '1px solid var(--color-divider)' }}>
       <div
         data-layer-bar="1"
-        className="absolute top-1/2 -translate-y-1/2"
+        className="absolute top-1/2 -translate-y-1/2 layer-bar-pill"
         style={{
-          left, width, height: 20,
+          left, width, height: 22,
           cursor: 'grab',
-          borderRadius: 'var(--radius-sm)',
-          background: 'var(--color-accent-muted)',
-          border: '1px solid var(--color-accent)',
+          borderRadius: 11,
+          background: `linear-gradient(135deg, ${palette.from}, ${palette.to})`,
+          boxShadow: `0 1px 3px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.12)`,
         }}
         onMouseDown={onMouseDown('move')}
         title={`${layer.name}: ${layer.startFrame}–${layer.endFrame}`}
       >
-        <div className="absolute left-0 top-0 bottom-0 w-[6px] rounded-l-md" style={{ cursor: 'ew-resize', background: 'var(--color-accent)' }} onMouseDown={onMouseDown('trimStart')} />
-        <div className="absolute right-0 top-0 bottom-0 w-[6px] rounded-r-md" style={{ cursor: 'ew-resize', background: 'var(--color-accent)' }} onMouseDown={onMouseDown('trimEnd')} />
-        <div className="absolute inset-0 flex items-center px-2 pointer-events-none">
-          <span className="truncate select-none" style={{ fontSize: 10, color: 'rgba(255,255,255,0.8)' }}>{layer.name}</span>
+        <div className="absolute left-0 top-0 bottom-0 w-[8px] rounded-l-full"
+          style={{ cursor: 'ew-resize' }} onMouseDown={onMouseDown('trimStart')} />
+        <div className="absolute right-0 top-0 bottom-0 w-[8px] rounded-r-full"
+          style={{ cursor: 'ew-resize' }} onMouseDown={onMouseDown('trimEnd')} />
+        <div className="absolute inset-0 flex items-center px-3 pointer-events-none overflow-hidden">
+          <span className="truncate select-none"
+            style={{ fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.92)', letterSpacing: '0.02em', textShadow: '0 1px 2px rgba(0,0,0,0.4)' }}>
+            {layer.name}
+          </span>
         </div>
+        {uniqueFrames.map(f => {
+          const x = (f - layer.startFrame) * zoom;
+          if (x < 4 || x > width - 4) return null;
+          return (
+            <svg key={f} width="7" height="7" className="absolute top-1/2 -translate-y-1/2 pointer-events-none"
+              style={{ left: x - 3 }}>
+              <polygon points="3.5,0 7,3.5 3.5,7 0,3.5" fill="rgba(255,255,255,0.7)" />
+            </svg>
+          );
+        })}
       </div>
-      {uniqueFrames.map(f => <SummaryDiamond key={f} time={f} zoom={zoom} />)}
     </div>
   );
 };
-
-const SummaryDiamond: React.FC<{ time: number; zoom: number }> = ({ time, zoom }) => (
-  <svg width="8" height="8" className="absolute top-1 pointer-events-none" style={{ left: time * zoom - 3 }}>
-    <polygon points="4,0 8,4 4,8 0,4" fill="var(--color-accent)" opacity="0.7" />
-  </svg>
-);
 
 const PropertyKeyframeTrack: React.FC<{
   keyframes: Keyframe[]; zoom: number;
   onKfDown: (id: string, time: number) => (e: React.MouseEvent) => void;
 }> = ({ keyframes, zoom, onKfDown }) => (
-  <div className="relative" style={{ height: PROP_ROW_H, borderBottom: '1px solid var(--color-divider)', background: 'rgba(0,0,0,0.1)' }}>
+  <div className="relative" style={{ height: PROP_ROW_H, borderBottom: '1px solid var(--color-divider)', background: 'rgba(0,0,0,0.08)' }}>
     {keyframes.map(kf => <KeyframeDiamond key={kf.id} kf={kf} zoom={zoom} onMouseDown={onKfDown(kf.id, kf.time)} />)}
   </div>
 );
@@ -203,12 +198,12 @@ const KeyframeDiamond: React.FC<{
   const isSelected = useKeyframeStore(s => s.selectedKeyframeIds.has(kf.id));
   const size = 10;
   const x = kf.time * zoom;
-  let fill = 'var(--color-accent)';
+  let fill = '#5865ff';
   if (kf.interpolation === 'hold') fill = '#e04040';
   else if (kf.interpolation === 'bezier') fill = '#4bd0e8';
   if (isSelected) fill = '#ffffff';
-  const stroke = isSelected ? 'var(--color-accent)' : 'rgba(0,0,0,0.4)';
-  const strokeW = isSelected ? '1.5' : '0.5';
+  const stroke = isSelected ? '#5865ff' : 'rgba(0,0,0,0.5)';
+  const strokeW = isSelected ? 2 : 0.8;
 
   const onClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -218,21 +213,26 @@ const KeyframeDiamond: React.FC<{
 
   return (
     <svg
-      width={size + 4} height={size + 4}
+      width={size + 6} height={size + 6}
       data-kf-diamond="1" data-kf-id={kf.id}
-      className="absolute top-1/2 -translate-y-1/2 z-10 hover:scale-125 transition-transform"
-      style={{ left: x - size / 2 - 2, cursor: 'ew-resize' }}
+      className="absolute top-1/2 -translate-y-1/2 z-10 hover:scale-[1.3] transition-transform"
+      style={{ left: x - size / 2 - 3, cursor: 'ew-resize' }}
       onMouseDown={(e) => { onMouseDown(e); onClick(e); }}
     >
+      {isSelected && (
+        <circle cx={size / 2 + 3} cy={size / 2 + 3} r={size / 2 + 4}
+          fill="var(--color-accent)" opacity={0.18} />
+      )}
       {kf.interpolation === 'hold' ? (
-        <rect x={2} y={2} width={size} height={size} fill={fill} rx={2} stroke={stroke} strokeWidth={strokeW} />
+        <rect x={3} y={3} width={size} height={size} fill={fill} rx={2}
+          stroke={stroke} strokeWidth={strokeW} />
       ) : kf.interpolation === 'bezier' ? (
-        <circle cx={size / 2 + 2} cy={size / 2 + 2} r={size / 2} fill={fill} stroke={stroke} strokeWidth={strokeW} />
+        <circle cx={size / 2 + 3} cy={size / 2 + 3} r={size / 2}
+          fill={fill} stroke={stroke} strokeWidth={strokeW} />
       ) : (
         <polygon
-          points={`${size / 2 + 2},2 ${size + 2},${size / 2 + 2} ${size / 2 + 2},${size + 2} 2,${size / 2 + 2}`}
-          fill={fill} stroke={stroke} strokeWidth={strokeW}
-        />
+          points={`${size / 2 + 3},3 ${size + 3},${size / 2 + 3} ${size / 2 + 3},${size + 3} 3,${size / 2 + 3}`}
+          fill={fill} stroke={stroke} strokeWidth={strokeW} />
       )}
     </svg>
   );

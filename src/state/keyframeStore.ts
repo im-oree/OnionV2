@@ -3,17 +3,13 @@ import { KeyframeEngine } from '../animation/KeyframeEngine';
 import type { Keyframe, InterpolationType } from '../types/keyframe';
 import { markProjectDirty } from '../storage/StorageManager';
 import { EASY_EASE, EASING_PRESETS, type EasingPresetName } from '../animation/EasingPresets';
+import { captureSnapshot } from './historyStore';
+import { useHistoryStore } from './historyStore';
 
-/** Records which keyframe was last mutated and how, so cache invalidation
- *  can narrow its range to only the affected frames. */
 export interface KeyframeMutation {
-  /** Layer that was mutated */
   layerId: string;
-  /** Property path on that layer (e.g. 'transform.position.x') */
   property: string;
-  /** Time of the mutated keyframe (approximate — for move, the new time) */
   time: number;
-  /** Previous time when a keyframe was moved (undefined for add/remove/edit) */
   oldTime?: number;
 }
 
@@ -22,9 +18,7 @@ export interface KeyframeState {
   selectedKeyframeIds: Set<string>;
   animatedProperties: Map<string, Set<string>>;
   revision: number;
-  /** Track the most recent keyframe mutation for range-based cache invalidation */
   lastKeyframeMutation: KeyframeMutation | null;
-
   addKeyframe: (layerId: string, keyframe: Keyframe) => void;
   removeKeyframe: (keyframeId: string) => void;
   updateKeyframe: (keyframeId: string, patch: Partial<Keyframe>) => void;
@@ -41,10 +35,7 @@ export interface KeyframeState {
   isPropertyAnimated: (layerId: string, property: string) => boolean;
 }
 
-/** Helper: try to extract (layerId, property, time) from a keyframe in the engine by keyframeId. */
 function _findKeyframeData(engine: KeyframeEngine, kfId: string): { layerId: string; property: string; time: number } | null {
-  // Access engine internals to find the keyframe — KeyframeEngine stores
-  // _data as Map<layerId, Map<property, Keyframe[]>>
   const data: Map<string, Map<string, Keyframe[]>> = (engine as any)._data;
   for (const [layerId, propMap] of data) {
     for (const [property, kfs] of propMap) {
@@ -56,6 +47,19 @@ function _findKeyframeData(engine: KeyframeEngine, kfId: string): { layerId: str
   return null;
 }
 
+function _syncAnimatedProps(engine: KeyframeEngine): Map<string, Set<string>> {
+  const data: Map<string, Map<string, Keyframe[]>> = (engine as any)._data;
+  const result = new Map<string, Set<string>>();
+  for (const [layerId, propMap] of data) {
+    const props = new Set<string>();
+    for (const [prop, kfs] of propMap) {
+      if (kfs.length > 0) props.add(prop);
+    }
+    if (props.size > 0) result.set(layerId, props);
+  }
+  return result;
+}
+
 export const useKeyframeStore = create<KeyframeState>((set, get) => ({
   engine: new KeyframeEngine(),
   selectedKeyframeIds: new Set(),
@@ -64,16 +68,20 @@ export const useKeyframeStore = create<KeyframeState>((set, get) => ({
   lastKeyframeMutation: null,
 
   addKeyframe: (layerId, keyframe) => {
-    get().engine.addKeyframe(layerId, keyframe);
+    const snapshot = captureSnapshot();
+    const engine = get().engine;
+    engine.addKeyframe(layerId, keyframe);
     set(s => ({
+      animatedProperties: _syncAnimatedProps(engine),
       revision: s.revision + 1,
       lastKeyframeMutation: { layerId, property: keyframe.property, time: keyframe.time },
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Add Keyframe', snapshot);
   },
 
   removeKeyframe: (keyframeId) => {
-    // Look up the keyframe data BEFORE removing it
+    const snapshot = captureSnapshot();
     const engine = get().engine;
     const kf = _findKeyframeData(engine, keyframeId);
     engine.removeKeyframe(keyframeId);
@@ -82,15 +90,17 @@ export const useKeyframeStore = create<KeyframeState>((set, get) => ({
       next.delete(keyframeId);
       return {
         selectedKeyframeIds: next,
+        animatedProperties: _syncAnimatedProps(engine),
         revision: s.revision + 1,
         lastKeyframeMutation: kf ? { layerId: kf.layerId, property: kf.property, time: kf.time } : null,
       };
     });
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Remove Keyframe', snapshot);
   },
 
   updateKeyframe: (keyframeId, patch) => {
-    // Look up BEFORE update to get original layer/property, then add time from patch or existing
+    const snapshot = captureSnapshot();
     const engine = get().engine;
     const existing = _findKeyframeData(engine, keyframeId);
     engine.updateKeyframe(keyframeId, patch);
@@ -103,9 +113,11 @@ export const useKeyframeStore = create<KeyframeState>((set, get) => ({
       } : null,
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Update Keyframe', snapshot);
   },
 
   moveKeyframe: (keyframeId, newTime) => {
+    const snapshot = captureSnapshot();
     const engine = get().engine;
     const existing = _findKeyframeData(engine, keyframeId);
     engine.moveKeyframe(keyframeId, newTime);
@@ -119,12 +131,13 @@ export const useKeyframeStore = create<KeyframeState>((set, get) => ({
       } : null,
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Move Keyframe', snapshot);
   },
 
   setInterpolation: (keyframeId, interpolation) => {
+    const snapshot = captureSnapshot();
     const engine = get().engine;
     const existing = _findKeyframeData(engine, keyframeId);
-    // When switching to bezier, ensure tangents exist (default to Easy Ease)
     const patch: Partial<Keyframe> = { interpolation };
     if (interpolation === 'bezier') {
       patch.inTangent = { ...EASY_EASE.in };
@@ -136,9 +149,11 @@ export const useKeyframeStore = create<KeyframeState>((set, get) => ({
       lastKeyframeMutation: existing ? { layerId: existing.layerId, property: existing.property, time: existing.time } : null,
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Set Interpolation', snapshot);
   },
 
   applyEasingPreset: (preset, keyframeIds) => {
+    const snapshot = captureSnapshot();
     const engine = get().engine;
     const p = EASING_PRESETS[preset];
     if (!p) return;
@@ -153,19 +168,22 @@ export const useKeyframeStore = create<KeyframeState>((set, get) => ({
     }
     set(s => ({ revision: s.revision + 1, lastKeyframeMutation: null }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Apply Easing Preset', snapshot);
   },
 
   deleteSelectedKeyframes: () => {
+    const snapshot = captureSnapshot();
+    const engine = get().engine;
     const ids = get().selectedKeyframeIds;
-    for (const id of ids) get().engine.removeKeyframe(id);
-    // Set mutation to null to force broader fallback scan — multiple keyframes
-    // across different layers/properties may have been deleted
+    for (const id of ids) engine.removeKeyframe(id);
     set(s => ({
       selectedKeyframeIds: new Set(),
+      animatedProperties: _syncAnimatedProps(engine),
       revision: s.revision + 1,
       lastKeyframeMutation: null,
     }));
     markProjectDirty();
+    useHistoryStore.getState().pushEntry('Delete Keyframes', snapshot);
   },
 
   toggleKeyframeSelection: (id) => {
@@ -175,7 +193,6 @@ export const useKeyframeStore = create<KeyframeState>((set, get) => ({
       return { selectedKeyframeIds: next };
     });
   },
-  // Selection changes don't mark dirty
 
   selectKeyframe: (id, add) => {
     set(s => {
@@ -198,20 +215,24 @@ export const useKeyframeStore = create<KeyframeState>((set, get) => ({
   getKeyframeIdsForLayer: (layerId) =>
     get().engine.getAllKeyframesForLayer(layerId).map(k => k.id),
 
-  toggleAnimatedProperty: (layerId, property) => set(s => {
-    const next = new Map(s.animatedProperties);
-    const existing = next.get(layerId);
-    if (existing?.has(property)) {
-      existing.delete(property);
-      if (existing.size === 0) next.delete(layerId);
-      s.engine.removeAllForProperty(layerId, property);
-    } else {
-      const props = existing ? new Set(existing) : new Set<string>();
-      props.add(property);
-      next.set(layerId, props);
-    }
-    return { animatedProperties: next, revision: s.revision + 1 };
-  }),
+  toggleAnimatedProperty: (layerId, property) => {
+    const snapshot = captureSnapshot();
+    set(s => {
+      const next = new Map(s.animatedProperties);
+      const existing = next.get(layerId);
+      if (existing?.has(property)) {
+        existing.delete(property);
+        if (existing.size === 0) next.delete(layerId);
+        s.engine.removeAllForProperty(layerId, property);
+      } else {
+        const props = existing ? new Set(existing) : new Set<string>();
+        props.add(property);
+        next.set(layerId, props);
+      }
+      return { animatedProperties: next, revision: s.revision + 1 };
+    });
+    useHistoryStore.getState().pushEntry('Toggle Animated Property', snapshot);
+  },
 
   isPropertyAnimated: (layerId, property) =>
     get().animatedProperties.get(layerId)?.has(property) ?? false,

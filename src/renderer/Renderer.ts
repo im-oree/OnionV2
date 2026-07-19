@@ -23,6 +23,7 @@ import { PropertyBinder } from '../animation/PropertyBinder';
 import { useKeyframeStore } from '../state/keyframeStore';
 import { useCompositionStore } from '../state/compositionStore';
 import { useToolStore } from '../state/toolStore';
+import { useTimelineStore } from '../state/timelineStore';
 import { TOOLS } from '../config/constants';
 import type { Composition } from '../types/composition';
 import type { CompData } from '../types/layer';
@@ -61,6 +62,7 @@ export class Renderer {
   private _interactiveHandler: ((e: Event) => void) | null = null;
   private _toolUnsubscribe: (() => void) | null = null;
   private _compUnsub: (() => void) | null = null;
+  private _kfUnsub: (() => void) | null = null;
   private _lastLayersSnapshot = '';
 
   /** Cached nested-comp renderers keyed by sourceCompId */
@@ -125,6 +127,20 @@ export class Renderer {
     this.ramPreviewBuilder.setRendererRef(() => this);
     this.frameDiskCache = new FrameDiskCache(this.frameCache);
     this.propertyBinder = new PropertyBinder(useKeyframeStore.getState().engine);
+
+    // Invalidate frame cache whenever keyframes change — stale cached frames
+    // would otherwise bypass keyframe evaluation in beforeRender.
+    let _lastKfRevision = useKeyframeStore.getState().revision;
+    this._kfUnsub = useKeyframeStore.subscribe((state) => {
+      if (state.revision === _lastKfRevision) return; // skip selection changes
+      _lastKfRevision = state.revision;
+      const cid = useCompositionStore.getState().activeCompositionId;
+      if (cid) {
+        this.frameCache.invalidateAll(cid);
+        this.renderLoop.requestRender();
+      }
+    });
+
     this.perfMonitor = new PerfMonitor();
     this.perfMonitor.setFrameCache(this.frameCache);
 
@@ -156,8 +172,16 @@ export class Renderer {
       this.perfMonitor.recordDroppedFrame();
     };
 
-    // Activity detection for idle caching
-    const reportActivity = () => this.ramPreviewBuilder.reportActivity();
+    // Activity detection for idle caching — gated by autoCache setting.
+    // When autoCache is off, idle caching is cancelled immediately so
+    // the background prefetch loop doesn't keep running unexpectedly.
+    const reportActivity = () => {
+      if (!useTimelineStore.getState().autoCache) {
+        this.ramPreviewBuilder.cancelIdleCaching();
+        return;
+      }
+      this.ramPreviewBuilder.reportActivity();
+    };
     document.addEventListener('mousedown', reportActivity, { passive: true });
     document.addEventListener('mousemove', reportActivity, { passive: true });
     document.addEventListener('keydown', reportActivity, { passive: true });
@@ -176,10 +200,26 @@ export class Renderer {
     this.renderLoop.beforeRender = () => {
       renderStart = performance.now();
 
-      // Check if current frame is cached — if so, display cached frame instead of 3D render
-      const comp = this._composition;
-      if (comp && !ModalTransform.activeAnywhere) {
-        const frame = Math.floor(comp.currentTime * comp.fps);
+      // CRITICAL: Read from store, not this._composition, because the store
+      // creates a new object each time setCurrentTime is called during playback.
+      // this._composition is a stale reference with currentTime stuck at 0.
+      const cs = useCompositionStore.getState();
+      const comp = cs.activeCompositionId
+        ? cs.compositions.find(c => c.id === cs.activeCompositionId)
+        : null;
+      if (!comp) return;
+
+      const frame = Math.floor(comp.currentTime * comp.fps);
+      const totalKf = this.propertyBinder.engine.totalKeyframes;
+
+      // Only use cache when ZERO keyframes exist in the entire project.
+      // This prevents stale cached frames from bypassing keyframe animation —
+      // even if the cache was created before keyframes were added, the
+      // totalKeyframes check ensures we never display a cached snapshot
+      // when any layer has animated properties.
+      const canUseCache = totalKf === 0 && !ModalTransform.activeAnywhere;
+
+      if (canUseCache) {
         const cached = this.frameCache.get(comp.id, frame);
         if (cached && cached.imageBitmap) {
           this._displayCachedFrame(cached.imageBitmap);
@@ -196,17 +236,17 @@ export class Renderer {
       this._hideCachedFrameDisplay();
       this.perfMonitor.recordCacheAccess(false);
       // Re-cap FPS to comp's target when doing full 3D renders
-      if (this._composition && this.renderLoop.targetFps === 0) {
-        this.renderLoop.setTargetFps(this._composition.fps);
+      if (this.renderLoop.targetFps === 0) {
+        this.renderLoop.setTargetFps(comp.fps);
       }
 
-      // M11: Evaluate keyframed properties and apply as runtime overrides.
-      // Always evaluate when there are keyframes — not just during playback.
-      // This ensures scrubbing the playhead also shows keyframed values.
-      if (comp && this.propertyBinder.engine.totalKeyframes > 0) {
-        const frame = Math.floor(comp.currentTime * comp.fps);
-        this.propertyBinder.evaluateFrame(comp.id, frame);
-        if (this.propertyBinder.hasOverrides) {
+      // Apply keyframe overrides whenever keyframes exist in the project.
+      // This shows the correct interpolated position during playback AND
+      // when scrubbing the playhead. The ModalTransform guard ensures
+      // overrides don't fight the user during interactive drag operations.
+      if (totalKf > 0 && !ModalTransform.activeAnywhere) {
+        const count = this.propertyBinder.evaluateFrame(comp.id, frame);
+        if (count > 0 && this.propertyBinder.hasOverrides) {
           this.layerSync.setRuntimeOverridesActive(true);
           this.layerSync.applyRuntimeOverrides(this.propertyBinder.overrides);
         }
@@ -436,11 +476,17 @@ export class Renderer {
   /** Enable/disable frame capture — unused; RAMPreviewBuilder captures directly via captureFrame(). */
   /** Run the before-render hooks (visibility, nested comps, effects) — used by RAMPreviewBuilder for sync render */
   runBeforeRenderHooks(): void {
-    const comp = this._composition;
+    // CRITICAL: Read from store, not this._composition — same stale-ref issue as beforeRender.
+    const cs = useCompositionStore.getState();
+    const comp = cs.activeCompositionId
+      ? cs.compositions.find(c => c.id === cs.activeCompositionId)
+      : null;
     if (comp) {
       const frame = Math.floor(comp.currentTime * comp.fps);
       this.propertyBinder.evaluateFrame(comp.id, frame);
-      if (this.propertyBinder.hasOverrides) {
+      // Apply keyframe overrides whenever keyframes exist.
+      // The ModalTransform guard prevents interference during drag.
+      if (this.propertyBinder.hasOverrides && !ModalTransform.activeAnywhere) {
         this.layerSync.setRuntimeOverridesActive(true);
         this.layerSync.applyRuntimeOverrides(this.propertyBinder.overrides);
       }
@@ -630,6 +676,7 @@ export class Renderer {
       this._toolUnsubscribe = null;
     }
     if (this._compUnsub) { this._compUnsub(); this._compUnsub = null; }
+    if (this._kfUnsub) { this._kfUnsub(); this._kfUnsub = null; }
     this.cacheInvalidator.dispose();
     this.renderScheduler.dispose();
     this.adaptiveResolution.dispose();

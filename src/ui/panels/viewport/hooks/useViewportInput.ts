@@ -10,9 +10,60 @@ import { useToolStore, type ToolId } from '../../../../state/toolStore';
 import { TOOLS } from '../../../../config/constants';
 import { createDefaultLayer } from '../../../../config/defaults';
 import type { Layer, CompData } from '../../../../types/layer';
+import { motionSketch } from '../../properties/motionSketch';
+import { usePenToolStore } from '../../../../state/penToolStore';
+import { computePathBounds } from '../../../../types/layer';
 
 function genId(): string {
   return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): { dist: number; t: number } {
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return { dist: Math.hypot(px - ax, py - ay), t: 0 };
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + dx * t, cy = ay + dy * t;
+  return { dist: Math.hypot(px - cx, py - cy), t };
+}
+
+function finalizePenPath(commands: import('../../../../types/layer').PathCommand[]): void {
+  const cs = useCompositionStore.getState();
+  const compId = cs.activeCompositionId;
+  if (!compId) return;
+  const comp = cs.compositions.find((c) => c.id === compId);
+  if (!comp) return;
+
+  const bounds = computePathBounds(commands);
+  const cx = (bounds.minX + bounds.maxX) / 2;
+  const cy = (bounds.minY + bounds.maxY) / 2;
+
+  // Center commands around 0,0
+  const centered = commands.map((c) => ({
+    type: c.type,
+    points: c.points.map((v: number, i: number) => i % 2 === 0 ? v - cx : v - cy),
+  }));
+  const centeredBounds = computePathBounds(centered);
+
+  const base = createDefaultLayer('shape', `Path ${comp.layers.length + 1}`);
+  const layer: Layer = {
+    ...base, id: genId(),
+    zIndex: comp.layers.length + 1,
+    transform: {
+      position: { x: cx, y: cy },
+      scale: { x: 100, y: 100 }, rotation: 0,
+      anchorPoint: { x: 0, y: 0 },
+    },
+    data: {
+      type: 'path' as const,
+      commands: centered,
+      bounds: centeredBounds,
+      fill: { type: 'solid' as const, color: '#ffffff', opacity: 100 },
+    },
+  };
+  cs.addLayer(compId, layer);
+  useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
 }
 
 interface UseViewportInputOptions {
@@ -347,6 +398,61 @@ export function useViewportInput({
     }
 
     const onMouseDown = (e: MouseEvent) => {
+      // Pen edit mode: Alt+click on path segment inserts anchor
+      const penStoreEarly = usePenToolStore.getState();
+      if (penStoreEarly.mode === 'edit' && e.altKey && e.button === 0) {
+        const compState = useCompositionStore.getState();
+        const compId = compState.activeCompositionId;
+        const layerId = penStoreEarly.editingLayerId;
+        if (compId && layerId && cmRef.current) {
+          const comp = compState.compositions.find(c => c.id === compId);
+          const layer = comp?.layers.find(l => l.id === layerId);
+          if (layer?.type === 'shape') {
+            const data = layer.data as any;
+            if (data?.type === 'path') {
+              const rectEl = el.getBoundingClientRect();
+              const mx = e.clientX - rectEl.left;
+              const my = e.clientY - rectEl.top;
+              const world = cmRef.current.screenToWorld(mx, my);
+              const sx = layer.transform.scale.x / 100;
+              const sy = layer.transform.scale.y / 100;
+              const rad = -(layer.transform.rotation || 0) * (Math.PI / 180);
+              const cos = Math.cos(rad);
+              const sin = Math.sin(rad);
+              // Transform from world to local: subtract position, rotate by -rotation, divide by scale
+              const dx = world.x - layer.transform.position.x;
+              const dy = world.y - layer.transform.position.y;
+              const lx = (dx * cos - dy * sin) / sx;
+              const ly = (dx * sin + dy * cos) / sy;
+              // Find nearest segment
+              const anchors = data.commands
+                .filter((c: any) => c.type === 'M' || c.type === 'L' || c.type === 'C' || c.type === 'Q')
+                .map((c: any) => {
+                  const p = c.points;
+                  if (c.type === 'C') return { x: p[4], y: p[5] };
+                  if (c.type === 'Q') return { x: p[2], y: p[3] };
+                  return { x: p[0], y: p[1] };
+                });
+              let bestIdx = -1;
+              let bestDist = Infinity;
+              for (let i = 0; i < anchors.length - 1; i++) {
+                const a = anchors[i], b = anchors[i + 1];
+                const d = distToSegment(lx, ly, a.x, a.y, b.x, b.y);
+                if (d.dist < bestDist) { bestDist = d.dist; bestIdx = i; }
+              }
+              if (bestIdx !== -1 && bestDist < 20) {
+                const a = anchors[bestIdx], b = anchors[bestIdx + 1];
+                const seg = distToSegment(lx, ly, a.x, a.y, b.x, b.y);
+                usePenToolStore.getState().insertAnchor(layerId, bestIdx, seg.t);
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+              }
+            }
+          }
+        }
+      }
+
       // Middle mouse = pan
       if (e.button === 1) {
         isPanning.current = true;
@@ -388,21 +494,53 @@ export function useViewportInput({
       if (tool === (TOOLS.PEN as ToolId)) {
         const cm = cmRef.current;
         if (!cm) return;
+        e.preventDefault();
+        e.stopPropagation();
         const world = cm.screenToWorld(mouseX, mouseY);
-        const compState = useCompositionStore.getState();
-        const compId = compState.activeCompositionId;
-        if (!compId) return;
-        const comp = compState.compositions.find((c) => c.id === compId);
-        if (!comp) return;
-        const count = comp.layers.filter((l) => l.type === 'shape').length + 1;
-        const base = createDefaultLayer('shape', `Path ${count}`);
-        const layer: Layer = {
-          ...base, id: genId(), zIndex: comp.layers.length + 1,
-          transform: { position: { x: world.x, y: world.y }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
-          data: { type: 'rectangle', width: 50, height: 50, borderRadius: 0 },
+        const penStore = usePenToolStore.getState();
+
+        // If not drawing, start a new path
+        if (penStore.mode !== 'draw') {
+          penStore.startDrawing();
+        }
+
+        // Check if clicking near the first anchor to close
+        const firstAnchor = penStore.drawingCommands.length > 0
+          ? penStore.drawingCommands[0].points
+          : null;
+        if (firstAnchor && penStore.drawingCommands.length > 2) {
+          const first = cm.worldToScreen(firstAnchor[0], firstAnchor[1]);
+          const dist = Math.hypot(first.x - mouseX, first.y - mouseY);
+          if (dist < 10) {
+            const cmds = penStore.closePath();
+            if (cmds) finalizePenPath(cmds);
+            return;
+          }
+        }
+
+        // Add anchor. If user drags, we'll set an out-handle in mousemove.
+        const startClientX = e.clientX;
+        const startClientY = e.clientY;
+        let hasHandle = false;
+
+        penStore.addAnchor(world.x, world.y);
+
+        const mm = (ev: MouseEvent) => {
+          const dx = ev.clientX - startClientX;
+          const dy = ev.clientY - startClientY;
+          if (Math.hypot(dx, dy) > 3) {
+            hasHandle = true;
+            const handleWorld = cm.screenToWorld(ev.clientX - el.getBoundingClientRect().left, ev.clientY - el.getBoundingClientRect().top);
+            usePenToolStore.getState().updateLastHandle(handleWorld.x, handleWorld.y);
+            requestRender?.();
+          }
         };
-        useCompositionStore.getState().addLayer(compId, layer);
-        useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+        const mu = () => {
+          document.removeEventListener('mousemove', mm);
+          document.removeEventListener('mouseup', mu);
+        };
+        document.addEventListener('mousemove', mm);
+        document.addEventListener('mouseup', mu);
         return;
       }
 
@@ -437,11 +575,38 @@ export function useViewportInput({
         return;
       }
 
-      if (tool === (TOOLS.SHAPE_RECT as ToolId) || tool === (TOOLS.SHAPE_ELLIPSE as ToolId)) {
+      if (tool === (TOOLS.SHAPE_RECT as ToolId) || tool === (TOOLS.SHAPE_ELLIPSE as ToolId) || tool === (TOOLS.SHAPE_POLYGON as ToolId)) {
         boxStart.current = { x: mouseX, y: mouseY };
         isDrawing.current = true;
         drawSvg = createOverlay('22');
         return;
+      }
+
+      // Alt+drag = Motion Sketch
+      if (e.altKey && cmRef.current) {
+        const cam = cmRef.current;
+        const started = motionSketch.start((sx: number, sy: number) => cam.screenToWorld(sx, sy));
+        if (started) {
+          e.preventDefault();
+          e.stopPropagation();
+          document.body.style.cursor = 'crosshair';
+          motionSketch.addSample(mouseX, mouseY);
+          const mm = (ev: MouseEvent) => {
+            const r = el.getBoundingClientRect();
+            motionSketch.addSample(ev.clientX - r.left, ev.clientY - r.top);
+            requestRender?.();
+          };
+          const mu = () => {
+            document.body.style.cursor = '';
+            motionSketch.stop();
+            document.removeEventListener('mousemove', mm);
+            document.removeEventListener('mouseup', mu);
+            requestRender?.();
+          };
+          document.addEventListener('mousemove', mm);
+          document.addEventListener('mouseup', mu);
+          return;
+        }
       }
 
       // MOVE/ROTATE/SCALE/SELECT: hit test first
@@ -591,7 +756,7 @@ export function useViewportInput({
       }
     };
 
-    const onMouseUp = (e: MouseEvent) => {
+    const onMouseUp = async (e: MouseEvent) => {
       if (e.button === 1) {
         isPanning.current = false;
         document.body.style.cursor = '';
@@ -623,48 +788,62 @@ export function useViewportInput({
         const comp = compState.compositions.find((c) => c.id === compId);
         if (!comp) return;
 
-        const isRect = tool === (TOOLS.SHAPE_RECT as ToolId);
-        const count = comp.layers.filter((l) => l.type === 'shape').length + 1;
         const worldPerPixel = 1 / cmRef.current.zoom;
 
         let worldW: number, worldH: number, centerWorld: { x: number; y: number };
 
         if (dragDist < 5) {
-          // Fallback: create default-size shape at click point
           const clickWorld = cmRef.current.screenToWorld(boxStart.current.x, boxStart.current.y);
           centerWorld = { x: clickWorld.x, y: clickWorld.y };
-          worldW = 200;
-          worldH = 150;
+          worldW = 200; worldH = 150;
         } else if (altHeld) {
-          // Alt: start point is center, drag defines half-size
           centerWorld = cmRef.current.screenToWorld(boxStart.current.x, boxStart.current.y);
           let halfW = Math.abs(dx) * worldPerPixel;
           let halfH = Math.abs(dy) * worldPerPixel;
           if (shiftHeld) { const s = Math.max(halfW, halfH); halfW = s; halfH = s; }
-          worldW = halfW * 2;
-          worldH = halfH * 2;
+          worldW = halfW * 2; worldH = halfH * 2;
         } else {
-          // Normal: corner to corner
-          let dw = Math.abs(dx);
-          let dh = Math.abs(dy);
+          let dw = Math.abs(dx), dh = Math.abs(dy);
           if (shiftHeld) { const s = Math.max(dw, dh); dw = s; dh = s; }
           const startWorld = cmRef.current.screenToWorld(boxStart.current.x, boxStart.current.y);
-          const endWorld = cmRef.current.screenToWorld(boxStart.current.x + (dx >= 0 ? dw : -dw), boxStart.current.y + (dy >= 0 ? dh : -dh));
+          const endWorld = cmRef.current.screenToWorld(
+            boxStart.current.x + (dx >= 0 ? dw : -dw),
+            boxStart.current.y + (dy >= 0 ? dh : -dh),
+          );
           worldW = Math.abs(endWorld.x - startWorld.x);
           worldH = Math.abs(endWorld.y - startWorld.y);
-          centerWorld = {
-            x: (startWorld.x + endWorld.x) / 2,
-            y: (startWorld.y + endWorld.y) / 2,
-          };
+          centerWorld = { x: (startWorld.x + endWorld.x) / 2, y: (startWorld.y + endWorld.y) / 2 };
         }
 
-        const base = createDefaultLayer('shape', `${isRect ? 'Rectangle' : 'Ellipse'} ${count}`);
+        // Read active shape preset from tool store
+        const presetId = useToolStore.getState().toolSettings.currentShapePresetId ?? 'rectangle';
+        const { defaultShapeFill, defaultShapeStroke } = await import('../../../../types/layer');
+        const { getPresetById, defaultParamsFor } = await import('../../../../shapes/presets');
+        const preset = getPresetById(presetId);
+        const params = preset ? defaultParamsFor(preset) : {};
+        const count = comp.layers.filter(l => l.type === 'shape').length + 1;
+
+        const W = Math.max(1, Math.round(worldW));
+        const H = Math.max(1, Math.round(worldH));
+
+        // Choose base shape type based on preset
+        let baseData: any;
+        if (presetId === 'ellipse' || presetId === 'circle') {
+          baseData = { type: 'ellipse', radiusX: W / 2, radiusY: H / 2 };
+        } else {
+          baseData = { type: 'rectangle', width: W, height: H, borderRadius: 0 };
+        }
+        baseData.presetId = presetId;
+        baseData.presetParams = params;
+        baseData.fill = defaultShapeFill();
+        baseData.stroke = defaultShapeStroke();
+
+        const base = createDefaultLayer('shape', `${preset?.label ?? 'Shape'} ${count}`);
         const layer: Layer = {
-          ...base, id: genId(), zIndex: comp.layers.length + 1,
-          transform: { position: { x: centerWorld.x, y: centerWorld.y }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
-          data: isRect
-            ? { type: 'rectangle', width: Math.max(1, Math.round(worldW)), height: Math.max(1, Math.round(worldH)), borderRadius: 0 }
-            : { type: 'ellipse', radiusX: Math.max(1, Math.round(worldW / 2)), radiusY: Math.max(1, Math.round(worldH / 2)) },
+          ...base, id: genId(),
+          zIndex: comp.layers.length + 1,
+          transform: { position: centerWorld, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
+          data: baseData,
         };
         useCompositionStore.getState().addLayer(compId, layer);
         useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
@@ -699,6 +878,25 @@ export function useViewportInput({
         isDrawing.current = false;
         if (drawSvg?.parentElement) drawSvg.parentElement.removeChild(drawSvg);
         drawSvg = null;
+      }
+
+      // Pen tool: Enter finishes, Escape cancels
+      const penState = usePenToolStore.getState();
+      if (penState.mode === 'draw') {
+        if (e.key === 'Enter') {
+          const cmds = penState.finishPath();
+          if (cmds && cmds.length >= 2) finalizePenPath(cmds);
+          e.preventDefault();
+        } else if (e.key === 'Escape') {
+          penState.cancelDrawing();
+          e.preventDefault();
+        }
+      }
+      if (penState.mode === 'edit') {
+        if (e.key === 'Escape' || e.key === 'Enter') {
+          penState.stopEditing();
+          e.preventDefault();
+        }
       }
     };
 

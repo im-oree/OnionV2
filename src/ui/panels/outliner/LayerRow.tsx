@@ -43,8 +43,18 @@ export const LayerRow: React.FC<LayerRowProps> = ({
 
   const handleDoubleClickInternal = useCallback(() => {
     if (layer.type === 'comp' && onDoubleClick) { onDoubleClick(layer.id); return; }
+    // Path layers: double-click enters point-edit mode
+    if (layer.type === 'shape' && (layer.data as any)?.type === 'path') {
+      import('../../../state/penToolStore').then(({ usePenToolStore }) => {
+        import('../../../state/toolStore').then(({ useToolStore }) => {
+          useToolStore.getState().setActiveTool('pen');
+          usePenToolStore.getState().startEditing(layer.id);
+        });
+      });
+      return;
+    }
     if (!layer.locked) setEditing(true);
-  }, [layer.locked, layer.type, layer.id, onDoubleClick]);
+  }, [layer.locked, layer.type, layer.id, layer.data, onDoubleClick]);
 
   const handleRenameSubmit = useCallback(() => {
     setEditing(false);

@@ -16,7 +16,7 @@ import { fboPool } from './FBOPool';
 import type { EffectInstance, EffectDefinition } from '../../types/effect';
 import { effectRegistry } from './EffectRegistry';
 
-/** Global quad mesh shared by all effects */
+/** Global quad mesh shared by all effects — material is swapped per-pass */
 let effectQuad: THREE.Mesh | null = null;
 function getEffectQuad(): THREE.Mesh {
   if (!effectQuad) {
@@ -26,6 +26,19 @@ function getEffectQuad(): THREE.Mesh {
     effectQuad.frustumCulled = false;
   }
   return effectQuad;
+}
+
+/** Dedicated fullscreen quad + material for blit operations — avoids type conflict with ShaderMaterial */
+let blitQuad: THREE.Mesh | null = null;
+function getBlitQuad(texture: THREE.Texture): THREE.Mesh {
+  if (!blitQuad) {
+    const geo = new THREE.PlaneGeometry(2, 2);
+    const mat = new THREE.MeshBasicMaterial({ depthWrite: false, depthTest: false });
+    blitQuad = new THREE.Mesh(geo, mat);
+    blitQuad.frustumCulled = false;
+  }
+  (blitQuad.material as THREE.MeshBasicMaterial).map = texture;
+  return blitQuad;
 }
 
 export class EffectChain {
@@ -136,11 +149,9 @@ export class EffectChain {
     }
   }
 
-  /** Blit a texture to an FBO */
+  /** Blit a texture to an FBO using a dedicated MeshBasicMaterial quad */
   private _blit(renderer: THREE.WebGLRenderer, texture: THREE.Texture, target: THREE.WebGLRenderTarget): void {
-    const quad = getEffectQuad();
-    const mat = quad.material as THREE.MeshBasicMaterial;
-    (mat as any).map = texture;
+    const quad = getBlitQuad(texture);
     renderer.setRenderTarget(target);
     renderer.clear();
     renderer.render(quad, this._identityCamera());
@@ -167,11 +178,12 @@ export class EffectChain {
       }
     }
 
-    // Try to load shader async — for now, create a simple pass-through fallback
-    // In production, shaderLoader.createMaterial is used
-    const vs = `void main() {
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }`;
+    // Standard fullscreen quad vertex shader with UV varying
+    const vs = `varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`;
     const fs = this._getFallbackShader(def.type);
 
     const mat = new THREE.ShaderMaterial({
@@ -402,10 +414,14 @@ export class EffectChain {
       }`;
   }
 
+  private _identCam: THREE.OrthographicCamera | null = null;
+
   private _identityCamera(): THREE.OrthographicCamera {
-    const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    cam.position.z = 0;
-    return cam;
+    if (!this._identCam) {
+      this._identCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      this._identCam.position.z = 0;
+    }
+    return this._identCam;
   }
 
   dispose(): void {

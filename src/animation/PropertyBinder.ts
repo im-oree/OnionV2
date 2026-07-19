@@ -1,12 +1,3 @@
-/**
- * PropertyBinder — at each frame, evaluates all animated properties for all layers
- * and stores the results as RUNTIME OVERRIDES (not modifying the composition store).
- * The renderer applies these overrides directly to meshes during render.
- * 
- * This is critical: we NEVER modify the composition store during playback because
- * that would overwrite the original keyframe values, making it impossible to
- * re-evaluate the animation from the original data.
- */
 import type { KeyframeEngine } from './KeyframeEngine';
 import type { Transform } from '../types/layer';
 import { useEffectsStore } from '../state/effectsStore';
@@ -14,7 +5,6 @@ import { useCompositionStore } from '../state/compositionStore';
 import { useExpressionStore } from '../state/expressionStore';
 import { expressionEngine } from './ExpressionEngine';
 
-/** Runtime transform overrides for a single layer */
 export interface RuntimeTransformOverride {
   position?: { x: number; y: number };
   scale?: { x: number; y: number };
@@ -23,15 +13,8 @@ export interface RuntimeTransformOverride {
   opacity?: number;
 }
 
-/** Map of layerId → transform overrides */
 export type RuntimeOverrides = Map<string, RuntimeTransformOverride>;
 
-/**
- * Animation property paths map to layer transform/opacity/effect fields.
- * "transform.position.x" → layer.transform.position.x
- * "effect.<effectId>.<paramId>" → effectsStore parameter value
- * "opacity"             → layer.opacity
- */
 export class PropertyBinder {
   readonly engine: KeyframeEngine;
   private _overrides: RuntimeOverrides = new Map();
@@ -41,43 +24,55 @@ export class PropertyBinder {
     this.engine = engine;
   }
 
-  /** Get current runtime overrides (read-only access for renderer) */
-  get overrides(): RuntimeOverrides {
-    return this._overrides;
+  get overrides(): RuntimeOverrides { return this._overrides; }
+  get hasOverrides(): boolean { return this._overrides.size > 0; }
+  setActive(active: boolean): void { this._active = active; if (!active) this.clearOverrides(); }
+  get isActive(): boolean { return this._active; }
+  clearOverrides(): void { this._overrides.clear(); }
+
+  /** Build the shared expression context for a layer at a given frame */
+  private _buildExprCtx(layer: { id: string; name: string }, frame: number, comp: { id: string; width: number; height: number; duration: number; fps: number; layers: { id: string; name: string }[] }, evalFrame: number, value: number | number[]): Record<string, any> {
+    return {
+      time: frame / comp.fps, frame: evalFrame, fps: comp.fps, value,
+      layerId: layer.id, layerName: layer.name,
+      compId: comp.id,
+      compWidth: comp.width, compHeight: comp.height,
+      compDuration: comp.duration, compFps: comp.fps,
+      layerNameMap: Object.fromEntries(comp.layers.map(l => [l.name, l.id])),
+      layerIds: comp.layers.map(l => l.id),
+      getLayerProperty: (targetLayerId: string, propertyPath: string, atTime?: number) => {
+        const evalTime = atTime != null ? Math.floor(atTime * (comp.fps ?? 30)) : frame;
+        const targetExpr = useExpressionStore.getState().getExpression(targetLayerId, propertyPath);
+        if (targetExpr?.enabled && !targetExpr.compiled.error) {
+          try {
+            // Recursion guard: simple depth counter prevents infinite cycles
+            if ((this as any)._evalDepth > 8) return engine.evaluate(targetLayerId, propertyPath, evalTime).value;
+            (this as any)._evalDepth = ((this as any)._evalDepth ?? 0) + 1;
+            const baseVal = engine.evaluate(targetLayerId, propertyPath, evalTime).value;
+            const result = expressionEngine.evaluate(targetExpr.compiled, {
+              time: evalTime / (comp.fps ?? 30), frame: evalTime,
+              fps: comp.fps ?? 30, value: baseVal,
+              layerId: targetLayerId,
+              compWidth: comp.width ?? 1920, compHeight: comp.height ?? 1080,
+              compDuration: comp.duration ?? 10, compFps: comp.fps ?? 30,
+            });
+            (this as any)._evalDepth--;
+            return result;
+          } catch {
+            (this as any)._evalDepth = 0;
+          }
+        }
+        return engine.evaluate(targetLayerId, propertyPath, evalTime).value;
+      },
+      getKeyframeTimes: (lid: string, prop: string) =>
+        engine.getKeyframesForProperty(lid, prop).map(k => k.time),
+      getKeyframeValues: (lid: string, prop: string) =>
+        engine.getKeyframesForProperty(lid, prop).map(k => k.value),
+    };
   }
 
-  /** Check if any overrides are active */
-  get hasOverrides(): boolean {
-    return this._overrides.size > 0;
-  }
-
-  /** Mark as active (playback started) */
-  setActive(active: boolean): void {
-    this._active = active;
-    if (!active) {
-      this.clearOverrides();
-    }
-  }
-
-  get isActive(): boolean {
-    return this._active;
-  }
-
-  /** Clear all runtime overrides */
-  clearOverrides(): void {
-    this._overrides.clear();
-  }
-
-  /**
-   * Evaluate all animated properties for the active composition at the given frame.
-   * Stores results as runtime overrides (does NOT modify the composition store).
-   * Returns number of properties evaluated (for perf tracking).
-   */
   evaluateFrame(compId: string, frame: number): number {
-    // Clear previous overrides for this composition
-    // (we rebuild them every frame based on current playhead)
     this._overrides.clear();
-
     const comp = useCompositionStore.getState().compositions.find((c) => c.id === compId);
     if (!comp) return 0;
 
@@ -85,106 +80,97 @@ export class PropertyBinder {
 
     for (const layer of comp.layers) {
       const paths = this.engine.getAllAnimatedProperties(layer.id);
-      if (paths.length === 0) continue;
+      const exprCheckPaths = ['transform.position', 'transform.scale', 'transform.rotation', 'opacity', 'transform.anchorPoint'];
+      const hasAnyExpr = exprCheckPaths.some(p => {
+        const e = useExpressionStore.getState().getExpression(layer.id, p);
+        return e && e.enabled && !e.compiled.error;
+      });
+      if (paths.length === 0 && !hasAnyExpr) continue;
 
-      const override: RuntimeTransformOverride = {};
-      const transformUpdate: Partial<Transform> = {};
-      let transformNeedsUpdate = false;
-      let opacityUpdate: number | null = null;
-      // Phase 5: Track effect param updates
+      const override: RuntimeTransformOverride = {
+        position: { x: layer.transform.position.x, y: layer.transform.position.y },
+        scale: { x: layer.transform.scale.x, y: layer.transform.scale.y },
+        rotation: layer.transform.rotation,
+        anchorPoint: { x: layer.transform.anchorPoint.x, y: layer.transform.anchorPoint.y },
+        opacity: layer.opacity,
+      };
+
+      let touched = false;
       const effectUpdates: Array<{ effectId: string; paramId: string; value: any }> = [];
 
       for (const path of paths) {
         const result = this.engine.evaluate(layer.id, path, frame);
         let val = result.value;
 
-        // Expressions override keyframe evaluation
-        const expr = useExpressionStore.getState().getExpression(layer.id, path);
-        if (expr && expr.enabled && !expr.compiled.error) {
+        let evalFrame = frame;
+        const exprEntry = useExpressionStore.getState().getExpression(layer.id, path);
+        if (exprEntry?.enabled && !exprEntry.compiled.error) {
+          const src = exprEntry.source;
+          const kfs = this.engine.getKeyframesForProperty(layer.id, path);
+          if (kfs.length >= 2) {
+            const first = kfs[0].time, last = kfs[kfs.length - 1].time;
+            const span = last - first;
+            if (span > 0) {
+              if (/loopOut\s*\(/.test(src) && frame > last) {
+                const overflow = (frame - last) % span;
+                evalFrame = first + overflow;
+                val = this.engine.evaluate(layer.id, path, evalFrame).value;
+              } else if (/loopIn\s*\(/.test(src) && frame < first) {
+                const underflow = (first - frame) % span;
+                evalFrame = last - underflow;
+                val = this.engine.evaluate(layer.id, path, evalFrame).value;
+              }
+            }
+          }
+        }
+
+        if (exprEntry && exprEntry.enabled && !exprEntry.compiled.error) {
           try {
-            val = expressionEngine.evaluate(expr.compiled, {
-              time: frame / comp.fps,
-              frame,
-              fps: comp.fps,
-              value: val,
-              layerId: layer.id,
-              compWidth: comp.width,
-              compHeight: comp.height,
-              compDuration: comp.duration,
-            });
+            val = expressionEngine.evaluate(exprEntry.compiled,
+              this._buildExprCtx(layer, frame, comp, evalFrame, val));
           } catch { /* keep val */ }
         }
 
-        // Phase 5: Effect parameter keyframing
-        // propertyPath format: "effect.<effectId>.<paramId>"
         if (path.startsWith('effect.')) {
           const parts = path.split('.');
           if (parts.length >= 3) {
-            const effectId = parts[1];
-            const paramId = parts.slice(2).join('.');
-            effectUpdates.push({ effectId, paramId, value: val });
+            effectUpdates.push({ effectId: parts[1], paramId: parts.slice(2).join('.'), value: val });
           }
           continue;
         }
 
-        // Determine which field to update based on path
-        if (path.startsWith('transform.')) {
-          const field = path.slice('transform.'.length);
-          if (field === 'position.x') {
-            transformUpdate.position = { ...layer.transform.position, x: val as number };
-            transformNeedsUpdate = true;
-          } else if (field === 'position.y') {
-            transformUpdate.position = { ...layer.transform.position, y: val as number };
-            transformNeedsUpdate = true;
-          } else if (field === 'position' && Array.isArray(val)) {
-            transformUpdate.position = { x: val[0], y: val[1] };
-            transformNeedsUpdate = true;
-          } else if (field === 'scale.x') {
-            transformUpdate.scale = { ...layer.transform.scale, x: val as number };
-            transformNeedsUpdate = true;
-          } else if (field === 'scale.y') {
-            transformUpdate.scale = { ...layer.transform.scale, y: val as number };
-            transformNeedsUpdate = true;
-          } else if (field === 'scale' && Array.isArray(val)) {
-            transformUpdate.scale = { x: val[0], y: val[1] };
-            transformNeedsUpdate = true;
-          } else if (field === 'rotation') {
-            transformUpdate.rotation = val as number;
-            transformNeedsUpdate = true;
-          } else if (field === 'anchorPoint.x') {
-            transformUpdate.anchorPoint = { ...layer.transform.anchorPoint, x: val as number };
-            transformNeedsUpdate = true;
-          } else if (field === 'anchorPoint.y') {
-            transformUpdate.anchorPoint = { ...layer.transform.anchorPoint, y: val as number };
-            transformNeedsUpdate = true;
-          }
+        if (path === 'transform.position' && Array.isArray(val)) {
+          override.position = { x: val[0], y: val[1] }; touched = true;
+        } else if (path === 'transform.position.x') {
+          override.position = { x: val as number, y: override.position!.y }; touched = true;
+        } else if (path === 'transform.position.y') {
+          override.position = { x: override.position!.x, y: val as number }; touched = true;
+        } else if (path === 'transform.scale' && Array.isArray(val)) {
+          override.scale = { x: val[0], y: val[1] }; touched = true;
+        } else if (path === 'transform.scale.x') {
+          override.scale = { x: val as number, y: override.scale!.y }; touched = true;
+        } else if (path === 'transform.scale.y') {
+          override.scale = { x: override.scale!.x, y: val as number }; touched = true;
+        } else if (path === 'transform.rotation') {
+          override.rotation = val as number; touched = true;
+        } else if (path === 'transform.anchorPoint' && Array.isArray(val)) {
+          override.anchorPoint = { x: val[0], y: val[1] }; touched = true;
+        } else if (path === 'transform.anchorPoint.x') {
+          override.anchorPoint = { x: val as number, y: override.anchorPoint!.y }; touched = true;
+        } else if (path === 'transform.anchorPoint.y') {
+          override.anchorPoint = { x: override.anchorPoint!.x, y: val as number }; touched = true;
         } else if (path === 'opacity') {
-          opacityUpdate = val as number;
+          override.opacity = val as number; touched = true;
         }
       }
 
-      // Build transform override (merge with existing if any)
-      if (transformNeedsUpdate) {
-        const existing = layer.transform;
-        override.position = transformUpdate.position ?? existing.position;
-        override.scale = transformUpdate.scale ?? existing.scale;
-        override.rotation = transformUpdate.rotation ?? existing.rotation;
-        override.anchorPoint = transformUpdate.anchorPoint ?? existing.anchorPoint;
-      }
-      if (opacityUpdate !== null) {
-        override.opacity = opacityUpdate;
-      }
-
-      // Apply effect param updates (these go directly to effects store, not override)
       for (const eu of effectUpdates) {
         useEffectsStore.getState().setParameterValue(layer.id, eu.effectId, eu.paramId, eu.value);
         updated++;
       }
 
-      // Also evaluate expressions on properties WITHOUT keyframes
-      const exprPaths = ['transform.position', 'transform.scale', 'transform.rotation', 'opacity'];
-      for (const path of exprPaths) {
-        if (paths.includes(path)) continue; // already handled above
+      for (const path of exprCheckPaths) {
+        if (paths.includes(path)) continue;
         const expr = useExpressionStore.getState().getExpression(layer.id, path);
         if (!expr || !expr.enabled || expr.compiled.error) continue;
         let originalVal: number | number[];
@@ -192,30 +178,23 @@ export class PropertyBinder {
         else if (path === 'transform.position') originalVal = [layer.transform.position.x, layer.transform.position.y];
         else if (path === 'transform.scale') originalVal = [layer.transform.scale.x, layer.transform.scale.y];
         else if (path === 'transform.rotation') originalVal = layer.transform.rotation;
+        else if (path === 'transform.anchorPoint') originalVal = [layer.transform.anchorPoint.x, layer.transform.anchorPoint.y];
         else continue;
         let evalVal: number | number[];
         try {
-          evalVal = expressionEngine.evaluate(expr.compiled, {
-            time: frame / comp.fps, frame, fps: comp.fps, value: originalVal,
-            layerId: layer.id, compWidth: comp.width, compHeight: comp.height, compDuration: comp.duration,
-          });
+          evalVal = expressionEngine.evaluate(expr.compiled,
+            this._buildExprCtx(layer, frame, comp, frame, originalVal));
         } catch { continue; }
-        // Write into override
-        if (path === 'opacity' && typeof evalVal === 'number') {
-          override.opacity = evalVal;
-        } else if (path === 'transform.position' && Array.isArray(evalVal)) {
-          override.position = { x: evalVal[0], y: evalVal[1] };
-        } else if (path === 'transform.scale' && Array.isArray(evalVal)) {
-          override.scale = { x: evalVal[0], y: evalVal[1] };
-        } else if (path === 'transform.rotation' && typeof evalVal === 'number') {
-          override.rotation = evalVal;
-        }
+        if (path === 'opacity' && typeof evalVal === 'number') { override.opacity = evalVal; touched = true; }
+        else if (path === 'transform.position' && Array.isArray(evalVal)) { override.position = { x: evalVal[0], y: evalVal[1] }; touched = true; }
+        else if (path === 'transform.scale' && Array.isArray(evalVal)) { override.scale = { x: evalVal[0], y: evalVal[1] }; touched = true; }
+        else if (path === 'transform.rotation' && typeof evalVal === 'number') { override.rotation = evalVal; touched = true; }
+        else if (path === 'transform.anchorPoint' && Array.isArray(evalVal)) { override.anchorPoint = { x: evalVal[0], y: evalVal[1] }; touched = true; }
       }
 
-      // Store override if we have any transforms
-      if (Object.keys(override).length > 0) {
+      if (touched) {
         this._overrides.set(layer.id, override);
-        updated += Object.keys(override).length;
+        updated++;
       }
     }
 

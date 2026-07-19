@@ -7,6 +7,7 @@ import { SolidSection } from './SolidSection';
 import { ShapeSection } from './ShapeSection';
 import { TextSection } from './TextSection';
 import { CompSection } from './CompSection';
+import { EffectsSection } from './EffectsSection';
 
 type TabId = 'transform' | 'object' | 'modifiers';
 
@@ -180,7 +181,7 @@ export const PropertiesPanel: React.FC = () => {
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full min-h-0 overflow-hidden">
       {/* Vertical tab bar — Blender-style narrow left column */}
       <div
         className="flex flex-col items-center gap-1 py-2 shrink-0"
@@ -202,7 +203,7 @@ export const PropertiesPanel: React.FC = () => {
       </div>
 
       {/* Tab content area */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {/* Layer name header (single selection only) */}
         {single && (
           <div
@@ -269,8 +270,12 @@ export const PropertiesPanel: React.FC = () => {
             <Placeholder text="Multi-layer object editing coming soon" />
           )}
 
-          {activeTab === 'modifiers' && (
-            <Placeholder text="Effects & modifiers coming in Phase 5" />
+          {activeTab === 'modifiers' && single && (
+            <EffectsSection layer={single} compId={comp.id} />
+          )}
+
+          {activeTab === 'modifiers' && selectedLayers.length > 1 && (
+            <Placeholder text="Multi-layer effect editing coming soon" />
           )}
         </div>
       </div>

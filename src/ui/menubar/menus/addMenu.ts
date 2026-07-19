@@ -67,6 +67,16 @@ export const addMenu: MenuItemDefinition[] = [
     onClick: () => { importFromFile(); },
   },
   {
+    id: 'layer.addAdjustment',
+    label: 'New Adjustment Layer',
+    onClick: () => addNewLayer('adjustment'),
+  },
+  {
+    id: 'layer.nullLayer',
+    label: 'New Null Object',
+    onClick: () => addNewLayer('null'),
+  },
+  {
     id: 'layer.addSep2',
     label: '',
     divider: true,
@@ -110,6 +120,6 @@ export const addMenu: MenuItemDefinition[] = [
     id: 'layer.rename',
     label: 'Rename',
     shortcut: 'F2',
-    onClick: () => console.log('[Menu] Rename layer'),
+    onClick: () => document.dispatchEvent(new CustomEvent('layer:rename')),
   },
 ];

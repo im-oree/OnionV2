@@ -1,5 +1,4 @@
 :root {
-  /* ═══ Base — FLAT charcoal (no gradients), panels LIGHTER than bg ═══ */
   --color-app-bg:            #16181d;
   --color-app-bg-2:          #16181d;
   --color-panel:             #1f2229;
@@ -20,7 +19,6 @@
   --color-bg-raised:         var(--color-panel-raised);
   --color-bg-overlay:        rgba(0, 0, 0, 0.72);
 
-  /* ═══ Borders — barely visible ═══ */
   --color-border:            rgba(255, 255, 255, 0.05);
   --color-border-strong:     rgba(255, 255, 255, 0.09);
   --color-border-light:      rgba(255, 255, 255, 0.03);
@@ -28,7 +26,6 @@
   --color-divider:           rgba(255, 255, 255, 0.04);
   --color-gutter:            var(--color-app-bg);
 
-  /* ═══ Text — softer whites ═══ */
   --color-text-primary:      rgba(255, 255, 255, 0.90);
   --color-text-secondary:    rgba(255, 255, 255, 0.55);
   --color-text-tertiary:     rgba(255, 255, 255, 0.38);
@@ -37,7 +34,6 @@
   --color-text-accent:       #8b95ff;
   --color-text-muted:        var(--color-text-secondary);
 
-  /* ═══ Accent — indigo ═══ */
   --color-accent:            #5865ff;
   --color-accent-hover:      #6f7bff;
   --color-accent-pressed:    #4551e8;
@@ -48,7 +44,6 @@
   --color-primary-pressed:   var(--color-accent-pressed);
   --color-primary-muted:     var(--color-accent-muted);
 
-  /* ═══ Gradient stops ═══ */
   --accent-violet-a:         #7c4dff;
   --accent-violet-b:         #5b3fff;
   --accent-cyan-a:           #3ac9d1;
@@ -58,7 +53,6 @@
   --accent-pink-a:           #ff4d9a;
   --accent-pink-b:           #ff2e7a;
 
-  /* ═══ Layer labels ═══ */
   --label-violet:            #8b6aff;
   --label-blue:              #5b8fff;
   --label-cyan:              #4dd4d1;
@@ -73,23 +67,20 @@
   --color-danger:            #ff5c5c;
   --color-info:              #5b8fff;
 
-  /* ═══ Timeline ═══ */
   --timeline-playhead:       #5865ff;
   --timeline-work-area:      rgba(88, 101, 255, 0.32);
   --timeline-cache-full:     #5865ff;
   --timeline-cache-half:     rgba(88, 101, 255, 0.5);
-  --timeline-track-bg:       #191c22;
+  --timeline-track-bg:       #181b20;
   --timeline-grid:           rgba(255, 255, 255, 0.04);
   --timeline-grid-sub:       rgba(255, 255, 255, 0.02);
 
-  /* ═══ Radii — MUCH bigger ═══ */
   --radius-xs:               5px;
   --radius-sm:               8px;
   --radius-md:               11px;
   --radius-lg:               16px;
   --radius-panel:            16px;
 
-  /* ═══ Spacing — generous ═══ */
   --gap-panel:               10px;
   --pad-panel:               18px;
   --pad-row:                 8px 14px;
@@ -103,7 +94,6 @@
   --space-5:                 16px;
   --space-6:                 24px;
 
-  /* ═══ Shadows — very subtle, flat premium look ═══ */
   --shadow-panel:            0 0 0 1px rgba(255,255,255,0.03), 0 1px 2px rgba(0,0,0,0.3);
   --shadow-dropdown:         0 16px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.05);
   --shadow-modal:            0 24px 70px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.06);
@@ -117,7 +107,6 @@
   --transition-fast:         var(--dur-fast);
   --transition-normal:       var(--dur-normal);
 
-  /* ═══ Typography — bigger, more air ═══ */
   --font-family:             'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-family-mono:        'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
   --font-size-xs:            11px;
@@ -130,11 +119,10 @@
   --font-weight-medium:      500;
   --font-weight-semibold:    600;
 
-  /* ═══ Sizing — larger everywhere ═══ */
   --size-menubar-height:     36px;
   --size-tabs-height:        34px;
-  --size-toolbar-width:      52px;
-  --size-toolbar-icon:       20px;
+  --size-toolbar-width:      44px;
+  --size-toolbar-icon:       18px;
   --size-panel-header:       40px;
   --size-splitter:           10px;
   --size-timeline-height:    240px;
@@ -144,8 +132,8 @@
   --size-row:                34px;
   --size-input:              30px;
   --size-timeline-header:    36px;
-  --size-timeline-row:       30px;
-  --size-keyframe:           9px;
+  --size-timeline-row:       32px;
+  --size-keyframe:           10px;
   --size-scrollbar:          10px;
 
   --z-base:                  0;

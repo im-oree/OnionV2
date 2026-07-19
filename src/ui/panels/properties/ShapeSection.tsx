@@ -8,171 +8,229 @@ import { GradientEditor } from './inputs/GradientEditor';
 import type { Layer, ShapeData, ShapeFill, ShapeStroke, GradientFill } from '../../../types/layer';
 import { defaultShapeFill, defaultShapeStroke } from '../../../types/layer';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { getPresetById, defaultParamsFor, SHAPE_PRESETS } from '../../../shapes/presets';
+import { PATH_BUILDERS } from '../../../shapes/ShapePathBuilder';
+
+const CAP_OPTS = [{label:'Butt',value:'butt'},{label:'Round',value:'round'},{label:'Square',value:'square'}];
+const JOIN_OPTS = [{label:'Miter',value:'miter'},{label:'Round',value:'round'},{label:'Bevel',value:'bevel'}];
+const FILL_TYPE_OPTS = [
+  {label:'Solid',value:'solid'},
+  {label:'Linear Gradient',value:'linear-gradient'},
+  {label:'Radial Gradient',value:'radial-gradient'},
+  {label:'Conic Gradient',value:'conic-gradient'},
+];
+const CATEGORIES = ['basic','polygon','star','symbol','arrow','decorative','ui'] as const;
+
+const PathEditToggle: React.FC<{layerId:string}> = ({ layerId }) => {
+  const [inEdit, setInEdit] = React.useState(false);
+  React.useEffect(() => {
+    let unsub: (()=>void)|null = null;
+    import('../../../state/penToolStore').then(({usePenToolStore}) => {
+      const check = () => setInEdit(usePenToolStore.getState().mode === 'edit' && usePenToolStore.getState().editingLayerId === layerId);
+      check(); unsub = usePenToolStore.subscribe(check);
+    });
+    return () => { unsub?.(); };
+  }, [layerId]);
+
+  const toggle = async () => {
+    const {usePenToolStore} = await import('../../../state/penToolStore');
+    const {useToolStore} = await import('../../../state/toolStore');
+    if (inEdit) usePenToolStore.getState().stopEditing();
+    else { useToolStore.getState().setActiveTool('pen' as any); usePenToolStore.getState().startEditing(layerId); }
+  };
+
+  return (
+    <button onClick={toggle} style={{
+      padding:'3px 8px', fontSize:'var(--font-size-xs)', cursor:'pointer',
+      background: inEdit ? 'var(--color-accent-muted)' : 'var(--color-input-bg)',
+      color: inEdit ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+      border: `1px solid ${inEdit ? 'var(--color-accent)' : 'var(--color-border)'}`,
+      borderRadius: 'var(--radius-sm)',
+    }}>{inEdit ? 'Editing…' : 'Edit Points'}</button>
+  );
+};
+
+const InlineShapeLibrary: React.FC<{currentId: string; onSelect: (id: string) => void}> = ({ currentId, onSelect }) => {
+  const [cat, setCat] = React.useState<string>(() => {
+    const cur = getPresetById(currentId);
+    return cur?.category ?? 'basic';
+  });
+  return (
+    <div style={{
+      background:'var(--color-panel-raised)', border:'1px solid var(--color-border)',
+      borderRadius:'var(--radius-md)', overflow:'hidden', marginTop: 4,
+    }}>
+      <div style={{display:'flex',borderBottom:'1px solid var(--color-border)',overflowX:'auto'}}>
+        {CATEGORIES.map(c => (
+          <button key={c} onClick={()=>setCat(c)} style={{
+            padding:'4px 8px', fontSize:'var(--font-size-xs)', cursor:'pointer',
+            background: cat===c ? 'var(--color-accent-muted)' : 'transparent',
+            color: cat===c ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+            border:'none', borderBottom: cat===c ? '2px solid var(--color-accent)' : '2px solid transparent',
+            textTransform:'capitalize', whiteSpace:'nowrap', flexShrink:0,
+          }}>{c}</button>
+        ))}
+      </div>
+      <div style={{display:'flex',flexWrap:'wrap',gap:4,padding:6,maxHeight:180,overflowY:'auto'}}>
+        {SHAPE_PRESETS.filter(p => p.category === cat).map(p => {
+          const b = PATH_BUILDERS[p.id];
+          let d = '';
+          try { d = b ? b({width:44,height:44,params:defaultParamsFor(p)}) : ''; } catch {}
+          const sel = currentId === p.id;
+          return (
+            <button key={p.id} onClick={()=>onSelect(p.id)} title={p.label} style={{
+              width:46, height:46, padding:0, cursor:'pointer',
+              background: sel ? 'var(--color-accent-muted)' : 'var(--color-input-bg)',
+              border: `1.5px solid ${sel ? 'var(--color-accent)' : 'var(--color-border)'}`,
+              borderRadius:'var(--radius-md)',
+              display:'flex',alignItems:'center',justifyContent:'center',
+            }}>
+              <svg width={28} height={28} viewBox="-30 -30 60 60">
+                {d && <path d={d} fill={sel?'var(--color-accent)':'var(--color-text-secondary)'} fillRule="evenodd"/>}
+              </svg>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
 
 interface Props { layer: Layer; compId: string; }
 
-function defaultLinearGradient(): GradientFill {
-  return {
-    type: 'linear-gradient',
-    angle: 0,
-    stops: [
-      { offset: 0, color: '#ffffff' },
-      { offset: 1, color: '#000000' },
-    ],
-  };
-}
-
-function defaultRadialGradient(): GradientFill {
-  return {
-    type: 'radial-gradient',
-    centerX: 0.5, centerY: 0.5, radius: 0.5,
-    stops: [
-      { offset: 0, color: '#ffffff' },
-      { offset: 1, color: '#000000' },
-    ],
-  };
-}
-
 export const ShapeSection: React.FC<Props> = ({ layer, compId }) => {
   const data = layer.data as ShapeData | undefined;
+  const [showLib, setShowLib] = React.useState(false);
   if (!data) return null;
 
   const fill: ShapeFill = (data as any).fill ?? defaultShapeFill();
   const stroke: ShapeStroke = (data as any).stroke ?? defaultShapeStroke();
+  const currentPresetId = (data as any).presetId ?? data.type;
+  const presetDef = getPresetById(currentPresetId);
+  const presetParams: Record<string, number> = (data as any).presetParams ?? (presetDef ? defaultParamsFor(presetDef) : {});
 
-  const update = (patch: Partial<ShapeData>) => {
+  const upd = (patch: any) =>
     useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, ...patch } });
+  const updFill = (patch: Partial<ShapeFill>) => upd({ fill: { ...fill, ...patch } });
+  const updStroke = (patch: Partial<ShapeStroke>) => upd({ stroke: { ...stroke, ...patch } });
+
+  const setFillType = (type: string) => {
+    if (type === 'solid') updFill({ type: 'solid', gradient: undefined });
+    else if (type === 'linear-gradient') updFill({ type: 'linear-gradient', gradient: { type: 'linear-gradient', angle: 0, stops: [{offset:0,color:'#ffffff'},{offset:1,color:'#000000'}] } });
+    else if (type === 'radial-gradient') updFill({ type: 'radial-gradient', gradient: { type: 'radial-gradient', centerX: 0.5, centerY: 0.5, radius: 0.5, stops: [{offset:0,color:'#ffffff'},{offset:1,color:'#000000'}] } });
+    else if (type === 'conic-gradient') updFill({ type: 'conic-gradient', gradient: { type: 'conic-gradient', angle: 0, centerX: 0.5, centerY: 0.5, stops: [{offset:0,color:'#ffffff'},{offset:1,color:'#000000'}] } });
   };
-  const updateFill = (patch: Partial<ShapeFill>) => {
-    update({ fill: { ...fill, ...patch } } as any);
-  };
-  const updateStroke = (patch: Partial<ShapeStroke>) => {
-    update({ stroke: { ...stroke, ...patch } } as any);
-  };
-  const setFillType = (type: 'solid' | 'linear-gradient' | 'radial-gradient') => {
-    if (type === 'solid') {
-      updateFill({ type: 'solid', gradient: undefined });
-    } else if (type === 'linear-gradient') {
-      updateFill({ type: 'linear-gradient', gradient: defaultLinearGradient() });
+
+  const applyPreset = (presetId: string) => {
+    const preset = getPresetById(presetId);
+    if (!preset) return;
+    const params = defaultParamsFor(preset);
+    let newData: any = { ...data, presetId, presetParams: params };
+    if (presetId === 'ellipse' || presetId === 'circle') {
+      newData.type = 'ellipse';
+      const cw = 'radiusX' in data ? data.radiusX * 2 : ('width' in data ? data.width : 200);
+      const ch = 'radiusY' in data ? data.radiusY * 2 : ('height' in data ? data.height : 200);
+      newData.radiusX = cw/2; newData.radiusY = ch/2;
     } else {
-      updateFill({ type: 'radial-gradient', gradient: defaultRadialGradient() });
+      newData.type = 'rectangle';
+      const cw = 'width' in data ? data.width : ('radiusX' in data ? data.radiusX * 2 : 200);
+      const ch = 'height' in data ? data.height : ('radiusY' in data ? data.radiusY * 2 : 200);
+      newData.width = cw; newData.height = ch;
+      newData.borderRadius = params.roundness ?? 0;
     }
-  };
-  const updateGradient = (g: GradientFill) => {
-    updateFill({ gradient: g, type: g.type });
+    useCompositionStore.getState().updateLayer(compId, layer.id, { data: newData, name: preset.label });
+    setShowLib(false);
   };
 
   return (
     <>
       <Section label="Shape">
-        {data.type === 'rectangle' && (
-          <>
-            <PropRow label="Width">
-              <NumberInput value={data.width} onChange={(v) => update({ width: v } as any)} min={1} step={1} precision={0} />
-            </PropRow>
-            <PropRow label="Height">
-              <NumberInput value={data.height} onChange={(v) => update({ height: v } as any)} min={1} step={1} precision={0} />
-            </PropRow>
-            <PropRow label="Corner">
-              <NumberInput value={data.borderRadius} onChange={(v) => update({ borderRadius: v } as any)} min={0} step={1} precision={0} />
-            </PropRow>
-          </>
-        )}
-        {data.type === 'ellipse' && (
-          <>
-            <PropRow label="RX">
-              <NumberInput value={data.radiusX} onChange={(v) => update({ radiusX: v } as any)} min={1} step={1} precision={0} />
-            </PropRow>
-            <PropRow label="RY">
-              <NumberInput value={data.radiusY} onChange={(v) => update({ radiusY: v } as any)} min={1} step={1} precision={0} />
-            </PropRow>
-          </>
-        )}
+        <PropRow label="Preset">
+          <div style={{display:'flex',gap:6,alignItems:'center',width:'100%'}}>
+            <span style={{fontSize:'var(--font-size-xs)',color:'var(--color-text-secondary)',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+              {presetDef?.label ?? data.type}
+            </span>
+            <button onClick={()=>setShowLib(v=>!v)} style={{
+              padding:'2px 8px', fontSize:'var(--font-size-xs)', cursor:'pointer',
+              background: showLib ? 'var(--color-accent-muted)' : 'var(--color-input-bg)',
+              border:`1px solid ${showLib?'var(--color-accent)':'var(--color-border)'}`,
+              borderRadius:'var(--radius-sm)',
+              color: showLib ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+            }}>{showLib ? 'Close' : 'Browse'}</button>
+          </div>
+        </PropRow>
+
+        {showLib && <InlineShapeLibrary currentId={currentPresetId} onSelect={applyPreset}/>}
+
+        {data.type === 'rectangle' && !presetDef?.params.length && <>
+          <PropRow label="Width"><NumberInput value={data.width} onChange={v=>upd({width:v})} min={1} step={1} precision={0}/></PropRow>
+          <PropRow label="Height"><NumberInput value={data.height} onChange={v=>upd({height:v})} min={1} step={1} precision={0}/></PropRow>
+          <PropRow label="Corner"><NumberInput value={data.borderRadius} onChange={v=>upd({borderRadius:v})} min={0} step={1} precision={0}/></PropRow>
+        </>}
+        {data.type === 'rectangle' && presetDef?.params.length && <>
+          <PropRow label="Width"><NumberInput value={data.width} onChange={v=>upd({width:v})} min={1} step={1} precision={0}/></PropRow>
+          <PropRow label="Height"><NumberInput value={data.height} onChange={v=>upd({height:v})} min={1} step={1} precision={0}/></PropRow>
+        </>}
+        {data.type === 'ellipse' && <>
+          <PropRow label="Radius X"><NumberInput value={data.radiusX} onChange={v=>upd({radiusX:v})} min={1} step={1} precision={0}/></PropRow>
+          <PropRow label="Radius Y"><NumberInput value={data.radiusY} onChange={v=>upd({radiusY:v})} min={1} step={1} precision={0}/></PropRow>
+        </>}
+
+        {presetDef && presetDef.params.map(p => (
+          <PropRow key={p.id} label={p.label}>
+            <NumberInput
+              value={presetParams[p.id] ?? p.default}
+              onChange={v => upd({ presetParams: { ...presetParams, [p.id]: v } })}
+              min={p.min} max={p.max} step={p.step} precision={p.precision ?? 0}
+              label={p.unit}
+            />
+          </PropRow>
+        ))}
+
+        {data.type === 'path' && <>
+          <PropRow label="Commands">
+            <span style={{fontSize:'var(--font-size-xs)',color:'var(--color-text-tertiary)',fontFamily:'var(--font-family-mono)'}}>
+              {data.commands.length} cmds
+            </span>
+          </PropRow>
+          <PropRow label="Edit"><PathEditToggle layerId={layer.id}/></PropRow>
+        </>}
       </Section>
 
       <Section label="Fill">
-        <PropRow label="Type">
-          <SelectInput
-            value={fill.type}
-            onChange={(v) => setFillType(v as any)}
-            options={[
-              { label: 'Solid', value: 'solid' },
-              { label: 'Linear Gradient', value: 'linear-gradient' },
-              { label: 'Radial Gradient', value: 'radial-gradient' },
-            ]}
-          />
-        </PropRow>
-
+        <PropRow label="Type"><SelectInput value={fill.type} onChange={setFillType} options={FILL_TYPE_OPTS}/></PropRow>
         {fill.type === 'solid' && (
-          <PropRow label="Color">
-            <ColorInput value={fill.color} onChange={(c) => updateFill({ color: c })} />
+          <PropRow label="Color"><ColorInput value={fill.color} onChange={c => updFill({ color: c })}/></PropRow>
+        )}
+        {fill.type !== 'solid' && fill.gradient && (
+          <div style={{padding:'4px 0'}}>
+            <GradientEditor value={fill.gradient} onChange={g => updFill({ gradient: g, type: g.type })}/>
+          </div>
+        )}
+        {fill.type === 'linear-gradient' && fill.gradient && (
+          <PropRow label="Angle">
+            <NumberInput value={(fill.gradient as any).angle ?? 0} onChange={v => updFill({ gradient: { ...(fill.gradient as any), angle: v } })} min={-360} max={360} step={1} precision={0} label="°"/>
           </PropRow>
         )}
-
-        {fill.type !== 'solid' && fill.gradient && (
-          <>
-            <div style={{ padding: '8px 0' }}>
-              <GradientEditor value={fill.gradient} onChange={updateGradient} />
-            </div>
-            {fill.gradient.type === 'linear-gradient' && (
-              <PropRow label="Angle">
-                <NumberInput
-                  value={fill.gradient.angle}
-                  onChange={(v) => updateGradient({ ...fill.gradient!, angle: v } as GradientFill)}
-                  min={-360} max={360} step={1} precision={0} label="°"
-                />
-              </PropRow>
-            )}
-            {fill.gradient.type === 'radial-gradient' && (
-              <>
-                <PropRow label="Cx">
-                  <NumberInput
-                    value={fill.gradient.centerX}
-                    onChange={(v) => updateGradient({ ...fill.gradient!, centerX: v } as GradientFill)}
-                    min={0} max={1} step={0.05} precision={2}
-                  />
-                </PropRow>
-                <PropRow label="Cy">
-                  <NumberInput
-                    value={fill.gradient.centerY}
-                    onChange={(v) => updateGradient({ ...fill.gradient!, centerY: v } as GradientFill)}
-                    min={0} max={1} step={0.05} precision={2}
-                  />
-                </PropRow>
-                <PropRow label="Radius">
-                  <NumberInput
-                    value={fill.gradient.radius}
-                    onChange={(v) => updateGradient({ ...fill.gradient!, radius: v } as GradientFill)}
-                    min={0.05} max={2} step={0.05} precision={2}
-                  />
-                </PropRow>
-              </>
-            )}
-          </>
-        )}
-
+        {fill.type === 'radial-gradient' && fill.gradient && <>
+          <PropRow label="Cx"><NumberInput value={(fill.gradient as any).centerX ?? 0.5} onChange={v => updFill({ gradient: { ...(fill.gradient as any), centerX: v } })} min={0} max={1} step={0.05} precision={2}/></PropRow>
+          <PropRow label="Cy"><NumberInput value={(fill.gradient as any).centerY ?? 0.5} onChange={v => updFill({ gradient: { ...(fill.gradient as any), centerY: v } })} min={0} max={1} step={0.05} precision={2}/></PropRow>
+          <PropRow label="Radius"><NumberInput value={(fill.gradient as any).radius ?? 0.5} onChange={v => updFill({ gradient: { ...(fill.gradient as any), radius: v } })} min={0.05} max={2} step={0.05} precision={2}/></PropRow>
+        </>}
         <PropRow label="Opacity">
-          <NumberInput value={fill.opacity} onChange={(v) => updateFill({ opacity: v })} min={0} max={100} step={1} precision={0} label="%" />
+          <NumberInput value={fill.opacity} onChange={v => updFill({ opacity: v })} min={0} max={100} step={1} precision={0} label="%"/>
         </PropRow>
       </Section>
 
       <Section label="Stroke" defaultOpen={stroke.enabled}>
-        <PropRow label="Enabled">
-          <CheckboxInput value={stroke.enabled} onChange={(v) => updateStroke({ enabled: v })} />
-        </PropRow>
-        {stroke.enabled && (
-          <>
-            <PropRow label="Color">
-              <ColorInput value={stroke.color} onChange={(c) => updateStroke({ color: c })} />
-            </PropRow>
-            <PropRow label="Width">
-              <NumberInput value={stroke.width} onChange={(v) => updateStroke({ width: v })} min={0} step={0.5} precision={1} label="px" />
-            </PropRow>
-            <PropRow label="Opacity">
-              <NumberInput value={stroke.opacity} onChange={(v) => updateStroke({ opacity: v })} min={0} max={100} step={1} precision={0} label="%" />
-            </PropRow>
-          </>
-        )}
+        <PropRow label="Enabled"><CheckboxInput value={stroke.enabled} onChange={v => updStroke({ enabled: v })}/></PropRow>
+        {stroke.enabled && <>
+          <PropRow label="Color"><ColorInput value={stroke.color} onChange={c => updStroke({ color: c })}/></PropRow>
+          <PropRow label="Width"><NumberInput value={stroke.width} onChange={v => updStroke({ width: v })} min={0} step={0.5} precision={1} label="px"/></PropRow>
+          <PropRow label="Opacity"><NumberInput value={stroke.opacity} onChange={v => updStroke({ opacity: v })} min={0} max={100} step={1} precision={0} label="%"/></PropRow>
+          <PropRow label="Cap"><SelectInput value={stroke.cap ?? 'butt'} onChange={v => updStroke({ cap: v as any })} options={CAP_OPTS}/></PropRow>
+          <PropRow label="Join"><SelectInput value={stroke.join ?? 'miter'} onChange={v => updStroke({ join: v as any })} options={JOIN_OPTS}/></PropRow>
+        </>}
       </Section>
     </>
   );

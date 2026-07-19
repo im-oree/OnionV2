@@ -62,8 +62,24 @@ export function registerAllShortcuts(): void {
     handler: () => { const s = useUIStore.getState(); s.setRightPanelWidth(s.rightPanelWidth > 10 ? 0 : 320); },
     remappable: true,
   });
-  shortcutRegistry.register({ id: 'edit.undo', key: 'z', ctrl: true, context: 'global', handler: () => {}, remappable: true });
-  shortcutRegistry.register({ id: 'edit.redo', key: 'z', ctrl: true, shift: true, context: 'global', handler: () => {}, remappable: true });
+  shortcutRegistry.register({ id: 'edit.undo', key: 'z', ctrl: true, context: 'global', handler: () => {
+    import('../state/historyStore').then((m: any) => {
+      const store = m.useHistoryStore ?? m.default;
+      if (store && typeof store.getState === 'function') {
+        const undo = store.getState().undo;
+        if (typeof undo === 'function') undo();
+      }
+    }).catch(() => {});
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'edit.redo', key: 'z', ctrl: true, shift: true, context: 'global', handler: () => {
+    import('../state/historyStore').then((m: any) => {
+      const store = m.useHistoryStore ?? m.default;
+      if (store && typeof store.getState === 'function') {
+        const redo = store.getState().redo;
+        if (typeof redo === 'function') redo();
+      }
+    }).catch(() => {});
+  }, remappable: true });
 
   // Playback — Space toggles play/pause
   // Also requests a render explicitly so the viewport updates even if PlaybackControls
@@ -267,5 +283,68 @@ export function registerAllShortcuts(): void {
     });
   }, remappable: true });
 
-  shortcutRegistry.register({ id: 'file.save', key: 's', ctrl: true, context: 'global', handler: () => {}, remappable: true });
+  shortcutRegistry.register({ id: 'file.save', key: 's', ctrl: true, context: 'global', handler: async () => {
+    console.log('[Ctrl+S] triggered');
+    try {
+      const smMod = await import('../storage/StorageManager');
+      const psMod = await import('../state/projectStore');
+      const sm = smMod.StorageManager.getInstance();
+      const name = psMod.useProjectStore.getState().project.name;
+      console.log('[Ctrl+S] saving project:', name, 'handle:', sm.currentProjectHandle);
+      if (!sm.currentProjectHandle) {
+        const notif = await import('../state/notificationStore');
+        notif.useNotificationStore.getState().addNotification({
+          type: 'warning',
+          message: 'No project open — use File > Save As to save first.',
+          autoDismiss: 3000,
+        });
+        return;
+      }
+      await sm.save(name);
+      console.log('[Ctrl+S] saved successfully');
+    } catch (err: any) {
+      console.error('[Ctrl+S] failed:', err);
+      const notif = await import('../state/notificationStore');
+      notif.useNotificationStore.getState().addNotification({
+        type: 'error',
+        message: `Save failed: ${err?.message ?? 'Unknown error'}`,
+      });
+    }
+  }, remappable: true });
+
+  // File shortcuts
+  shortcutRegistry.register({ id: 'file.saveAs', key: 's', ctrl: true, shift: true, context: 'global', handler: () => {
+    import('../ui/menubar/menus/fileMenu').then(m => {
+      const saveAs = m.fileMenu.find((i: any) => i.id === 'file.saveAs');
+      saveAs?.onClick?.();
+    });
+  }, remappable: true });
+
+  shortcutRegistry.register({ id: 'file.newComp', key: 'n', ctrl: true, context: 'global', handler: () => {
+    import('../ui/dialogs/DialogManager').then(m => m.openNewCompositionDialog());
+  }, remappable: true });
+
+  shortcutRegistry.register({ id: 'file.open', key: 'o', ctrl: true, context: 'global', handler: () => {
+    import('../ui/menubar/menus/fileMenu').then(m => {
+      const open = m.fileMenu.find((i: any) => i.id === 'file.open');
+      open?.onClick?.();
+    });
+  }, remappable: true });
+
+  shortcutRegistry.register({ id: 'file.import', key: 'i', ctrl: true, context: 'global', handler: () => {
+    import('../ui/menubar/menus/fileMenu').then(m => {
+      const imp = m.fileMenu.find((i: any) => i.id === 'file.import');
+      imp?.onClick?.();
+    });
+  }, remappable: true });
+
+  // Gradient tool
+  shortcutRegistry.register({ id: 'tool.gradient', key: 'g', shift: true, context: 'global', handler: () => {
+    useToolStore.getState().setActiveTool('gradient' as any);
+  }, remappable: true });
+
+  // Polygon tool
+  shortcutRegistry.register({ id: 'tool.polygon', key: 'p', shift: true, context: 'global', handler: () => {
+    useToolStore.getState().setActiveTool('shapePolygon');
+  }, remappable: true });
 }

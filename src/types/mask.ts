@@ -1,6 +1,4 @@
-/**
- * Mask type definitions — per-layer vector masks with feather, expansion, modes, animation.
- */
+// Legacy compatibility shim — new system uses VectorMask from state/maskStore
 export interface MaskShape {
   type: 'rectangle' | 'ellipse';
   /** Bounds relative to layer center */

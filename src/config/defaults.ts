@@ -1,6 +1,7 @@
 import { COMPOSITION, PERFORMANCE } from './constants';
 import type { Composition, Layer, Project } from '../types';
-import { defaultTransform } from '../types/layer';
+import { defaultTransform, defaultTransform3D, defaultCameraData, defaultLightData } from '../types/layer';
+import { defaultEnvironment3D } from '../types/composition';
 
 /** AE-style layer label color palette */
 export const LAYER_COLORS = [
@@ -23,17 +24,20 @@ export const DEFAULT_COMPOSITION: Omit<Composition, 'id'> = {
   workAreaStart: 0,
   workAreaEnd: COMPOSITION.DEFAULT_DURATION,
   pixelAspect: COMPOSITION.PIXEL_ASPECT,
+  environment3D: defaultEnvironment3D(),
+  rendererMode: 'full',
+  viewMode: 'activeCamera',
 };
 
 export function createDefaultLayer(type: Layer['type'], name: string): Omit<Layer, 'id'> {
-  return {
+  const base = {
     type,
     name,
     visible: true,
     locked: false,
     soloed: false,
     shy: false,
-    blendMode: 'normal',
+    blendMode: 'normal' as const,
     opacity: 100,
     transform: defaultTransform(),
     startFrame: 0,
@@ -44,6 +48,15 @@ export function createDefaultLayer(type: Layer['type'], name: string): Omit<Laye
     parentId: null,
     color: LAYER_COLORS[_layerCounter++ % LAYER_COLORS.length],
   };
+
+  if (type === 'camera') {
+    return { ...base, cameraData: defaultCameraData(), transform: { ...defaultTransform(), position: { x: 0, y: 0 } } } as any;
+  }
+  if (type === 'light') {
+    return { ...base, lightData: defaultLightData(), transform: { ...defaultTransform(), position: { x: 0, y: 0 } } } as any;
+  }
+
+  return base;
 }
 
 export const DEFAULT_PROJECT: Omit<Project, 'id'> = {

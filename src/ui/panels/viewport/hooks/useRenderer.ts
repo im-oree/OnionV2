@@ -89,7 +89,6 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
     return () => {
       renderer.dispose();
       rendererRef.current = null;
-      binderRef.current = null;
       setReady(false);
     };
   }, [container]);

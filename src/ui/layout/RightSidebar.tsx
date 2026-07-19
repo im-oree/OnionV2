@@ -3,7 +3,7 @@ import { useUIStore, type RightSidebarTab } from '../../state/uiStore';
 import { Tooltip } from '../common/Tooltip';
 import {
   SlidersHorizontal, Sparkles, AlignVerticalJustifyCenter,
-  Type, Info, Video, Activity, TrendingUp,
+  Type, Info, Video, Activity,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -16,7 +16,6 @@ interface TabDef {
 const TABS: TabDef[] = [
   { id: 'properties',  label: 'Properties',  Icon: SlidersHorizontal },
   { id: 'effects',     label: 'Effects',     Icon: Sparkles },
-  { id: 'graph',       label: 'Graph Editor', Icon: TrendingUp },
   { id: 'align',       label: 'Align',       Icon: AlignVerticalJustifyCenter },
   { id: 'character',   label: 'Character',   Icon: Type },
   { id: 'info',        label: 'Info',        Icon: Info },

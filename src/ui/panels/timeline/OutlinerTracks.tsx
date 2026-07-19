@@ -10,10 +10,11 @@ import { Icon } from '../../common/Icon';
 import { useContextMenu } from '../../common/useContextMenu';
 import { ContextMenu, type ContextMenuItem } from '../../common/ContextMenu';
 import { createLayerInstance } from '../../../utils/createLayerInstance';
+import { LAYER_COLORS } from './layerColors';
 
 interface Props { layers: Layer[]; compId: string; }
-const LAYER_ROW_H = 30;
-const PROP_ROW_H = 24;
+const LAYER_ROW_H = 32;
+const PROP_ROW_H = 26;
 
 const LAYER_ICONS: Record<string, string> = {
   solid: 'rectangle', shape: 'polygon', text: 'text',
@@ -101,24 +102,21 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
           style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-disabled)' }}
           onDragOver={(e) => { if (e.dataTransfer.types.includes('text/plain')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }}
           onDrop={(e) => handleTrackDrop(e, compId)}
-        >
-          No layers — right-click or click + to add
-        </div>
+        >No layers — right-click or click + to add</div>
       )}
-      {sortedLayers.map(layer => {
+      {sortedLayers.map((layer, li) => {
         const expanded = expandedSet.has(layer.id);
         const props = engine.getAllAnimatedProperties(layer.id);
         const hasKfs = props.length > 0;
         const isSel = selectedIds.includes(layer.id);
+        const palette = LAYER_COLORS[li % LAYER_COLORS.length];
         return (
           <div key={layer.id}>
-            <div
-              data-tracks-row="1"
+            <div data-tracks-row="1"
               className="flex items-center gap-2 cursor-pointer transition-colors"
               style={{
                 height: LAYER_ROW_H, padding: '0 8px',
                 borderBottom: '1px solid var(--color-divider)',
-                borderLeft: layer.color ? `3px solid ${layer.color}` : undefined,
                 background: isSel ? 'var(--color-accent-muted)' : 'transparent',
                 color: isSel ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
                 fontSize: 'var(--font-size-sm)',
@@ -132,22 +130,27 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
               onDragLeave={() => setDropTarget(null)}
               onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDropTarget(null); handleTrackDrop(e, compId); }}
             >
+              <div className="shrink-0 rounded-full" style={{
+                width: 4, height: 16,
+                background: `linear-gradient(180deg, ${palette.from}, ${palette.to})`,
+              }} />
               <button
                 className="w-4 h-4 flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
                 style={{ color: hasKfs ? 'var(--color-text-tertiary)' : 'transparent' }}
                 onClick={(e) => { e.stopPropagation(); toggle(layer.id); }}
                 disabled={!hasKfs}
               >
-                {hasKfs && <ChevronRight size={11} strokeWidth={2} style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 120ms' }} />}
+                {hasKfs && <ChevronRight size={11} strokeWidth={2}
+                  style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 120ms' }} />}
               </button>
               <Icon name={(LAYER_ICONS[layer.type] ?? 'ellipse') as any} size={14} strokeWidth={1.75}
                 className={`shrink-0 ${isSel ? 'text-accent' : ''}`} />
-              <span className="truncate flex-1">{layer.name}</span>
+              <span className="truncate flex-1" style={{ fontWeight: isSel ? 500 : 400 }}>{layer.name}</span>
               {hasKfs && (
                 <span className="shrink-0" style={{
-                  fontSize: 10, padding: '2px 6px',
-                  color: 'var(--color-accent)', background: 'var(--color-accent-muted)',
-                  borderRadius: 'var(--radius-xs)', fontFamily: 'var(--font-family-mono)',
+                  fontSize: 9, padding: '1px 6px', fontWeight: 600,
+                  color: palette.accent, background: `${palette.accent}18`,
+                  borderRadius: 999, fontFamily: 'var(--font-family-mono)',
                 }}>{props.length}</span>
               )}
             </div>
@@ -155,17 +158,17 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
               <div key={propPath} data-tracks-row="1"
                 className="flex items-center gap-2 transition-colors"
                 style={{
-                  height: PROP_ROW_H, padding: '0 8px 0 34px',
+                  height: PROP_ROW_H, padding: '0 8px 0 38px',
                   borderBottom: '1px solid var(--color-divider)',
-                  background: 'rgba(0,0,0,0.1)',
+                  background: 'rgba(0,0,0,0.06)',
                   fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)',
                 }}
                 onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'}
-                onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.background = 'rgba(0,0,0,0.1)'}
+                onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.background = 'rgba(0,0,0,0.06)'}
               >
-                <span className="shrink-0" style={{ width: 12, height: 12, color: 'var(--color-accent)' }}>
-                  <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><polygon points="4,0 8,4 4,8 0,4" /></svg>
-                </span>
+                <svg width="7" height="7" viewBox="0 0 8 8" className="shrink-0" style={{ color: palette.accent }}>
+                  <polygon points="4,0 8,4 4,8 0,4" fill="currentColor" />
+                </svg>
                 <span className="truncate flex-1">{formatPropertyLabel(propPath)}</span>
                 <button
                   onClick={() => {

@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { Plus, Search, X, Film, Folder, Image, Music } from 'lucide-react';
+import { Plus, Search, X, Film, Folder, Image, Music, FileCode } from 'lucide-react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useProjectStore } from '../../../state/projectStore';
 import { openNewCompositionDialog } from '../../dialogs/DialogManager';
@@ -43,6 +43,20 @@ export const ProjectBrowserPanel: React.FC = () => {
     if (!comp) return;
     let imported = 0;
     for (const file of files) {
+      // SVG import: parse and create shape layers directly
+      if (file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg')) {
+        try {
+          const { importSvgFile } = await import('../../../utils/svgImport');
+          const count = await importSvgFile(file, compId);
+          if (count > 0) {
+            imported++;
+            addNotif({ type: 'success', message: `Imported SVG with ${count} shape${count === 1 ? '' : 's'}`, autoDismiss: 3000 });
+          }
+        } catch (e) {
+          addNotif({ type: 'error', message: `Failed to import SVG: ${(e as Error).message}` });
+        }
+        continue;
+      }
       if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) continue;
       try {
         const asset = await assetManager.importFile(file);
@@ -62,6 +76,32 @@ export const ProjectBrowserPanel: React.FC = () => {
     }
   }, [addNotif]);
 
+  const importSvgClick = useCallback(() => {
+    const compId = useCompositionStore.getState().activeCompositionId;
+    if (!compId) {
+      addNotif({ type: 'warning', message: 'Create a composition first.', autoDismiss: 3000 });
+      return;
+    }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.svg,image/svg+xml';
+    input.multiple = true;
+    input.onchange = async () => {
+      const files = input.files ? Array.from(input.files) : [];
+      let total = 0;
+      for (const f of files) {
+        try {
+          const { importSvgFile } = await import('../../../utils/svgImport');
+          const count = await importSvgFile(f, compId);
+          total += count;
+        } catch (e) { console.warn('SVG import failed:', e); }
+      }
+      if (total > 0) {            addNotif({ type: 'success', message: `Imported SVG with ${total} shape${total === 1 ? '' : 's'}`, autoDismiss: 3000 });
+      }
+    };
+    input.click();
+  }, [addNotif]);
+
   const activeComp = compositions.find(c => c.id === activeCompId);
   const filteredComps = compositions.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
   const filteredAssets = project.assets.filter(a => a.name.toLowerCase().includes(search.toLowerCase()));
@@ -77,6 +117,7 @@ export const ProjectBrowserPanel: React.FC = () => {
       <div className="flex items-center px-4 shrink-0" style={{ height: 40, borderBottom: '1px solid var(--color-border)' }}>
         <span className="flex-1" style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--color-text-primary)' }}>Project</span>
         <IconBtn onClick={() => setShowSearch(!showSearch)} title="Search"><Search size={14} strokeWidth={1.75} /></IconBtn>
+        <IconBtn onClick={importSvgClick} title="Import SVG"><FileCode size={14} strokeWidth={1.75} /></IconBtn>
         <IconBtn onClick={openNewCompositionDialog} title="New Composition"><Plus size={15} strokeWidth={2} /></IconBtn>
       </div>
 

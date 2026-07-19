@@ -2,6 +2,8 @@ import React from 'react';
 import { AppShell } from './ui/layout/AppShell';
 import { DialogManager } from './ui/dialogs/DialogManager';
 import { ToastContainer } from './ui/common/Toast';
+import { CommandPalette } from './ui/common/CommandPalette';
+import { AlertModal } from './ui/common/AlertModal';
 import { useKeyboardManager, registerAllShortcuts } from './input/KeyboardManager';
 import { useCompositionStore } from './state/compositionStore';
 import { useNavigationStore } from './state/navigationStore';
@@ -9,9 +11,22 @@ import { useRecentProjectsStore } from './state/recentProjectsStore';
 import { StorageManager } from './storage/StorageManager';
 import { autoSave } from './storage/AutoSave';
 import { crashRecovery, type PendingRecovery } from './storage/CrashRecovery';
+import { registerPaletteActions } from './config/paletteActions';
+import { useCommandPaletteStore } from './state/commandPaletteStore';
+import { shortcutRegistry } from './input/ShortcutRegistry';
 
 // Register all shortcuts once
 registerAllShortcuts();
+
+// Register command palette actions
+registerPaletteActions();
+
+// Register command palette shortcut (Ctrl+Shift+P)
+shortcutRegistry.register({
+  id: 'palette.open', key: 'p', ctrl: true, shift: true,
+  context: 'global', remappable: true,
+  handler: () => useCommandPaletteStore.getState().toggle(),
+});
 
 const App: React.FC = () => {
   // Mount keyboard listener
@@ -107,9 +122,12 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // Expose composition store globally for menu actions and RAM preview
+  // Expose stores globally for menu actions, RAM preview, and undo/redo snapshots
   React.useEffect(() => {
     (window as any).__compositionStore = useCompositionStore;
+    import('./state/keyframeStore').then(({ useKeyframeStore }) => {
+      (window as any).__keyframeStore = useKeyframeStore;
+    });
   }, []);
 
   // Save the last project handle to localStorage when dirty status changes
@@ -160,9 +178,11 @@ const App: React.FC = () => {
 
   return (
     <>
+      <CommandPalette />
       <AppShell />
       <DialogManager />
       <ToastContainer />
+      <AlertModal />
       {pendingRecoveries.length > 0 && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center"
