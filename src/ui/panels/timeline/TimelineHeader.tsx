@@ -1,6 +1,5 @@
 import React, { useCallback, useMemo } from 'react';
-import { Icon } from '../../common/Icon';
-import { Button } from '../../common/Button';
+import { ChevronDown, Grid3X3, Circle, Magnet, Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight, Trash2, MonitorPlay } from 'lucide-react';
 import { useTimelineStore } from '../../../state/timelineStore';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useMarkerStore } from '../../../state/markerStore';
@@ -12,6 +11,40 @@ import type { Composition } from '../../../types/composition';
 
 interface Props { comp: Composition; currentFrame: number; totalFrames: number; }
 
+const HdrBtn: React.FC<{ onClick?: (e: React.MouseEvent) => void; title?: string; active?: boolean; children: React.ReactNode }> = ({ onClick, title, active, children }) => (
+  <button
+    onClick={onClick} title={title}
+    className="flex items-center gap-1.5 border-0 bg-transparent cursor-pointer transition-colors shrink-0"
+    style={{
+      height: 26, padding: '0 10px',
+      borderRadius: 'var(--radius-sm)',
+      fontSize: 'var(--font-size-sm)',
+      color: active ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+      background: active ? 'var(--color-accent-muted)' : 'transparent',
+    }}
+    onMouseEnter={(e)=>{ if(!active){ (e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'; (e.currentTarget as HTMLElement).style.color='var(--color-text-primary)'; } }}
+    onMouseLeave={(e)=>{ if(!active){ (e.currentTarget as HTMLElement).style.background='transparent'; (e.currentTarget as HTMLElement).style.color='var(--color-text-secondary)'; } }}
+  >
+    {children}
+  </button>
+);
+
+const IconOnly: React.FC<{ onClick?: () => void; title?: string; children: React.ReactNode }> = ({ onClick, title, children }) => (
+  <button
+    onClick={onClick} title={title}
+    className="flex items-center justify-center border-0 bg-transparent cursor-pointer transition-colors shrink-0"
+    style={{
+      width: 26, height: 26,
+      borderRadius: 'var(--radius-sm)',
+      color: 'var(--color-text-secondary)',
+    }}
+    onMouseEnter={(e)=>{ (e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'; (e.currentTarget as HTMLElement).style.color='var(--color-text-primary)'; }}
+    onMouseLeave={(e)=>{ (e.currentTarget as HTMLElement).style.background='transparent'; (e.currentTarget as HTMLElement).style.color='var(--color-text-secondary)'; }}
+  >{children}</button>
+);
+
+const Sep: React.FC = () => <div className="shrink-0" style={{ width: 1, height: 18, background: 'var(--color-border)', margin: '0 6px' }} />;
+
 export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrames }) => {
   const ps = useTimelineStore(s => s.playbackState);
   const loop = useTimelineStore(s => s.loop);
@@ -20,19 +53,17 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
   const toggleAutoKey = useTimelineStore(s => s.toggleAutoKey);
   const snapping = useTimelineStore(s => s.snapping);
   const toggleSnapping = useTimelineStore(s => s.toggleSnapping);
+  const autoCache = useTimelineStore(s => s.autoCache);
+  const toggleAutoCache = useTimelineStore(s => s.toggleAutoCache);
   const timeDisplay = useTimelineStore(s => s.timeDisplay);
   const setTimeDisplay = useTimelineStore(s => s.setTimeDisplay);
   const ctx = useContextMenu();
-
-  const startFrame = 0;
-  const endFrame = totalFrames;
   const fps = comp.fps;
 
   const setDuration = useCallback((frames: number) => {
     useCompositionStore.getState().updateComposition(comp.id, { duration: Math.max(1, frames) / fps });
     animationClock.setTotalFrames(frames);
   }, [comp.id, fps]);
-
   const seekTo = useCallback((f: number) => {
     animationClock.seekToFrame(f);
     useCompositionStore.getState().setCurrentTime(comp.id, f / fps);
@@ -48,23 +79,13 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
 
   const markers = useMarkerStore(s => s.markersByComposition[comp.id] ?? []);
   const hasMarkers = markers.length > 0;
-
-  const addMarkerH = useCallback(() => {
-    const frame = animationClock.currentFrame;
-    const time = frame / fps;
-    useMarkerStore.getState().addMarker(comp.id, time, frame);
-  }, [comp.id, fps]);
-
+  const addMarkerH = useCallback(() => { useMarkerStore.getState().addMarker(comp.id, animationClock.currentFrame / fps, animationClock.currentFrame); }, [comp.id, fps]);
   const removeMarkerH = useCallback(() => {
     const frame = animationClock.currentFrame;
-    const markers = useMarkerStore.getState().getMarkersForComposition(comp.id);
-    const atFrame = markers.find(m => m.frame === frame);
+    const atFrame = useMarkerStore.getState().getMarkersForComposition(comp.id).find(m => m.frame === frame);
     if (atFrame) useMarkerStore.getState().removeMarker(comp.id, atFrame.id);
   }, [comp.id]);
-
-  const clearMarkersH = useCallback(() => {
-    useMarkerStore.getState().clearAllMarkers(comp.id);
-  }, [comp.id]);
+  const clearMarkersH = useCallback(() => useMarkerStore.getState().clearAllMarkers(comp.id), [comp.id]);
 
   const markerMenu = useMemo((): ContextMenuItem[] => [
     { id: 'm.add', label: 'Add Marker at Playhead', shortcut: 'M', onClick: addMarkerH },
@@ -75,101 +96,125 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
 
   const playbackMenu = useMemo((): ContextMenuItem[] => [
     { id: 'p.loop', label: 'Loop', checked: loop, onClick: () => setLoop(!loop) },
-    { id: 'p.auto', label: 'Auto Keying', checked: autoKey, onClick: toggleAutoKey },
+    { id: 'p.autoKey', label: 'Auto Keying', checked: autoKey, onClick: toggleAutoKey },
+    { id: 'p.autoCache', label: 'Auto Cache', checked: autoCache, onClick: toggleAutoCache },
     { id: 'p.snap', label: 'Snap', checked: snapping, onClick: toggleSnapping },
-  ], [loop, setLoop, autoKey, toggleAutoKey, snapping, toggleSnapping]);
+  ], [loop, setLoop, autoKey, toggleAutoKey, autoCache, toggleAutoCache, snapping, toggleSnapping]);
 
   return (
-    <div
-      className="flex items-center gap-1 px-2 flex-shrink-0 bg-panel-header border-b border-border"
-      style={{ height: 30 }}
-    >
-      {/* Editor icon + View menu */}
-      <button
-        className="h-[22px] px-1.5 text-ui-xs text-text-secondary hover:bg-panel-hover rounded-sm flex items-center gap-1 border-0 bg-transparent cursor-pointer"
-        onClick={(e) => ctx.open(e, viewMenu)}
-        title="View"
+    <div className="flex items-center gap-1 px-3 flex-shrink-0" style={{ height: 36, borderBottom: '1px solid var(--color-border)' }}>
+      {/* Left group: menus */}
+      <HdrBtn onClick={(e)=>ctx.open(e, viewMenu)} title="Time Display">
+        <Grid3X3 size={13} strokeWidth={1.75} />
+        <span style={{ fontWeight: 600 }}>
+          {timeDisplay === 'frames' ? 'Frames' : timeDisplay === 'seconds' ? 'Seconds' : 'SMPTE'}
+        </span>
+        <ChevronDown size={11} strokeWidth={2} />
+      </HdrBtn>
+      <HdrBtn onClick={(e)=>ctx.open(e, markerMenu)} title="Marker">
+        <span>Marker</span> <ChevronDown size={11} strokeWidth={2} />
+      </HdrBtn>
+      <HdrBtn onClick={(e)=>ctx.open(e, playbackMenu)} title="Playback">
+        <span>Playback</span> <ChevronDown size={11} strokeWidth={2} />
+      </HdrBtn>
+
+      <div className="flex-1" />
+
+      {/* Center group: transport */}
+      <button onClick={toggleAutoKey} title={autoKey ? 'Auto Keying ON' : 'Auto Keying OFF'}
+        className="flex items-center justify-center border-0 cursor-pointer transition-all shrink-0"
+        style={{ width: 26, height: 26, borderRadius: 'var(--radius-sm)', background: autoKey ? 'rgba(255,80,80,0.14)' : 'transparent', color: autoKey ? '#ff6060' : 'var(--color-text-disabled)' }}
       >
-        <Icon name="grid" size={12} />
-        <span>View</span>
-        <span className="text-[9px]">▾</span>
+        <Circle size={12} strokeWidth={2} fill={autoKey ? 'currentColor' : 'none'} />
       </button>
 
-      <button
-        className="h-[22px] px-1.5 text-ui-xs text-text-secondary hover:bg-panel-hover rounded-sm flex items-center gap-1 border-0 bg-transparent cursor-pointer"
-        onClick={(e) => ctx.open(e, markerMenu)}
-        title="Marker"
-      >
-        <span>Marker</span>
-        <span className="text-[9px]">▾</span>
-      </button>
+      <Sep />
 
-      <button
-        className="h-[22px] px-1.5 text-ui-xs text-text-secondary hover:bg-panel-hover rounded-sm flex items-center gap-1 border-0 bg-transparent cursor-pointer"
-        onClick={(e) => ctx.open(e, playbackMenu)}
-        title="Playback"
+      <IconOnly title="Go to start" onClick={() => animationClock.goToStart()}><SkipBack size={13} strokeWidth={1.75} /></IconOnly>
+      <IconOnly title="Prev keyframe" onClick={() => document.dispatchEvent(new CustomEvent('playback:prevKeyframe'))}><ChevronLeft size={13} strokeWidth={2} /></IconOnly>
+      <IconOnly title="Prev frame" onClick={() => animationClock.stepBackward()}><ChevronLeft size={13} strokeWidth={2.5} /></IconOnly>
+      <IconOnly title="Play/Pause" onClick={() => animationClock.togglePlay()}>
+        {ps === 'playing' ? <Pause size={14} strokeWidth={2} /> : <Play size={14} strokeWidth={2} />}
+      </IconOnly>
+      <IconOnly title="Next frame" onClick={() => animationClock.stepForward()}><ChevronRight size={13} strokeWidth={2.5} /></IconOnly>
+      <IconOnly title="Next keyframe" onClick={() => document.dispatchEvent(new CustomEvent('playback:nextKeyframe'))}><ChevronRight size={13} strokeWidth={2} /></IconOnly>
+      <IconOnly title="Go to end" onClick={() => animationClock.goToEnd()}><SkipForward size={13} strokeWidth={1.75} /></IconOnly>
+
+      <Sep />
+
+      <button onClick={toggleSnapping} title={snapping ? 'Snap ON' : 'Snap OFF'}
+        className="flex items-center justify-center border-0 cursor-pointer transition-all shrink-0"
+        style={{ width: 26, height: 26, borderRadius: 'var(--radius-sm)', background: snapping ? 'var(--color-accent-muted)' : 'transparent', color: snapping ? 'var(--color-accent)' : 'var(--color-text-disabled)' }}
       >
-        <span>Playback</span>
-        <span className="text-[9px]">▾</span>
+        <Magnet size={13} strokeWidth={1.75} />
       </button>
 
       <div className="flex-1" />
 
-      {/* Auto-key toggle (red circle when ON) */}
-      <button
-        onClick={toggleAutoKey}
-        title={autoKey ? 'Auto Keying ON' : 'Auto Keying OFF'}
-        className={`w-[22px] h-[22px] flex items-center justify-center border rounded-sm bg-transparent cursor-pointer ${
-          autoKey ? 'border-red-500/70 text-red-500' : 'border-border text-text-disabled hover:text-text-secondary'
-        }`}
+      {/* Right group: frame inputs + preview/cache */}
+      <FrameInput value={currentFrame} onChange={seekTo} min={0} max={totalFrames} width={58} />
+      <span
+        style={{ fontSize: 9, color: 'var(--color-accent)', fontFamily: 'var(--font-family-mono)', fontWeight: 600, letterSpacing: '0.04em', lineHeight: 1 }}
+        title={`Displaying ${timeDisplay} — click time display button to change`}
       >
-        <svg width="10" height="10" viewBox="0 0 10 10">
-          <circle cx="5" cy="5" r="4" fill={autoKey ? '#e04040' : 'none'} stroke="currentColor" strokeWidth="1" />
-        </svg>
-      </button>
+        {timeDisplay === 'frames' ? 'f' : timeDisplay === 'seconds' ? 's' : 'tc'}
+      </span>
+      <div className="w-2" />
+      <FrameInput value={0} onChange={() => {}} label="Start" width={76} />
+      <FrameInput value={totalFrames} onChange={setDuration} min={1} label="End" width={76} />
 
-      <div className="w-px h-4 bg-border mx-1" />
+      <Sep />
 
-      {/* Transport controls */}
-      <Button variant="icon" size="sm" icon={<Icon name="goToStart" size={12} />} title="Go to start" onClick={() => animationClock.goToStart()} />
-      <Button variant="icon" size="sm" icon={<Icon name="frameBack" size={12} />} title="Prev keyframe" onClick={() => {
-        document.dispatchEvent(new CustomEvent('playback:prevKeyframe'));
-      }} />
-      <Button variant="icon" size="sm" icon={<Icon name="frameBack" size={12} />} title="Prev frame" onClick={() => animationClock.stepBackward()} />
-      <Button variant="icon" size="sm" icon={<Icon name={ps === 'playing' ? 'pause' : 'play'} size={13} />} title="Play/Pause" onClick={() => animationClock.togglePlay()} />
-      <Button variant="icon" size="sm" icon={<Icon name="frameForward" size={12} />} title="Next frame" onClick={() => animationClock.stepForward()} />
-      <Button variant="icon" size="sm" icon={<Icon name="frameForward" size={12} />} title="Next keyframe" onClick={() => {
-        document.dispatchEvent(new CustomEvent('playback:nextKeyframe'));
-      }} />
-      <Button variant="icon" size="sm" icon={<Icon name="goToEnd" size={12} />} title="Go to end" onClick={() => animationClock.goToEnd()} />
-
-      <div className="w-px h-4 bg-border mx-1" />
-
-      {/* Snap toggle */}
-      <button
-        onClick={toggleSnapping}
-        title={snapping ? 'Snap ON (Ctrl to override)' : 'Snap OFF'}
-        className={`w-[22px] h-[22px] flex items-center justify-center border rounded-sm bg-transparent cursor-pointer ${
-          snapping ? 'border-accent text-accent' : 'border-border text-text-disabled hover:text-text-secondary'
-        }`}
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2">
-          <path d="M3 2 v8 M9 2 v8 M3 6 h6" />
-        </svg>
-      </button>
-
-      <div className="flex-1" />
-
-      {/* Current frame */}
-      <FrameInput value={currentFrame} onChange={seekTo} min={0} max={totalFrames} width={52} />
-
-      <div className="w-1" />
-
-      {/* Start / End frame */}
-      <FrameInput value={startFrame} onChange={() => {}} label="Start" width={70} />
-      <FrameInput value={endFrame} onChange={setDuration} min={1} label="End" width={72} />
+      <RAMPreviewButton compId={comp.id} />
+      <Sep />
+      <ClearCacheButton />
 
       {ctx.menu && <ContextMenu items={ctx.menu.items} position={ctx.menu.position} onClose={ctx.close} />}
     </div>
+  );
+};
+
+const ClearCacheButton: React.FC = () => {
+  const [mb, setMb] = React.useState(0);
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      const fc = (window as any).__frameCache;
+      if (fc) setMb(Math.round(fc.getMemoryUsage() / (1024 * 1024)));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+  return (
+    <HdrBtn onClick={() => { const fc = (window as any).__frameCache; if (fc) { fc.invalidateAllCompositions(); setMb(0); } }} title={`Clear cache (${mb} MB used)`}>
+      <Trash2 size={12} strokeWidth={1.75} />
+      {mb > 0 && <span style={{ fontSize: 10, fontFamily: 'var(--font-family-mono)' }}>{mb}MB</span>}
+    </HdrBtn>
+  );
+};
+
+const RAMPreviewButton: React.FC<{ compId: string }> = ({ compId }) => {
+  const [status, setStatus] = React.useState<'idle' | 'building' | 'complete'>('idle');
+  React.useEffect(() => { setStatus('idle'); }, [compId]);
+  const handleClick = () => {
+    const builder = (window as any).__ramPreviewBuilder;
+    if (!builder) return;
+    if (builder.isBuilding) { builder.cancel(); setStatus('idle'); return; }
+    setStatus('building'); builder.startManualPreview(compId, 'half');
+    builder.onProgress = (p: { state: string }) => {
+      if (p.state === 'complete') setStatus('complete');
+      else if (p.state === 'cancelled' || p.state === 'idle') setStatus('idle');
+    };
+  };
+  const isBuilding = status === 'building';
+  const color = isBuilding ? '#facc15' : status === 'complete' ? '#4ade80' : undefined;
+  return (
+    <button onClick={handleClick} title={isBuilding ? 'Cancel RAM Preview' : status === 'complete' ? 'RAM Preview (cached)' : 'Start RAM Preview'}
+      className="flex items-center gap-1.5 border-0 bg-transparent cursor-pointer transition-colors shrink-0"
+      style={{ height: 26, padding: '0 10px', borderRadius: 'var(--radius-sm)', color: color ?? 'var(--color-text-secondary)', fontSize: 'var(--font-size-sm)' }}
+      onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'}
+      onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+    >
+      <MonitorPlay size={12} strokeWidth={1.75} />
+      <span>{isBuilding ? 'Preview...' : status === 'complete' ? 'Cached' : 'Preview'}</span>
+    </button>
   );
 };

@@ -89,6 +89,16 @@ export class IndexedDBAdapter implements StorageAdapter {
     });
   }
 
+  async createProject(name: string): Promise<ProjectHandle> {
+    const id = `proj_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    return {
+      id,
+      name,
+      adapterType: 'indexeddb',
+      internal: id,
+    };
+  }
+
   async saveProject(project: SerializedProject, handle: ProjectHandle, _options?: SaveOptions): Promise<void> {
     const db = await this.openDB();
     return new Promise((resolve, reject) => {

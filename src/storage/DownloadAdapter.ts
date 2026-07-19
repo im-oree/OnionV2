@@ -35,6 +35,16 @@ export class DownloadAdapter implements StorageAdapter {
     return [];
   }
 
+  async createProject(name: string): Promise<ProjectHandle> {
+    const id = `proj_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    return {
+      id,
+      name,
+      adapterType: 'download',
+      internal: id,
+    };
+  }
+
   async saveProject(project: SerializedProject, handle: ProjectHandle, _options?: SaveOptions): Promise<void> {
     const json = JSON.stringify(project, null, 2);
     const blob = new Blob([json], { type: 'application/json' });

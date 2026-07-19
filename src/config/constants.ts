@@ -17,7 +17,7 @@ export const TOOLS = {
   SELECT:'select', MOVE:'move', HAND:'hand', ZOOM:'zoom',
   ROTATE:'rotate', SCALE:'scale',
   SHAPE_RECT:'shapeRect', SHAPE_ELLIPSE:'shapeEllipse', SHAPE_POLYGON:'shapePolygon',
-  PEN:'pen', TEXT:'text', NULL:'null',
+  PEN:'pen', TEXT:'text', NULL:'null', GRADIENT:'gradient',
 } as const;
 
 export const PANEL_TYPES = {

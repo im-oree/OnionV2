@@ -1,0 +1,38 @@
+src/renderer/compositing/Compositor.ts(16,10): error TS2724: '"../effects/FBOPool"' has no exported member named 'FBOPool'. Did you mean 'fboPool'?
+src/renderer/compositing/Compositor.ts(17,30): error TS2307: Cannot find module '../masks/MaskRenderer' or its corresponding type declarations.
+src/renderer/compositing/Compositor.ts(21,10): error TS6133: 'BLEND_MODES' is declared but its value is never read.
+src/renderer/compositing/Compositor.ts(122,5): error TS6133: 'activeLayerId' is declared but its value is never read.
+src/renderer/compositing/Compositor.ts(123,5): error TS6133: 'currentTime' is declared but its value is never read.
+src/renderer/compositing/Compositor.ts(178,11): error TS6133: 'matteAlpha' is declared but its value is never read.
+src/renderer/compositing/Compositor.ts(179,17): error TS2339: Property 'trackMatte' does not exist on type 'BaseLayer'.
+src/renderer/compositing/Compositor.ts(179,37): error TS2339: Property 'trackMatte' does not exist on type 'BaseLayer'.
+src/renderer/compositing/Compositor.ts(186,69): error TS2339: Property 'trackMatte' does not exist on type 'BaseLayer'.
+src/renderer/compositing/Compositor.ts(224,5): error TS6133: 'layer' is declared but its value is never read.
+src/renderer/compositing/Compositor.ts(235,69): error TS2339: Property 'cameraManager' does not exist on type 'SceneManager'.
+src/renderer/compositing/Compositor.ts(273,33): error TS2339: Property 'renderToTarget' does not exist on type 'EffectsRenderer'.
+src/renderer/interaction/ModalTransform.ts(66,11): error TS6133: '_rotationStartAngle' is declared but its value is never read.
+src/renderer/OffscreenRenderer.ts(36,11): error TS6133: '_offscreen' is declared but its value is never read.
+src/renderer/StartupOptimizer.ts(43,29): error TS6133: 'container' is declared but its value is never read.
+src/renderer/textures/TextureStreamer.ts(112,17): error TS6133: 'assetId' is declared but its value is never read.
+src/renderer/textures/VideoDecoder.ts(24,11): error TS6133: '_source' is declared but its value is never read.
+src/ui/common/NotificationCenter.tsx(5,37): error TS6133: 'Notification' is declared but its value is never read.
+src/ui/dialogs/ProjectSettingsDialog.tsx(16,23): error TS2339: Property 'autoSaveInterval' does not exist on type 'ProjectSettings'.
+src/ui/dialogs/ProjectSettingsDialog.tsx(19,23): error TS2339: Property 'defaultWidth' does not exist on type 'ProjectSettings'.
+src/ui/dialogs/ProjectSettingsDialog.tsx(22,23): error TS2339: Property 'defaultHeight' does not exist on type 'ProjectSettings'.
+src/ui/dialogs/ProjectSettingsDialog.tsx(25,23): error TS2339: Property 'defaultFps' does not exist on type 'ProjectSettings'.
+src/ui/dialogs/ProjectSettingsDialog.tsx(28,23): error TS2339: Property 'notes' does not exist on type 'ProjectSettings'.
+src/ui/dialogs/ProjectSettingsDialog.tsx(33,7): error TS2353: Object literal may only specify known properties, and 'autoSaveInterval' does not exist in type 'Partial<ProjectSettings>'.
+src/ui/menubar/menus/fileMenu.ts(39,17): error TS6133: 'data' is declared but its value is never read.
+src/ui/menubar/menus/fileMenu.ts(119,15): error TS6133: 'sm' is declared but its value is never read.
+src/ui/menubar/menus/fileMenu.ts(147,15): error TS6133: 'sm' is declared but its value is never read.
+src/ui/menubar/menus/fileMenu.ts(225,15): error TS6133: 'sm' is declared but its value is never read.
+src/ui/panels/timeline/CacheIndicator.tsx(36,10): error TS6133: 'cacheMemoryMB' is declared but its value is never read.
+src/ui/panels/timeline/CacheIndicator.tsx(37,10): error TS6133: 'cachedCount' is declared but its value is never read.
+src/ui/panels/timeline/TimelinePanel.tsx(4,28): error TS6133: 'animationClock' is declared but its value is never read.
+src/ui/panels/timeline/useKeyframeDrag.ts(14,45): error TS6133: 'startTime' is declared but its value is never read.
+src/ui/panels/viewport/ViewportHUD.tsx(43,73): error TS6198: All destructured elements are unused.
+src/ui/WelcomeScreen.tsx(5,1): error TS6133: 'useCompositionStore' is declared but its value is never read.
+src/ui/WelcomeScreen.tsx(14,10): error TS6133: 'loadingRecent' is declared but its value is never read.
+src/ui/WelcomeScreen.tsx(14,25): error TS6133: 'setLoadingRecent' is declared but its value is never read.
+src/ui/WelcomeScreen.tsx(55,15): error TS6133: 'data' is declared but its value is never read.
+src/workers/keyframeWorker.ts(67,9): error TS6199: All variables are unused.

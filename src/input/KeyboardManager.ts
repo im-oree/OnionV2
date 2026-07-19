@@ -10,9 +10,12 @@ import type { Composition } from '../types/composition';
 
 export function useKeyboardManager(): void {
   useEffect(() => {
+    // Use capture phase so spacebar playback works even when buttons/menus are focused.
+    // The capture phase fires BEFORE the event reaches the target element, ensuring
+    // we can e.preventDefault() before any focused button's default click behavior.
     const handler = (e: KeyboardEvent) => { shortcutRegistry.handleEvent(e); };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    document.addEventListener('keydown', handler, { capture: true });
+    return () => document.removeEventListener('keydown', handler, { capture: true });
   }, []);
 }
 
@@ -62,9 +65,20 @@ export function registerAllShortcuts(): void {
   shortcutRegistry.register({ id: 'edit.undo', key: 'z', ctrl: true, context: 'global', handler: () => {}, remappable: true });
   shortcutRegistry.register({ id: 'edit.redo', key: 'z', ctrl: true, shift: true, context: 'global', handler: () => {}, remappable: true });
 
-  // Playback
+  // Playback — Space toggles play/pause
+  // Also requests a render explicitly so the viewport updates even if PlaybackControls
+  // effect hasn't mounted yet or clock events aren't wired.
   const clock = () => import('../ui/panels/timeline/PlaybackControls').then(m => m.animationClock);
-  shortcutRegistry.register({ id: 'playback.toggle', key: ' ', context: 'global', handler: () => clock().then(c => c.togglePlay()), remappable: true });
+  shortcutRegistry.register({ id: 'playback.toggle', key: ' ', context: 'global', handler: () => {
+    clock().then(c => {
+      c.togglePlay();
+      // Request a render after toggling, in case PlaybackControls hasn't wired clock events yet
+      import('../state/uiStore').then(({ useUIStore }) => {
+        const req = useUIStore.getState().requestRendererRender;
+        if (req) req();
+      });
+    });
+  }, remappable: true });
   shortcutRegistry.register({ id: 'playback.start', key: 'Home', context: 'global', handler: () => clock().then(c => c.goToStart()), remappable: true });
   shortcutRegistry.register({ id: 'playback.end', key: 'End', context: 'global', handler: () => clock().then(c => c.goToEnd()), remappable: true });
   shortcutRegistry.register({ id: 'playback.prevFrame', key: 'ArrowLeft', context: 'global', handler: () => clock().then(c => c.stepBackward()), remappable: true });
@@ -141,10 +155,42 @@ export function registerAllShortcuts(): void {
   // Escape pauses instead of stop() to avoid rewinding to frame 0 (which snaps all animated properties)
   shortcutRegistry.register({ id: 'playback.pause', key: 'Escape', context: 'global', handler: () => clock().then(c => c.pause()), remappable: true });
 
-  shortcutRegistry.register({ id: 'playback.easeSelected', key: 'F9', context: 'global', handler: () => {
+  // F9 = Easy Ease (both sides)
+  shortcutRegistry.register({ id: 'ease.easyEase', key: 'F9', context: 'global', handler: () => {
+    import('../state/keyframeStore').then(m => {
+      m.useKeyframeStore.getState().applyEasingPreset('easyEase');
+    });
+  }, remappable: true });
+
+  // Shift+F9 = Ease In
+  shortcutRegistry.register({ id: 'ease.easeIn', key: 'F9', shift: true, context: 'global', handler: () => {
+    import('../state/keyframeStore').then(m => {
+      m.useKeyframeStore.getState().applyEasingPreset('easeIn');
+    });
+  }, remappable: true });
+
+  // Ctrl+F9 = Ease Out
+  shortcutRegistry.register({ id: 'ease.easeOut', key: 'F9', ctrl: true, context: 'global', handler: () => {
+    import('../state/keyframeStore').then(m => {
+      m.useKeyframeStore.getState().applyEasingPreset('easeOut');
+    });
+  }, remappable: true });
+
+  // Ctrl+L = Linear
+  shortcutRegistry.register({ id: 'ease.linear', key: 'l', ctrl: true, context: 'global', handler: () => {
     import('../state/keyframeStore').then(m => {
       const s = m.useKeyframeStore.getState();
-      s.selectedKeyframeIds.forEach(id => s.setInterpolation(id, 'bezier'));
+      const ids = Array.from(s.selectedKeyframeIds);
+      for (const id of ids) s.setInterpolation(id, 'linear');
+    });
+  }, remappable: true });
+
+  // Ctrl+H = Hold
+  shortcutRegistry.register({ id: 'ease.hold', key: 'h', ctrl: true, context: 'global', handler: () => {
+    import('../state/keyframeStore').then(m => {
+      const s = m.useKeyframeStore.getState();
+      const ids = Array.from(s.selectedKeyframeIds);
+      for (const id of ids) s.setInterpolation(id, 'hold');
     });
   }, remappable: true });
 

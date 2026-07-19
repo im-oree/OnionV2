@@ -1,3 +1,4 @@
 export { DialogManager } from './DialogManager';
 export { NewCompositionDialog } from './NewCompositionDialog';
-export { openNewCompositionDialog, closeAllDialogs } from './DialogManager';
+export { PreferencesDialog } from './PreferencesDialog';
+export { openNewCompositionDialog, openPreferencesDialog, closeAllDialogs } from './DialogManager';

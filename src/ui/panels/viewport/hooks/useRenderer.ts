@@ -4,9 +4,7 @@ import { useCompositionStore } from '../../../../state/compositionStore';
 import { useSelectionStore } from '../../../../state/selectionStore';
 import { useViewportStore } from '../../../../state/viewportStore';
 import { useToolStore } from '../../../../state/toolStore';
-import { useKeyframeStore } from '../../../../state/keyframeStore';
 import { setRequestRender } from '../../../../state/uiStore';
-import { PropertyBinder } from '../../../../animation/PropertyBinder';
 import { TOOLS } from '../../../../config/constants';
 import type { GizmoMode } from '../../../../renderer/interaction/SelectionOverlay';
 import type { Composition } from '../../../../types/composition';
@@ -28,7 +26,6 @@ interface UseRendererResult {
 
 export function useRenderer(container: HTMLElement | null): UseRendererResult {
   const rendererRef = useRef<Renderer | null>(null);
-  const binderRef = useRef<PropertyBinder | null>(null);
   const [ready, setReady] = useState(false);
   const [state, setState] = useState<RendererState>({ fps: 0, zoom: 1, frameCount: 0 });
   const [transformMode, setTransformMode] = useState<string | null>(null);
@@ -97,12 +94,6 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
     };
   }, [container]);
 
-  // Create PropertyBinder when keyframe engine is available
-  useEffect(() => {
-    const engine = useKeyframeStore.getState().engine;
-    binderRef.current = new PropertyBinder(engine);
-  }, []);
-
   // Apply composition identity changes (dimensions, fps, bg color)
   // Depend only on identity-affecting fields so playback frame ticks don't retrigger.
   // `composition` is intentionally omitted from deps — the individual selectors above
@@ -126,13 +117,10 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
     r.renderLoop.requestRender();
   }, [layers, composition?.id]);
 
-  // Apply keyframes when currentTime changes
+  // Request render when currentTime changes (Renderer.beforeRender handles evaluation)
   useEffect(() => {
     const r = rendererRef.current;
-    const binder = binderRef.current;
-    if (!r || !binder || !composition) return;
-    const frame = Math.round(currentTime * compFps);
-    binder.evaluateFrame(composition.id, frame);
+    if (!r || !composition) return;
     r.renderLoop.requestRender();
   }, [currentTime, composition?.id, compFps]);
 
@@ -152,7 +140,7 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
       else if (activeTool === (TOOLS.SCALE as string)) gizmo = 'scale';
     }
     r.selectionOverlay.gizmoMode = gizmo;
-    r.selectionOverlay.hideHandles = mt.active;
+    r.selectionOverlay.hideHandles = mt.active || gizmo === null;
   }, [activeTool, ready, transformMode]);
 
   // Selection overlay

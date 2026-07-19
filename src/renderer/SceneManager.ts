@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { GridOverlay } from './overlays/Grid';
 import { SafeZonesOverlay } from './overlays/SafeZones';
 import { CompBoundsOverlay } from './overlays/CompBounds';
+import { APP_BG_COLOR } from '../config/rendererColors';
 
 export class SceneManager {
   public readonly scene: THREE.Scene;
@@ -49,9 +50,8 @@ export class SceneManager {
     this.safeZones.group.renderOrder = 5;
     this.scene.add(this.safeZones.group);
 
-    // Solid background so CSS grid patterns don't show through transparent canvas
-    // Matches the outside-comp area grey
-    this.scene.background = new THREE.Color('#3d3d3d');
+    // Transparent — CSS layer underneath handles comp bg + app bg
+    this.scene.background = null;
   }
 
   applyComposition(width: number, height: number, bgColor: string): void {

@@ -19,29 +19,74 @@ export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
     animationClock.setTotalFrames(totalFrames);
     animationClock.setLoopMode(loop ? 'loop' : 'none');
 
-    const cleanups: Array<() => void> = [];
-
-    import('../../../animation/PropertyBinder').then(({ PropertyBinder }) => {
-      import('../../../state/keyframeStore').then(({ useKeyframeStore }) => {
-        import('../../../state/uiStore').then(({ useUIStore }) => {
-          const binder = new PropertyBinder(useKeyframeStore.getState().engine);
-          const onFrame = (ev: { frame: number }) => {
-            binder.evaluateFrame(comp.id, ev.frame);
-            const req = useUIStore.getState().requestRendererRender;
-            if (req) req();
-          };
-          animationClock.on('frame-changed', onFrame);
-          cleanups.push(() => animationClock.off('frame-changed', onFrame));
-        });
-      });
-    });
-
     const onFrame = (ev: { frame: number }) => {
       useCompositionStore.getState().setCurrentTime(comp.id, ev.frame / comp.fps);
     };
-    const onPlay = () => setPlaybackState('playing');
-    const onPause = () => setPlaybackState('paused');
-    const onStop = () => setPlaybackState('stopped');
+    // Auto-cache interval re-trigger (only when autoCache toggle is ON)
+    let autoCacheInterval: ReturnType<typeof setInterval> | null = null;
+    const _startAutoCache = (cid: string) => {
+      _stopAutoCache();
+      _triggerPrefetch(cid);
+      autoCacheInterval = setInterval(() => _triggerPrefetch(cid), 2000);
+    };
+    const _stopAutoCache = () => {
+      if (autoCacheInterval !== null) {
+        clearInterval(autoCacheInterval);
+        autoCacheInterval = null;
+      }
+    };
+    const _triggerPrefetch = (cid: string) => {
+      const builder = (window as any).__ramPreviewBuilder;
+      if (!builder) return;
+      // Don't interrupt a manual preview build (background prefetch will auto-pause during transforms)
+      if (builder.isBuilding) return;
+      const frame = animationClock.currentFrame;
+      builder.startBackgroundPrefetch(cid, frame, 90);
+    };
+
+    const onPlay = () => {
+      setPlaybackState('playing');
+      // M11: Activate property binder for runtime animation overrides
+      const renderer = (window as any).__renderer;
+      if (renderer?.propertyBinder) {
+        renderer.propertyBinder.setActive(true);
+      }
+      if (useTimelineStore.getState().autoCache) {
+        _startAutoCache(comp.id);
+      }
+    };
+    const onPause = () => {
+      setPlaybackState('paused');
+      _stopAutoCache();
+      const renderer = (window as any).__renderer;
+      if (renderer) {
+        if (renderer.propertyBinder?.isActive) {
+          renderer.propertyBinder.setActive(false);
+          renderer.layerSync.restoreFromOverrides();
+          renderer.layerSync.setRuntimeOverridesActive(false);
+        }
+        // Ensure 3D scene is visible after playback stops
+        renderer.sceneManager.compBounds.show();
+        renderer.sceneManager.layerGroup.visible = true;
+        renderer.renderLoop.requestRender();
+      }
+    };
+    const onStop = () => {
+      setPlaybackState('stopped');
+      _stopAutoCache();
+      const renderer = (window as any).__renderer;
+      if (renderer) {
+        if (renderer.propertyBinder?.isActive) {
+          renderer.propertyBinder.setActive(false);
+          renderer.layerSync.restoreFromOverrides();
+          renderer.layerSync.setRuntimeOverridesActive(false);
+        }
+        // Ensure 3D scene is visible after playback stops
+        renderer.sceneManager.compBounds.show();
+        renderer.sceneManager.layerGroup.visible = true;
+        renderer.renderLoop.requestRender();
+      }
+    };
     animationClock.on('frame-changed', onFrame);
     animationClock.on('play', onPlay);
     animationClock.on('pause', onPause);
@@ -81,16 +126,23 @@ export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
       });
     };
     document.addEventListener('playback:prevKeyframe', onPrevKf);
+    // RAM preview complete — just notify, don't auto-play
+    const onRAMPreviewComplete = () => {
+      // Stop playback if it was running, and seek to start
+      animationClock.stop();
+    };
+    document.addEventListener('rampreview:complete', onRAMPreviewComplete);
     document.addEventListener('playback:nextKeyframe', onNextKf);
 
     return () => {
+      _stopAutoCache();
       animationClock.off('frame-changed', onFrame);
       animationClock.off('play', onPlay);
       animationClock.off('pause', onPause);
       animationClock.off('stop', onStop);
+      document.removeEventListener('rampreview:complete', onRAMPreviewComplete);
       document.removeEventListener('playback:prevKeyframe', onPrevKf);
       document.removeEventListener('playback:nextKeyframe', onNextKf);
-      cleanups.forEach(fn => fn());
     };
   }, [comp.id, comp.fps, totalFrames, loop, setPlaybackState]);
 

@@ -13,6 +13,8 @@ export interface TimelineState{
   visibleTrackHeight:TrackHeight; snapKeyframes:boolean;
   playbackRate:number;
   autoKey:boolean;
+  /** Auto-cache frames during playback (off by default — can interfere with interaction) */
+  autoCache:boolean;
   setPlaybackState:(s:PlaybackState)=>void;
   play:()=>void; pause:()=>void; stop:()=>void;
   togglePlayback:()=>void;
@@ -27,6 +29,7 @@ export interface TimelineState{
   setAutoKey:(v:boolean)=>void;
   toggleAutoKey:()=>void;
   toggleSnapping:()=>void;
+  toggleAutoCache:()=>void;
 }
 
 const DEFAULT_ZOOM=10;
@@ -35,9 +38,10 @@ export const useTimelineStore = create<TimelineState>((set)=>({
   playbackState:'stopped', timeDisplay:TIME_DISPLAY.FRAMES as TimeDisplayMode,
   zoom:DEFAULT_ZOOM, scrollX:0, scrollY:0,
   snapping:true, autoScroll:true, loop:true,
-  workAreaStart:0, workAreaEnd:300,
+  workAreaStart:0, workAreaEnd:60,
   visibleTrackHeight:'normal', snapKeyframes:true, playbackRate:1,
   autoKey:false,
+  autoCache:false,
   setPlaybackState:(s)=>set({playbackState:s}),
   play:()=>set({playbackState:'playing'}),
   pause:()=>set({playbackState:'paused'}),
@@ -60,4 +64,5 @@ export const useTimelineStore = create<TimelineState>((set)=>({
   setAutoKey:(v)=>set({autoKey:v}),
   toggleAutoKey:()=>set(s=>({autoKey:!s.autoKey})),
   toggleSnapping:()=>set(s=>({snapping:!s.snapping})),
+  toggleAutoCache:()=>set(s=>({autoCache:!s.autoCache})),
 }));

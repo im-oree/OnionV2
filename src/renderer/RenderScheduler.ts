@@ -1,13 +1,14 @@
 /**
- * RenderScheduler — central authority for when to render.
+ * RenderScheduler — priority-based render orchestration.
+ *
+ * Integrates with RenderLoop: does NOT create its own RAF cycle.
+ * Instead, the RenderLoop queries the scheduler's state during its tick.
  *
  * Priorities:
- * - Interactive: user actively editing/dragging → render immediately at best quality
- * - Playback: playing back at frame rate → render each frame, drop quality if over budget
- * - Background: idle prefetch → low priority, yield often
+ * - Interactive: user actively editing → render at best quality
+ * - Playback: playing back at frame rate → render each frame
+ * - Background: idle prefetch → low priority
  * - No-op: nothing changed → don't render
- *
- * Coalesces multiple change requests within a single RAF cycle.
  */
 import type { CacheQuality } from './cache/FrameCache';
 import type { AdaptiveResolution } from './cache/AdaptiveResolution';
@@ -15,26 +16,26 @@ import type { AdaptiveResolution } from './cache/AdaptiveResolution';
 export type RenderPriority = 'interactive' | 'playback' | 'background' | 'noop';
 
 export interface RenderBudget {
-  frameBudgetMs: number;   // e.g. 33.3ms for 30fps, 16.6ms for 60fps
-  renderTimeMs: number;     // time spent rendering last frame
-  quality: CacheQuality;    // current adaptive quality
-  droppedFrames: number;    // count of frames dropped this session
-  isOverBudget: boolean;    // true if renderTime exceeded budget last frame
+  frameBudgetMs: number;
+  renderTimeMs: number;
+  quality: CacheQuality;
+  droppedFrames: number;
+  isOverBudget: boolean;
 }
 
 export class RenderScheduler {
   private _priority: RenderPriority = 'noop';
-  private _requested = false;
   private _frameBudgetMs = 33.3;
   private _renderTimeMs = 0;
   private _droppedFrames = 0;
   private _frameCount = 0;
   private _overBudgetSince = 0;
   private _adaptiveRes?: AdaptiveResolution;
-  private _onScheduled: (() => void) | null = null;
+  /** Callback invoked when a render request is made — set by Renderer to call renderLoop.requestRender() */
+  private _onRequestRender: (() => void) | null = null;
 
-  /** Callback fired when a render should happen */
-  set onScheduled(cb: (() => void) | null) { this._onScheduled = cb; }
+  /** Callback fired when a render should be scheduled */
+  set onRequestRender(cb: (() => void) | null) { this._onRequestRender = cb; }
 
   setAdaptiveResolution(ar: AdaptiveResolution): void {
     this._adaptiveRes = ar;
@@ -54,30 +55,28 @@ export class RenderScheduler {
   /** Request a render at the given priority. Higher priority preempts lower. */
   request(priority: RenderPriority): void {
     const order: RenderPriority[] = ['noop', 'background', 'playback', 'interactive'];
-
     if (order.indexOf(priority) > order.indexOf(this._priority)) {
       this._priority = priority;
-    }
-
-    if (!this._requested) {
-      this._requested = true;
-      requestAnimationFrame(() => this._flush());
+      // Notify the render loop that rendering is needed
+      this._onRequestRender?.();
     }
   }
 
-  /** Record render time for adaptive quality adjustment */
-  recordRenderTime(ms: number): void {
-    this._renderTimeMs = ms;
+  /** Called by RenderLoop after rendering — resets priority and reports timing */
+  didRender(renderMs: number): void {
+    this._renderTimeMs = renderMs;
     this._frameCount++;
 
-    if (ms > this._frameBudgetMs * 0.9) {
+    if (renderMs > this._frameBudgetMs * 0.9) {
       this._overBudgetSince++;
     } else {
       this._overBudgetSince = 0;
     }
 
-    // Notify adaptive resolution
-    this._adaptiveRes?.recordFrameTime(ms, this._frameBudgetMs, this._priority);
+    this._adaptiveRes?.recordFrameTime(renderMs, this._frameBudgetMs, this._priority);
+
+    // Reset priority for next cycle
+    this._priority = 'noop';
   }
 
   /** Mark a dropped frame */
@@ -97,9 +96,14 @@ export class RenderScheduler {
     };
   }
 
+  /** Should a render happen this frame? */
+  get shouldRender(): boolean {
+    return this._priority !== 'noop';
+  }
+
   /** Should the scheduler downgrade quality? */
   get shouldDowngrade(): boolean {
-    return this._overBudgetSince >= 10; // over budget for 10+ consecutive frames
+    return this._overBudgetSince >= 10;
   }
 
   /** Should the scheduler upgrade quality? */
@@ -107,24 +111,12 @@ export class RenderScheduler {
     return this._frameCount > 30 && this._renderTimeMs < this._frameBudgetMs * 0.5;
   }
 
-  /** Reset counters (e.g., on quality change) */
   reset(): void {
     this._frameCount = 0;
     this._overBudgetSince = 0;
   }
 
-  private _flush(): void {
-    this._requested = false;
-
-    if (this._priority === 'noop') return;
-
-    this._onScheduled?.();
-
-    // Reset priority to allow next request
-    this._priority = 'noop';
-  }
-
   dispose(): void {
-    this._onScheduled = null;
+    this._adaptiveRes = undefined;
   }
 }

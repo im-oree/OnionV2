@@ -2,6 +2,15 @@ import { COMPOSITION, PERFORMANCE } from './constants';
 import type { Composition, Layer, Project } from '../types';
 import { defaultTransform } from '../types/layer';
 
+/** AE-style layer label color palette */
+export const LAYER_COLORS = [
+  '#B7B7B7', '#F5A623', '#F8E71C', '#7ED321', '#50E3C2',
+  '#4A90E2', '#9013FE', '#BD10E0', '#D0021B', '#E8913A',
+  '#8B572A', '#D4A017', '#417505', '#B8E986', '#4A4A4A',
+];
+
+let _layerCounter = 0;
+
 export const DEFAULT_COMPOSITION: Omit<Composition, 'id'> = {
   name: 'New Composition',
   width: COMPOSITION.DEFAULT_WIDTH,
@@ -33,6 +42,7 @@ export function createDefaultLayer(type: Layer['type'], name: string): Omit<Laye
     effects: [],
     masks: [],
     parentId: null,
+    color: LAYER_COLORS[_layerCounter++ % LAYER_COLORS.length],
   };
 }
 

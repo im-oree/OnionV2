@@ -1,39 +1,118 @@
-/* ── Panel shell ────────────────────────────────────────── */
-.panel{display:flex;flex-direction:column;background:var(--color-bg-panel);overflow:hidden;position:relative;min-width:0;min-height:0;flex:1}
-.panel-header{display:flex;align-items:center;height:var(--size-panel-header);background:var(--color-bg-panel-header);border-bottom:1px solid var(--color-border);padding:0 6px;gap:4px;flex-shrink:0}
+/* ═══ Panel shell — LIGHTER than bg, big radius, minimal shadow ═══ */
+.panel{
+  display:flex;flex-direction:column;
+  background:var(--color-panel);
+  border-radius:var(--radius-panel);
+  box-shadow:var(--shadow-panel);
+  overflow:hidden;position:relative;
+  min-width:0;min-height:0;flex:1;
+}
+
+.panel-header{
+  display:flex;align-items:center;
+  height:var(--size-panel-header);
+  background:transparent;
+  border-bottom:1px solid var(--color-border);
+  padding:0 16px;gap:10px;flex-shrink:0;
+  font-size:var(--font-size-sm);
+  color:var(--color-text-secondary);
+  letter-spacing:0.01em;
+  font-weight:500;
+}
+
 .panel-body{flex:1;overflow:auto;min-height:0;position:relative}
-.panel-empty{display:flex;align-items:center;justify-content:center;color:var(--color-text-disabled);font-size:var(--font-size-sm);padding:var(--space-2)}
 
-/* ── Splitter (draggable divider) ──────────────────────── */
-.splitter{flex-shrink:0;background:var(--color-bg-surface);position:relative;z-index:10;transition:background var(--transition-fast);border:0;margin:0;padding:0}
-.splitter-horizontal{width:100%;height:var(--size-splitter);cursor:row-resize}
-.splitter-vertical{width:var(--size-splitter);height:100%;cursor:col-resize}
-.splitter:hover,.splitter:active{background:var(--color-accent)}
+.panel-empty{
+  display:flex;align-items:center;justify-content:center;
+  color:var(--color-text-disabled);font-size:var(--font-size-sm);
+  padding:var(--space-5);
+}
 
-/* ── Workspace tabs ────────────────────────────────────── */
-.workspace-tabs{display:flex;align-items:center;height:var(--size-tabs-height);background:var(--color-bg-surface);gap:0;border-bottom:1px solid var(--color-border);flex-shrink:0}
-.workspace-tab{display:flex;align-items:center;height:100%;padding:0 14px;font-size:var(--font-size-sm);color:var(--color-text-secondary);background:transparent;border:none;cursor:pointer;transition:background var(--transition-fast),color var(--transition-fast);position:relative}
-.workspace-tab:hover{background:var(--color-bg-hover);color:var(--color-text-primary)}
-.workspace-tab.active{background:var(--color-bg-panel);color:var(--color-text-primary)}
-.workspace-tab.active::after{content:'';position:absolute;bottom:0;left:0;right:0;height:2px;background:var(--color-accent)}
+.splitter{
+  flex-shrink:0;
+  background:transparent;
+  position:relative;z-index:10;
+  transition:background var(--dur-fast) var(--ease-out);
+  border:0;margin:0;padding:0;
+}
+.splitter-horizontal{width:100%;height:var(--gap-panel);cursor:row-resize}
+.splitter-vertical{width:var(--gap-panel);height:100%;cursor:col-resize}
+.splitter:hover,.splitter:active{background:var(--color-accent);opacity:0.3}
 
-/* ── Panel type switcher button ─────────────────────────── */
-.panel-type-btn{display:flex;align-items:center;gap:4px;font-size:var(--font-size-sm);color:var(--color-text-secondary);background:transparent;border:none;cursor:pointer;padding:0 4px;height:100%;transition:color var(--transition-fast)}
-.panel-type-btn:hover{color:var(--color-text-primary)}
+.workspace-tabs{
+  display:flex;align-items:center;
+  height:var(--size-tabs-height);
+  background:transparent;
+  gap:4px;
+  flex-shrink:0;
+}
+
+.workspace-tab{
+  display:flex;align-items:center;
+  height:100%;padding:0 16px;
+  font-size:var(--font-size-sm);font-weight:var(--font-weight-medium);
+  color:var(--color-text-secondary);
+  background:transparent;border:none;cursor:pointer;
+  transition:color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+  position:relative;
+  border-radius:var(--radius-sm) var(--radius-sm) 0 0;
+}
+.workspace-tab:hover{color:var(--color-text-primary);background:var(--color-panel-hover)}
+.workspace-tab.active{color:var(--color-text-primary)}
+.workspace-tab.active::after{
+  content:'';position:absolute;bottom:0;left:12px;right:12px;
+  height:2px;background:var(--color-accent);border-radius:2px 2px 0 0;
+}
+
+.panel-type-btn{
+  display:flex;align-items:center;gap:6px;
+  font-size:var(--font-size-sm);font-weight:var(--font-weight-medium);
+  color:var(--color-text-primary);
+  background:transparent;border:none;cursor:pointer;
+  padding:6px 10px;height:auto;
+  border-radius:var(--radius-sm);
+  transition:color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.panel-type-btn:hover{background:var(--color-panel-hover)}
 .panel-type-btn .arrow{font-size:8px;opacity:.6}
 
-/* ── Row styling ────────────────────────────────────────── */
-.row{display:flex;align-items:center;height:var(--size-row);padding:0 var(--space-2);gap:var(--space-1);cursor:pointer;transition:background var(--transition-fast)}
-.row:hover{background:var(--color-bg-hover)}
-.row.selected{background:var(--color-bg-active);color:#fff}
+.row{
+  display:flex;align-items:center;
+  height:var(--size-row);
+  padding:var(--pad-row);gap:var(--space-3);
+  cursor:pointer;
+  border-radius:var(--radius-sm);
+  transition:background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.row:hover{background:var(--color-panel-hover)}
+.row.selected{background:var(--color-panel-active);color:var(--color-text-primary)}
 
-/* ── Toolbar ─────────────────────────────────────────────── */
-.toolbar-btn{width:var(--size-toolbar-width);height:var(--size-toolbar-width);display:flex;align-items:center;justify-content:center;border:none;cursor:pointer;transition:background var(--transition-fast)}
-.toolbar-btn:hover{background:var(--color-bg-hover)}
-.toolbar-btn.active{background:var(--color-bg-active);border-left:2px solid var(--color-accent)}
+/* ═══ Toolbar button — bigger, rounder ═══ */
+.toolbar-btn{
+  width:40px;height:40px;
+  display:flex;align-items:center;justify-content:center;
+  border:none;cursor:pointer;
+  transition:background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  color:var(--color-text-secondary);
+  border-radius:var(--radius-md);
+  margin:2px 0;
+}
+.toolbar-btn:hover{background:var(--color-panel-hover);color:var(--color-text-primary)}
+.toolbar-btn:active{transform:scale(0.94)}
+.toolbar-btn.active{
+  background:var(--color-accent-muted);color:var(--color-accent);
+}
 
-/* ── Viewport grid pattern ────────────────────────────── */
-.viewport-grid{background-image:linear-gradient(var(--viewport-grid) 1px,transparent 1px),linear-gradient(90deg,var(--viewport-grid) 1px,transparent 1px);background-size:50px 50px}
+.viewport-grid{
+  background-image:
+    linear-gradient(var(--viewport-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--viewport-grid) 1px, transparent 1px);
+  background-size:50px 50px;
+}
 
-/* ── Outliner tree indent ─────────────────────────────── */
-.tree-row{padding-left:calc(8px + var(--tree-depth,0) * 16px)}
+.tree-row{padding-left:calc(14px + var(--tree-depth,0) * 20px)}
+
+.bg-menubar{background:transparent}
+.text-menubar{color:var(--color-text-secondary)}
+.hover\:bg-menubar-item-hover:hover{background:var(--color-panel-hover);color:var(--color-text-primary)}
+.h-menubar{height:var(--size-menubar-height)}

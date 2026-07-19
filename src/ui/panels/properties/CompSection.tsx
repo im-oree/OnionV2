@@ -9,7 +9,6 @@ export const CompSection: React.FC = () => {
     const id = s.activeCompositionId;
     return id ? s.compositions.find((c) => c.id === id) ?? null : null;
   });
-
   if (!comp) return null;
 
   return (
@@ -18,7 +17,15 @@ export const CompSection: React.FC = () => {
         <input
           type="text" value={comp.name}
           onChange={(e) => useCompositionStore.getState().updateComposition(comp.id, { name: e.target.value })}
-          className="w-full h-[18px] text-ui-xs px-1 bg-surface border border-border rounded-sm text-text-primary outline-none focus:border-accent"
+          className="w-full outline-none"
+          style={{
+            height: 26, padding: '0 10px',
+            background: 'var(--color-input-bg)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-sm)',
+            color: 'var(--color-text-primary)',
+            fontSize: 'var(--font-size-md)',
+          }}
         />
       </PropRow>
       <PropRow label="Width">

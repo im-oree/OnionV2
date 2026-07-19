@@ -44,9 +44,8 @@ export class FrameCache {
       this._cache.set(compId, compCache);
     }
 
-    // Estimate byte size: width × height × 4 bytes × quality factor
-    const qf = quality === 'full' ? 1 : quality === 'half' ? 0.25 : 0.0625;
-    const byteSize = Math.round(imageBitmap.width * imageBitmap.height * 4 * qf);
+    // Byte size = width × height × 4 bytes (RGBA) — based on actual ImageBitmap dimensions
+    const byteSize = imageBitmap.width * imageBitmap.height * 4;
 
     const entry: CachedFrame = {
       imageBitmap,

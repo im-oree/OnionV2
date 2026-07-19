@@ -90,6 +90,7 @@ export interface StorageAdapter {
   pickWorkspace(): Promise<WorkspaceHandle>;
   getWorkspace(): Promise<WorkspaceHandle | null>;
   listProjects(): Promise<ProjectHandle[]>;
+  createProject(name: string): Promise<ProjectHandle>;
 
   // Metadata
   getProjectMetadata(handle: ProjectHandle): Promise<ProjectMetadata>;

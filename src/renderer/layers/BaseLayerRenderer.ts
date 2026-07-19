@@ -20,6 +20,8 @@ export abstract class BaseLayerRenderer {
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.name = `${id}_mesh`;
     this.mesh.renderOrder = 1;
+    // Enable frustum culling so objects outside the viewport aren't rendered (saves GPU)
+    this.mesh.frustumCulled = true;
     this.group.add(this.mesh);
   }
 

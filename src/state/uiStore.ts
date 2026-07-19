@@ -4,7 +4,7 @@ import { PANEL_TYPES, WORKSPACES } from '../config/constants';
 export type PanelType = typeof PANEL_TYPES[keyof typeof PANEL_TYPES];
 export type WorkspaceType = typeof WORKSPACES[keyof typeof WORKSPACES];
 
-export type RightSidebarTab = 'properties' | 'effects' | 'align' | 'info' | 'render' | 'character';
+export type RightSidebarTab = 'properties' | 'effects' | 'align' | 'info' | 'render' | 'character' | 'performance' | 'graph';
 
 export interface PanelLayout { id: string; type: PanelType; label: string }
 export type SplitDirection = 'horizontal' | 'vertical';

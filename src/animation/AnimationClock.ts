@@ -7,6 +7,9 @@ type Listener<T = unknown> = (data: T) => void;
 
 export type LoopMode = 'none' | 'loop' | 'ping-pong';
 
+/** Playback mode: how the clock handles frame advancement */
+export type PlaybackMode = 'realtime' | 'accurate' | 'cacheOnly';
+
 export type ClockEventPayloads = {
   'frame-changed': { frame: number; time: number };
   'play': { frame: number };
@@ -36,6 +39,7 @@ export class AnimationClock {
   private _isPlaying = false;
   private _playbackRate = 1;
   private _loopMode: LoopMode = 'none';
+  private _playbackMode: PlaybackMode = 'realtime';
   private _fps = 30;
   private _currentFrame = 0;
   private _totalFrames = 300;
@@ -101,6 +105,7 @@ export class AnimationClock {
   setTotalFrames(n: number): void { this._totalFrames = n; }
   setPlaybackRate(rate: number): void { this._playbackRate = rate; }
   setLoopMode(mode: LoopMode): void { this._loopMode = mode; }
+  setPlaybackMode(mode: PlaybackMode): void { this._playbackMode = mode; }
   setWorkArea(start: number, end: number): void { this._workAreaStart = start; this._workAreaEnd = end; }
   setUseWorkArea(use: boolean): void { this._useWorkArea = use; }
 
@@ -111,6 +116,7 @@ export class AnimationClock {
   get fps(): number { return this._fps; }
   get totalFrames(): number { return this._totalFrames; }
   get loopMode(): LoopMode { return this._loopMode; }
+  get playbackMode(): PlaybackMode { return this._playbackMode; }
   get playbackRate(): number { return this._playbackRate; }
 
   /** Step one frame forward (for arrow key frame stepping) */

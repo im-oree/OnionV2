@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { Eye, EyeOff, Lock, Unlock, Circle } from 'lucide-react';
 import type { Layer } from '../../../types/layer';
 import { Icon } from '../../common/Icon';
 
 const LAYER_ICONS: Record<string, string> = {
-  solid: 'square', shape: 'triangle', text: 'type',
-  image: 'image', video: 'film', null: 'circle', comp: 'grid',
+  solid: 'rectangle', shape: 'polygon', text: 'text',
+  image: 'image', video: 'video', null: 'ellipse', comp: 'grid',
 };
 
 interface LayerRowProps {
@@ -27,33 +28,21 @@ interface LayerRowProps {
 export const LayerRow: React.FC<LayerRowProps> = ({
   layer, depth, isSelected,
   onSelect, onToggleVisibility, onToggleLock, onToggleSolo,
-  onRename, onDragStart, onDrop,
-  onDuplicate, onDelete, forceRename,
-  onDoubleClick,
+  onRename, onDragStart, onDrop, onDuplicate, onDelete, forceRename, onDoubleClick,
 }) => {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(layer.name);
+  const dragOverRef = useRef<'above' | 'below' | 'child' | null>(null);
   const [dragOver, setDragOver] = useState<'above' | 'below' | 'child' | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (forceRename) {
-      setEditing(true);
-      setName(layer.name);
-    }
-  }, [forceRename, layer.name]);
-
-  useEffect(() => {
-    if (editing && inputRef.current) { inputRef.current.focus(); inputRef.current.select(); }
-  }, [editing]);
+  useEffect(() => { if (forceRename) { setEditing(true); setName(layer.name); } }, [forceRename, layer.name]);
+  useEffect(() => { if (editing && inputRef.current) { inputRef.current.focus(); inputRef.current.select(); } }, [editing]);
   useEffect(() => { setName(layer.name); }, [layer.name]);
 
   const handleDoubleClickInternal = useCallback(() => {
-    if (layer.type === 'comp' && onDoubleClick) {
-      onDoubleClick(layer.id);
-      return;
-    }
+    if (layer.type === 'comp' && onDoubleClick) { onDoubleClick(layer.id); return; }
     if (!layer.locked) setEditing(true);
   }, [layer.locked, layer.type, layer.id, onDoubleClick]);
 
@@ -63,96 +52,84 @@ export const LayerRow: React.FC<LayerRowProps> = ({
     else setName(layer.name);
   }, [name, layer.id, layer.name, onRename]);
 
-  const handleClick = useCallback(
-    (e: React.MouseEvent) => onSelect(layer.id, e.ctrlKey || e.metaKey, e.shiftKey),
-    [layer.id, onSelect],
-  );
+  const handleClick = useCallback((e: React.MouseEvent) => onSelect(layer.id, e.ctrlKey || e.metaKey, e.shiftKey), [layer.id, onSelect]);
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const contextRef = useRef<HTMLDivElement>(null);
-
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+    e.preventDefault(); e.stopPropagation();
     setContextMenu({ x: e.clientX, y: e.clientY });
     if (!isSelected) onSelect(layer.id, false, false);
   }, [layer.id, isSelected, onSelect]);
-
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
   }, [contextMenu]);
+  const contextAction = useCallback((action: () => void) => { setContextMenu(null); action(); }, []);
 
-  const contextAction = useCallback((action: () => void) => {
-    setContextMenu(null);
-    action();
-  }, []);
-
-  const handleDragStart = useCallback(
-    (e: React.DragEvent) => { e.dataTransfer.setData('text/plain', layer.id); onDragStart(layer.id); },
-    [layer.id, onDragStart],
-  );
+  const handleDragStart = useCallback((e: React.DragEvent) => {
+    e.dataTransfer.setData('text/plain', layer.id); onDragStart(layer.id);
+  }, [layer.id, onDragStart]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     if (!rowRef.current) return;
     const rect = rowRef.current.getBoundingClientRect();
-    const y = e.clientY - rect.top;
-    const h = rect.height;
-    setDragOver(y < h * 0.25 ? 'above' : y > h * 0.75 ? 'below' : 'child');
+    const y = e.clientY - rect.top; const h = rect.height;
+    const pos: 'above' | 'below' | 'child' = y < h * 0.25 ? 'above' : y > h * 0.75 ? 'below' : 'child';
+    dragOverRef.current = pos; setDragOver(pos);
   }, []);
-
-  const handleDragLeave = useCallback(() => setDragOver(null), []);
+  const handleDragLeave = useCallback(() => { dragOverRef.current = null; setDragOver(null); }, []);
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    setDragOver(null);
+    const pos = dragOverRef.current;
+    dragOverRef.current = null; setDragOver(null);
     const draggedId = e.dataTransfer.getData('text/plain');
-    if (draggedId !== layer.id && dragOver) onDrop(layer.id, draggedId, dragOver);
-  }, [layer.id, dragOver, onDrop]);
+    if (draggedId !== layer.id && pos) onDrop(layer.id, draggedId, pos);
+  }, [layer.id, onDrop]);
 
-  const indent = depth * 12 + 4;
+  const indent = depth * 18 + 8;
 
   return (
     <div
       ref={rowRef}
-      className="relative border-b border-border/20"
+      className="relative"
       draggable={!layer.locked}
-      onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      onDragStart={handleDragStart} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
       onContextMenu={handleContextMenu}
-      style={{ height: 24 }}
+      style={{ height: 32 }}
     >
       <div
-        className={`flex items-center h-full gap-1 cursor-pointer text-ui-xs select-none px-1 ${
-          isSelected ? 'bg-accent/30 text-text-primary' : 'text-text-secondary hover:bg-panel-hover'
-        }`}
-        style={{ paddingLeft: indent }}
+        className="flex items-center h-full gap-2 cursor-pointer select-none transition-colors mx-2 px-2"
+        style={{
+          paddingLeft: indent,
+          borderLeft: layer.color ? `3px solid ${layer.color}` : undefined,
+          background: isSelected ? 'var(--color-accent-muted)' : 'transparent',
+          color: isSelected ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+          fontSize: 'var(--font-size-sm)',
+          borderRadius: 'var(--radius-sm)',
+        }}
+        onMouseEnter={(e)=>{ if(!isSelected)(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'; }}
+        onMouseLeave={(e)=>{ if(!isSelected)(e.currentTarget as HTMLElement).style.background='transparent'; }}
         onClick={handleClick}
         onDoubleClick={handleDoubleClickInternal}
       >
-        <Icon
-          name={(LAYER_ICONS[layer.type] ?? 'circle') as any}
-          size={12}
-          className={`shrink-0 ${isSelected ? 'text-accent' : 'text-text-disabled'}`}
-        />
-
+        <Icon name={(LAYER_ICONS[layer.type] ?? 'ellipse') as any} size={14} strokeWidth={1.75} className="shrink-0" />
         <div className="flex-1 min-w-0">
           {editing ? (
-            <input
-              ref={inputRef}
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onBlur={handleRenameSubmit}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleRenameSubmit();
-                if (e.key === 'Escape') { setName(layer.name); setEditing(false); }
+            <input ref={inputRef} type="text" value={name}
+              onChange={(e) => setName(e.target.value)} onBlur={handleRenameSubmit}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleRenameSubmit(); if (e.key === 'Escape') { setName(layer.name); setEditing(false); } }}
+              className="w-full outline-none"
+              style={{
+                height: 22, padding: '0 6px',
+                background: 'var(--color-input-bg)',
+                border: '1px solid var(--color-accent)',
+                borderRadius: 'var(--radius-xs)',
+                color: 'var(--color-text-primary)',
+                fontSize: 'var(--font-size-sm)',
               }}
-              className="w-full h-[16px] text-ui-xs px-1 bg-surface border border-accent rounded-sm text-text-primary outline-none"
             />
           ) : (
             <span className="truncate block leading-tight">{layer.name}</span>
@@ -160,79 +137,62 @@ export const LayerRow: React.FC<LayerRowProps> = ({
         </div>
 
         {!editing && (
-          <div className="flex items-center gap-0.5 shrink-0">
-            <button
-              className={`w-[14px] h-[14px] border-0 bg-transparent cursor-pointer flex items-center justify-center ${
-                layer.visible ? 'text-text-secondary' : 'text-text-disabled'
-              } hover:text-text-primary`}
-              onClick={(e) => { e.stopPropagation(); onToggleVisibility(layer.id); }}
-              title="Visibility"
-            >
-              {layer.visible ? (
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-                </svg>
-              ) : (
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                  <line x1="1" y1="1" x2="23" y2="23"/>
-                </svg>
-              )}
-            </button>
-            <button
-              className={`w-[14px] h-[14px] border-0 bg-transparent cursor-pointer flex items-center justify-center ${
-                layer.locked ? 'text-text-secondary' : 'text-text-disabled'
-              } hover:text-text-primary`}
-              onClick={(e) => { e.stopPropagation(); onToggleLock(layer.id); }}
-              title="Lock"
-            >
-              {layer.locked ? (
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                </svg>
-              ) : (
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
-                </svg>
-              )}
-            </button>
-            <button
-              className={`w-[14px] h-[14px] border-0 bg-transparent cursor-pointer flex items-center justify-center ${
-                layer.soloed ? 'text-accent' : 'text-text-disabled'
-              } hover:text-text-primary`}
-              onClick={(e) => { e.stopPropagation(); onToggleSolo(layer.id); }}
-              title="Solo"
-            >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="5"/>
-              </svg>
-            </button>
+          <div className="flex items-center gap-1 shrink-0">
+            <IconBtn active={layer.visible} onClick={(e)=>{ e.stopPropagation(); onToggleVisibility(layer.id); }} title="Visibility">
+              {layer.visible ? <Eye size={13} strokeWidth={1.75}/> : <EyeOff size={13} strokeWidth={1.75}/>}
+            </IconBtn>
+            <IconBtn active={layer.locked} onClick={(e)=>{ e.stopPropagation(); onToggleLock(layer.id); }} title="Lock">
+              {layer.locked ? <Lock size={13} strokeWidth={1.75}/> : <Unlock size={13} strokeWidth={1.75}/>}
+            </IconBtn>
+            <IconBtn active={layer.soloed} accent onClick={(e)=>{ e.stopPropagation(); onToggleSolo(layer.id); }} title="Solo">
+              <Circle size={12} strokeWidth={2} fill={layer.soloed ? 'currentColor' : 'none'} />
+            </IconBtn>
           </div>
         )}
       </div>
 
-      {dragOver === 'above' && <div className="absolute top-0 left-0 right-0 h-0.5 bg-accent pointer-events-none" />}
-      {dragOver === 'below' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-accent pointer-events-none" />}
+      {dragOver === 'above' && <div className="absolute top-0 left-2 right-2 pointer-events-none" style={{ height: 2, background: 'var(--color-accent)', borderRadius: 2 }} />}
+      {dragOver === 'below' && <div className="absolute bottom-0 left-2 right-2 pointer-events-none" style={{ height: 2, background: 'var(--color-accent)', borderRadius: 2 }} />}
 
       {contextMenu && (
-        <div
-          ref={contextRef}
-          className="fixed z-[9999] min-w-[140px] bg-panel border border-border rounded-md shadow-dropdown py-1"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+        <div className="fixed z-[9999] min-w-[180px] py-1.5"
+          style={{ left: contextMenu.x, top: contextMenu.y, background: 'var(--color-panel-raised)', borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-dropdown)' }}
         >
-          <button className="w-full text-left px-3 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer"
-            onClick={() => contextAction(() => setEditing(true))}>Rename</button>
-          <button className="w-full text-left px-3 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer"
-            onClick={() => contextAction(() => onDuplicate?.(layer.id))}>Duplicate</button>
-          <button className="w-full text-left px-3 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer"
-            onClick={() => contextAction(() => onToggleSolo(layer.id))}>{layer.soloed ? 'Unsolo' : 'Solo'}</button>
-          <button className="w-full text-left px-3 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer"
-            onClick={() => contextAction(() => onToggleVisibility(layer.id))}>{layer.visible ? 'Hide' : 'Show'}</button>
-          <div className="border-t border-border my-1" />
-          <button className="w-full text-left px-3 py-1 text-ui-xs text-danger hover:bg-panel-hover border-0 bg-transparent cursor-pointer"
-            onClick={() => contextAction(() => onDelete?.(layer.id))}>Delete</button>
+          {[
+            { label: 'Rename', onClick: () => setEditing(true) },
+            { label: 'Duplicate', onClick: () => onDuplicate?.(layer.id) },
+            { label: layer.soloed ? 'Unsolo' : 'Solo', onClick: () => onToggleSolo(layer.id) },
+            { label: layer.visible ? 'Hide' : 'Show', onClick: () => onToggleVisibility(layer.id) },
+          ].map((it, i) => (
+            <button key={i} onClick={() => contextAction(it.onClick)}
+              className="w-full text-left border-0 bg-transparent cursor-pointer transition-colors"
+              style={{ height: 30, padding: '0 14px', fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}
+              onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'}
+              onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+            >{it.label}</button>
+          ))}
+          <div className="h-px my-1.5 mx-2" style={{ background: 'var(--color-divider)' }} />
+          <button onClick={() => contextAction(() => onDelete?.(layer.id))}
+            className="w-full text-left border-0 bg-transparent cursor-pointer transition-colors"
+            style={{ height: 30, padding: '0 14px', fontSize: 'var(--font-size-md)', color: 'var(--color-danger)' }}
+            onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'}
+            onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+          >Delete</button>
         </div>
       )}
     </div>
   );
 };
+
+const IconBtn: React.FC<{ active?: boolean; accent?: boolean; onClick: (e: React.MouseEvent)=>void; title: string; children: React.ReactNode }> = ({ active, accent, onClick, title, children }) => (
+  <button
+    onClick={onClick} title={title}
+    className="border-0 bg-transparent cursor-pointer flex items-center justify-center transition-colors"
+    style={{
+      width: 20, height: 20, borderRadius: 'var(--radius-xs)',
+      color: accent && active ? 'var(--color-accent)' : active ? 'var(--color-text-secondary)' : 'var(--color-text-disabled)',
+    }}
+    onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.color='var(--color-text-primary)'}
+    onMouseLeave={(e)=>{ (e.currentTarget as HTMLElement).style.color = accent && active ? 'var(--color-accent)' : active ? 'var(--color-text-secondary)' : 'var(--color-text-disabled)'; }}
+  >{children}</button>
+);

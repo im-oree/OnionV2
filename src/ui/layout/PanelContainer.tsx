@@ -18,9 +18,7 @@ export const PanelContainer:React.FC<Props> = ({
   const [ctxMenu,setCtxMenu]=useState<{x:number;y:number}|null>(null);
 
   const handleContextMenu=useCallback((e:React.MouseEvent)=>{
-    // Only open context menu when clicking near the panel header/corner region
     const rect=e.currentTarget.getBoundingClientRect();
-    // Corner region: top-right 40x40 area
     if(e.clientX>rect.right-40&&e.clientY<rect.top+40){
       e.preventDefault();
       setCtxMenu({x:e.clientX,y:e.clientY});
@@ -35,10 +33,7 @@ export const PanelContainer:React.FC<Props> = ({
   ];
 
   return(
-    <div
-      className={`panel ${className}`}
-      onContextMenu={handleContextMenu}
-    >
+    <div className={`panel ${className}`} onContextMenu={handleContextMenu}>
       <PanelHeader panelType={panelType} onTypeChange={onTypeChange}>
         {headerActions}
       </PanelHeader>

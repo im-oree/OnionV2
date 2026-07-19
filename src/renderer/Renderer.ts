@@ -11,11 +11,19 @@ import { ModalTransform } from './interaction/ModalTransform';
 import { EffectsRenderer } from './effects/EffectsRenderer';
 import { NestedCompRenderer } from './compositing/NestedCompRenderer';
 import { CompLayerRenderer } from './layers/CompLayerRenderer';
-import { FrameCache } from './cache/FrameCache';
+import { FrameCache, type CacheQuality } from './cache/FrameCache';
 import { CacheInvalidator } from './cache/CacheInvalidator';
 import { AdaptiveResolution } from './cache/AdaptiveResolution';
+import { RAMPreviewBuilder } from './cache/RAMPreviewBuilder';
+import { FrameDiskCache } from './cache/FrameDiskCache';
 import { RenderScheduler } from './RenderScheduler';
+import { PerfMonitor } from './monitoring/PerfMonitor';
+import { resourceRegistry } from './utils/ResourceRegistry';
+import { PropertyBinder } from '../animation/PropertyBinder';
+import { useKeyframeStore } from '../state/keyframeStore';
 import { useCompositionStore } from '../state/compositionStore';
+import { useToolStore } from '../state/toolStore';
+import { TOOLS } from '../config/constants';
 import type { Composition } from '../types/composition';
 import type { CompData } from '../types/layer';
 
@@ -41,18 +49,37 @@ export class Renderer {
   public readonly cacheInvalidator: CacheInvalidator;
   public readonly renderScheduler: RenderScheduler;
   public readonly adaptiveResolution: AdaptiveResolution;
+  public readonly ramPreviewBuilder: RAMPreviewBuilder;
+  public readonly perfMonitor: PerfMonitor;
+  public readonly frameDiskCache: FrameDiskCache;
+  public readonly propertyBinder: PropertyBinder;
 
   private _state: RendererState = { fps: 0, zoom: 1, frameCount: 0 };
   private _onStateChange?: (state: RendererState) => void;
   private _composition: Composition | null = null;
+  private _captureCanvas: HTMLCanvasElement | null = null;
+  private _interactiveHandler: ((e: Event) => void) | null = null;
+  private _toolUnsubscribe: (() => void) | null = null;
+  private _compUnsub: (() => void) | null = null;
+  private _lastLayersSnapshot = '';
 
   /** Cached nested-comp renderers keyed by sourceCompId */
   private _nestedRenderers = new Map<string, NestedCompRenderer>();
 
+  /** Cached frame playback: fullscreen quad + texture */
+  private _cachedFrameQuad: THREE.Mesh | null = null;
+  private _cachedFrameTex: THREE.CanvasTexture | null = null;
+
+  /** Load disk-cached frames into RAM after composition is applied */
+  private _loadDiskCacheOnReady: ((compId: string) => void) | null = null;
+  /** Activity handler for idle caching — stored for cleanup */
+  private _activityHandler: (() => void) | null = null;
+
   constructor(container: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.renderer.setClearColor(0x3d3d3d, 1);
+    // Transparent clear — CSS layer underneath handles comp bg + app bg
+    this.renderer.setClearColor(0x000000, 0);
     this.renderer.domElement.style.display = 'block';
     this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
@@ -73,13 +100,118 @@ export class Renderer {
     this.adaptiveResolution = new AdaptiveResolution();
     this.renderScheduler = new RenderScheduler();
     this.renderScheduler.setAdaptiveResolution(this.adaptiveResolution);
+    this.renderScheduler.onRequestRender = () => this.renderLoop.requestRender();
     this.cacheInvalidator = new CacheInvalidator(this.frameCache);
+    this.ramPreviewBuilder = new RAMPreviewBuilder(this.frameCache);
+
+    // Invalidate frame cache when layer state changes (positions, colors, size)
+    // Uses shallow snapshot hash to detect any layer property mutation.
+    this._compUnsub = useCompositionStore.subscribe((state) => {
+      const cid = state.activeCompositionId;
+      if (!cid) return;
+      const comp = state.compositions.find(c => c.id === cid);
+      if (!comp) return;
+      const snap = comp.layers.map(l =>
+        `${l.id}:${l.transform.position.x},${l.transform.position.y},` +
+        `${l.transform.scale.x},${l.transform.scale.y},${l.transform.rotation},` +
+        `${l.opacity},${l.visible},${JSON.stringify(l.data)}`
+      ).join('|');
+      if (snap !== this._lastLayersSnapshot) {
+        this._lastLayersSnapshot = snap;
+        this.frameCache.invalidateAll(cid);
+        this.renderLoop.requestRender();
+      }
+    });
+    this.ramPreviewBuilder.setRendererRef(() => this);
+    this.frameDiskCache = new FrameDiskCache(this.frameCache);
+    this.propertyBinder = new PropertyBinder(useKeyframeStore.getState().engine);
+    this.perfMonitor = new PerfMonitor();
+    this.perfMonitor.setFrameCache(this.frameCache);
+
+    // Expose cache, builder, perf monitor, and resource trackers globally
+    (window as any).__frameCache = this.frameCache;
+    (window as any).__ramPreviewBuilder = this.ramPreviewBuilder;
+    (window as any).__frameDiskCache = this.frameDiskCache;
+    (window as any).__adaptiveResolution = this.adaptiveResolution;
+    (window as any).__perfMonitor = this.perfMonitor;
+    (window as any).__resourceRegistry = resourceRegistry;
+    (window as any).__renderer = this;
 
     this.renderLoop = new RenderLoop(this.renderer, this.sceneManager.scene, this.cameraManager.camera);
     this.resizeHandler = new ResizeHandler(this.renderer, this.cameraManager, this.renderLoop);
-    this.cameraManager.onChanged = () => this.renderLoop.requestRender();
+    // Use scheduler for render requests — it tracks priority and feeding back to adaptive quality
+    // Camera changes trigger scheduler request (which automatically calls renderLoop.requestRender)
+    this.cameraManager.onChanged = () => this.renderScheduler.request('interactive');
 
+    // Listen for interactive mode toggle (from ModalTransform, scrub handlers, etc.)
+    this._interactiveHandler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      this.renderLoop.setInteractive(!!detail?.on);
+    };
+    document.addEventListener('renderer:interactive', this._interactiveHandler);
+
+    // Wire dropped frame reporting from the loop to scheduler and monitor
+    this.renderLoop.onFrameDropped = () => {
+      this.renderScheduler.recordDroppedFrame();
+      this.perfMonitor.recordDroppedFrame();
+    };
+
+    // Activity detection for idle caching
+    const reportActivity = () => this.ramPreviewBuilder.reportActivity();
+    document.addEventListener('mousedown', reportActivity, { passive: true });
+    document.addEventListener('mousemove', reportActivity, { passive: true });
+    document.addEventListener('keydown', reportActivity, { passive: true });
+    document.addEventListener('wheel', reportActivity, { passive: true });
+    // Store reference for cleanup
+    this._activityHandler = reportActivity;
+
+    // Load disk-cached frames on startup (triggered after first applyComposition)
+    this._loadDiskCacheOnReady = (compId: string) => {
+      this.frameDiskCache.loadIntoCache(compId).then(count => {
+        if (count > 0) console.log(`[Cache] Loaded ${count} frames from disk cache`);
+      }).catch(() => {});
+    };
+
+    let renderStart = 0;
     this.renderLoop.beforeRender = () => {
+      renderStart = performance.now();
+
+      // Check if current frame is cached — if so, display cached frame instead of 3D render
+      const comp = this._composition;
+      if (comp && !ModalTransform.activeAnywhere) {
+        const frame = Math.floor(comp.currentTime * comp.fps);
+        const cached = this.frameCache.get(comp.id, frame);
+        if (cached && cached.imageBitmap) {
+          this._displayCachedFrame(cached.imageBitmap);
+          this.perfMonitor.recordCacheAccess(true);
+          // Uncap FPS during cached playback for smoothness
+          if (this.renderLoop.targetFps > 0) {
+            this.renderLoop.setTargetFps(0);
+          }
+          return;
+        }
+      }
+
+      // No cached frame — hide cached quad and render normally
+      this._hideCachedFrameDisplay();
+      this.perfMonitor.recordCacheAccess(false);
+      // Re-cap FPS to comp's target when doing full 3D renders
+      if (this._composition && this.renderLoop.targetFps === 0) {
+        this.renderLoop.setTargetFps(this._composition.fps);
+      }
+
+      // M11: Evaluate keyframed properties and apply as runtime overrides.
+      // Always evaluate when there are keyframes — not just during playback.
+      // This ensures scrubbing the playhead also shows keyframed values.
+      if (comp && this.propertyBinder.engine.totalKeyframes > 0) {
+        const frame = Math.floor(comp.currentTime * comp.fps);
+        this.propertyBinder.evaluateFrame(comp.id, frame);
+        if (this.propertyBinder.hasOverrides) {
+          this.layerSync.setRuntimeOverridesActive(true);
+          this.layerSync.applyRuntimeOverrides(this.propertyBinder.overrides);
+        }
+      }
+
       this._updateLayerFrameVisibility();
       this._processNestedComps();
       this._processEffects();
@@ -89,6 +221,17 @@ export class Renderer {
       const vp = this.cameraManager.getViewportTransform();
       const budget = this.renderScheduler.getBudget();
       const ramMB = Math.round(this.frameCache.getMemoryUsage() / (1024 * 1024));
+
+      // Report render time to scheduler and perf monitor
+      const renderTime = renderStart > 0 ? performance.now() - renderStart : 0;
+      if (renderTime > 0) {
+        this.renderScheduler.didRender(renderTime);
+        this.perfMonitor.recordFrameTime(renderTime);
+      }
+
+      // M11: Clear runtime overrides after render (restore renderers for next sync)
+      this.layerSync.setRuntimeOverridesActive(false);
+
       this._state = {
         fps: stats.fps,
         zoom: vp.zoom,
@@ -104,8 +247,27 @@ export class Renderer {
     this.renderLoop.start();
     this.cacheInvalidator.activate();
 
-    // Wire adaptive resolution quality changes → request render
-    this.adaptiveResolution.onQualityChange = () => this.renderLoop.requestRender();
+    // Wire adaptive resolution quality changes → actually resize the renderer
+    this.adaptiveResolution.onQualityChange = (quality) => {
+      // Store current quality and render at reduced resolution
+      this._applyQualityScale(quality);
+      this.renderLoop.requestRender();
+    };
+
+    // M9: Tool-dependent gizmo visibility — subscribe to tool store
+    const updateGizmo = (tool: string) => {
+      if (tool === TOOLS.MOVE) this.selectionOverlay.gizmoMode = 'move';
+      else if (tool === TOOLS.ROTATE) this.selectionOverlay.gizmoMode = 'rotate';
+      else if (tool === TOOLS.SCALE) this.selectionOverlay.gizmoMode = 'scale';
+      else this.selectionOverlay.gizmoMode = null;
+      this.renderLoop.requestRender();
+    };
+    this._toolUnsubscribe = useToolStore.subscribe((state) => updateGizmo(state.activeTool));
+    updateGizmo(useToolStore.getState().activeTool);
+
+    // Force an initial render so the viewport shows something (scene bg, grid, comp bounds)
+    // even before a composition is applied or the first resize observer fires.
+    this.renderLoop.requestRender();
   }
 
   applyComposition(comp: Composition): void {
@@ -113,19 +275,31 @@ export class Renderer {
     const changedSize = !prev
       || prev.width !== comp.width
       || prev.height !== comp.height;
-    const changedBg = !prev
-      || prev.backgroundColor !== comp.backgroundColor;
 
     this._composition = comp;
 
-    if (changedSize || changedBg) {
-      this.sceneManager.applyComposition(comp.width, comp.height, comp.backgroundColor);
-    }
+    // Always re-apply the scene composition (bgQuad, bounds, grid) so the bgQuad
+    // is re-created on every call. The identity guard below was preventing bgQuad
+    // recovery if it was ever removed from the scene between calls.
+    this.sceneManager.applyComposition(comp.width, comp.height, comp.backgroundColor);
+
+    // Only reset camera + render loop on size/fps changes
     if (changedSize) {
       this.cameraManager.setCompositionSize(comp.width, comp.height);
     }
 
+    this.renderLoop.setTargetFps(comp.fps);
+    this.renderScheduler.setFrameBudget(comp.fps);
+    this.adaptiveResolution.setTargetFps(comp.fps);
+    this.perfMonitor.setTargetFps(comp.fps);
+    this.perfMonitor.setCacheBudget(this.frameCache.maxBytes);
+
+    // Force an immediate render so the viewport shows the composition on first mount
+    this.renderLoop.render();
     this.renderLoop.requestRender();
+
+    // Load disk-cached frames into RAM (if available)
+    this._loadDiskCacheOnReady?.(comp.id);
   }
 
   get composition(): Composition | null { return this._composition; }
@@ -259,6 +433,183 @@ export class Renderer {
     layerRenderer.mesh.visible = visible;
   }
 
+  /** Enable/disable frame capture — unused; RAMPreviewBuilder captures directly via captureFrame(). */
+  /** Run the before-render hooks (visibility, nested comps, effects) — used by RAMPreviewBuilder for sync render */
+  runBeforeRenderHooks(): void {
+    const comp = this._composition;
+    if (comp) {
+      const frame = Math.floor(comp.currentTime * comp.fps);
+      this.propertyBinder.evaluateFrame(comp.id, frame);
+      if (this.propertyBinder.hasOverrides) {
+        this.layerSync.setRuntimeOverridesActive(true);
+        this.layerSync.applyRuntimeOverrides(this.propertyBinder.overrides);
+      }
+    }
+    this._updateLayerFrameVisibility();
+    this._processNestedComps();
+    this._processEffects();
+    // M11: Clear runtime overrides after RAM preview render
+    this.layerSync.setRuntimeOverridesActive(false);
+  }
+
+  /** Synchronously render the current scene (used by RAMPreviewBuilder to capture without async rAF) */
+  renderSynchronous(): void {
+    this.renderer.render(this.sceneManager.scene, this.cameraManager.camera);
+  }
+
+  /**
+   * Capture the current framebuffer and store to cache.
+   * Uses OffscreenCanvas.transferToImageBitmap() for synchronous capture
+   * (no blob encoding/decoding overhead). Falls back to async toBlob path
+   * if transferToImageBitmap is unavailable.
+   */
+  captureFrame(compId: string, frame: number, quality: CacheQuality): void {
+    try {
+      const w = this.renderer.domElement.width;
+      const h = this.renderer.domElement.height;
+      if (w === 0 || h === 0) return;
+
+      const pixels = new Uint8Array(w * h * 4);
+      const gl = this.renderer.getContext() as WebGL2RenderingContext;
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+      // Flip Y: OpenGL reads bottom-up, canvas expects top-down
+      // Use OffscreenCanvas with transferToImageBitmap for synchronous capture
+      if (typeof OffscreenCanvas !== 'undefined' && typeof (OffscreenCanvas.prototype as any).transferToImageBitmap === 'function') {
+        const oc = new OffscreenCanvas(w, h);
+        const octx = oc.getContext('2d')!;
+        const imgData = octx.createImageData(w, h);
+        const rowBytes = w * 4;
+        for (let y = 0; y < h; y++) {
+          const srcOff = y * rowBytes;
+          const dstOff = (h - 1 - y) * rowBytes;
+          for (let x = 0; x < rowBytes; x++) imgData.data[dstOff + x] = pixels[srcOff + x];
+        }
+        octx.putImageData(imgData, 0, 0);
+        // Synchronous: returns ImageBitmap immediately
+        const bitmap = oc.transferToImageBitmap();
+        this.frameCache.store(compId, frame, bitmap, quality);
+        // Persist to disk cache (async, debounced)
+        this.frameDiskCache.scheduleStore(compId, frame);
+      } else {
+        // Fallback: use regular canvas with toBlob + createImageBitmap (async)
+        if (!this._captureCanvas) this._captureCanvas = document.createElement('canvas');
+        const c = this._captureCanvas;
+        c.width = w;
+        c.height = h;
+        const ctx = c.getContext('2d')!;
+        const imgData = ctx.createImageData(w, h);
+        const rowBytes = w * 4;
+        for (let y = 0; y < h; y++) {
+          const srcOff = y * rowBytes;
+          const dstOff = (h - 1 - y) * rowBytes;
+          for (let x = 0; x < rowBytes; x++) imgData.data[dstOff + x] = pixels[srcOff + x];
+        }
+        ctx.putImageData(imgData, 0, 0);
+        c.toBlob((blob) => {
+          if (!blob) return;
+          createImageBitmap(blob).then(bitmap => {
+            this.frameCache.store(compId, frame, bitmap, quality);
+            this.frameDiskCache.scheduleStore(compId, frame);
+          }).catch(() => {});
+        });
+      }
+    } catch {
+      // Silently fail
+    }
+  }
+
+  setCaptureEnabled(_enabled: boolean): void {
+    // kept for API compatibility; RAMPreviewBuilder uses captureFrame() directly
+  }
+
+  /** Apply quality scaling to the renderer dimensions only.
+   *  Camera viewport stays at CSS layout size — only the drawing buffer changes. */
+  private _applyQualityScale(quality: 'full' | 'half' | 'quarter'): void {
+    const comp = this._composition;
+    if (!comp) return;
+    const factor = quality === 'full' ? 1 : quality === 'half' ? 0.5 : 0.25;
+    // Resize the renderer drawing buffer to the quality-scaled resolution.
+    // Camera viewport remains at CSS layout size — don't call setViewportSize().
+    this.renderer.setSize(
+      Math.max(1, Math.round(comp.width * factor)),
+      Math.max(1, Math.round(comp.height * factor)),
+    );
+    // Transparent clear after setSize — CSS layer handles the bg
+    this.renderer.setClearColor(0x000000, 0);
+  }
+
+  // ── Cached frame display ──────────────────────────────────────
+
+  /** Initialize the fullscreen quad for displaying cached frames */
+  private _initCachedFrameQuad(): void {
+    if (this._cachedFrameQuad) return;
+    // Temp geometry — resized on first use
+    const geo = new THREE.PlaneGeometry(1, 1);
+    this._cachedFrameTex = new THREE.CanvasTexture(document.createElement('canvas'));
+    this._cachedFrameTex.minFilter = THREE.LinearFilter;
+    this._cachedFrameTex.magFilter = THREE.LinearFilter;
+    const mat = new THREE.MeshBasicMaterial({
+      map: this._cachedFrameTex,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true, // Allow transparent alpha from cached frames to show CSS layer underneath
+    });
+    this._cachedFrameQuad = new THREE.Mesh(geo, mat);
+    this._cachedFrameQuad.frustumCulled = false;
+    this._cachedFrameQuad.renderOrder = -5;
+    this._cachedFrameQuad.visible = false;
+    this._cachedFrameQuad.name = 'cached-frame-quad';
+    this.sceneManager.scene.add(this._cachedFrameQuad);
+  }
+
+  /** Replace the 3D scene with a cached frame (fullscreen quad) */
+  private _displayCachedFrame(bitmap: ImageBitmap): void {
+    const comp = this._composition;
+    if (!comp) return;
+    this._initCachedFrameQuad();
+
+    // Size quad to composition dimensions so it fills the orthographic camera view
+    const w = comp.width;
+    const h = comp.height;
+    const geo = this._cachedFrameQuad!.geometry as THREE.PlaneGeometry;
+    if (Math.abs(geo.parameters.width - w) > 0.5 || Math.abs(geo.parameters.height - h) > 0.5) {
+      geo.dispose();
+      this._cachedFrameQuad!.geometry = new THREE.PlaneGeometry(w, h);
+    }
+
+    // Update texture with new frame
+    this._cachedFrameTex!.image = bitmap;
+    this._cachedFrameTex!.needsUpdate = true;
+
+    // CRITICAL: Position quad at camera pan offset so it follows viewport panning.
+    // The orthographic camera pans by shifting its frustum (left/right/top/bottom += panX/panY).
+    // A world-space quad at origin would appear to drift when panned, so we counter-shift
+    // by placing the quad at the camera's current view center.
+    const vp = this.cameraManager.getViewportTransform();
+    this._cachedFrameQuad!.position.set(vp.panX, vp.panY, 0);
+
+    // Show quad, hide 3D layers + comp bounds
+    if (!this._cachedFrameQuad!.visible) this._cachedFrameQuad!.visible = true;
+    this.sceneManager.layerGroup.visible = false;
+    this.sceneManager.compBounds.group.visible = false;
+
+    // Also hide the selection overlay (SVG gizmos/handles) so they don't float
+    // in empty space while the layers underneath are hidden
+    this.selectionOverlay.hide();
+  }
+
+  /** Hide the cached frame quad and restore 3D scene */
+  private _hideCachedFrameDisplay(): void {
+    if (this._cachedFrameQuad && this._cachedFrameQuad.visible) {
+      this._cachedFrameQuad.visible = false;
+    }
+    if (!this.sceneManager.layerGroup.visible) this.sceneManager.layerGroup.visible = true;
+    // Note: compBounds.group is always disabled (CSS handles bounds visually)
+    // Restore selection overlay visibility that was hidden during cached frame display
+    if (!this.selectionOverlay.visible) this.selectionOverlay.show();
+  }
+
   get canvas(): HTMLCanvasElement { return this.renderer.domElement; }
 
   dispose(): void {
@@ -271,10 +622,44 @@ export class Renderer {
     this.layerSync.clear();
     this.effectsRenderer.dispose();
     this.selectionOverlay.dispose();
+    if (this._interactiveHandler) {
+      document.removeEventListener('renderer:interactive', this._interactiveHandler);
+    }
+    if (this._toolUnsubscribe) {
+      this._toolUnsubscribe();
+      this._toolUnsubscribe = null;
+    }
+    if (this._compUnsub) { this._compUnsub(); this._compUnsub = null; }
     this.cacheInvalidator.dispose();
     this.renderScheduler.dispose();
     this.adaptiveResolution.dispose();
+    this.perfMonitor.dispose();
+    this.frameDiskCache.dispose();
     this.frameCache.dispose();
+    this._captureCanvas = null;
+    // Clean up activity event listeners
+    if (this._activityHandler) {
+      const h = this._activityHandler;
+      document.removeEventListener('mousedown', h);
+      document.removeEventListener('mousemove', h);
+      document.removeEventListener('keydown', h);
+      document.removeEventListener('wheel', h);
+      this._activityHandler = null;
+    }
+    // Dispose cached frame resources
+    if (this._cachedFrameQuad) {
+      this._cachedFrameQuad.geometry.dispose();
+      (this._cachedFrameQuad.material as THREE.Material).dispose();
+      this._cachedFrameQuad = null;
+    }
+    if (this._cachedFrameTex) {
+      this._cachedFrameTex.dispose();
+      this._cachedFrameTex = null;
+    }
+    // Remove global references
+    delete (window as any).__perfMonitor;
+    delete (window as any).__workerPool;
+    delete (window as any).__renderer;
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement) {
       this.renderer.domElement.parentElement.removeChild(this.renderer.domElement);

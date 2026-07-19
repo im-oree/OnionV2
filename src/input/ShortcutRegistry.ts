@@ -68,7 +68,7 @@ class ShortcutRegistryClass {
 
   /** Match a keyboard event against registered shortcuts and execute the handler */
   handleEvent(e: KeyboardEvent): boolean {
-    // Don't fire when typing in input/textarea
+    // Don't fire shortcuts when typing in input/textarea
     const target = e.target as HTMLElement;
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
       return false;
@@ -87,7 +87,10 @@ class ShortcutRegistryClass {
     // Find the first matching binding for the current context
     for (const binding of bindings) {
       if (!binding.context || binding.context === 'global' || binding.context === this.activeContext) {
+        // Always preventDefault + stopPropagation for matched shortcuts to prevent
+        // browser-default behaviors (like focused buttons activating on spacebar)
         e.preventDefault();
+        e.stopPropagation();
         binding.handler();
         return true;
       }

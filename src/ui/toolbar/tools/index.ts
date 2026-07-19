@@ -22,6 +22,7 @@ export const TOOL_GROUPS: ToolDefinition[][] = [
    { id:TOOLS.SHAPE_ELLIPSE as ToolId, icon:'ellipse', label:'Ellipse', shortcut:'Shift+E' },
    { id:TOOLS.SHAPE_POLYGON as ToolId, icon:'polygon', label:'Polygon', shortcut:'Shift+P' }],
   [{ id:TOOLS.PEN as ToolId, icon:'pen', label:'Pen', shortcut:'P' },
-   { id:TOOLS.TEXT as ToolId, icon:'text', label:'Text', shortcut:'T' }],
+   { id:TOOLS.TEXT as ToolId, icon:'text', label:'Text', shortcut:'T' },
+   { id:TOOLS.GRADIENT as ToolId, icon:'gradient', label:'Gradient', shortcut:'Shift+G' }],
   [{ id:TOOLS.HAND as ToolId, icon:'hand', label:'Hand', shortcut:'H' }],
 ];

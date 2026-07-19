@@ -188,7 +188,7 @@ export function useViewportInput({
 
     const getTool = () => useToolStore.getState().activeTool;
 
-    function hitTestAndSelect(mouseX: number, mouseY: number, clientX: number, clientY: number): boolean {
+    function hitTestAndSelect(mouseX: number, mouseY: number, clientX: number, clientY: number, shiftKey: boolean, ctrlKey: boolean, metaKey: boolean): boolean {
       const cm = cmRef.current;
       const ht = htRef.current;
       if (!cm || !ht) return false;
@@ -207,9 +207,28 @@ export function useViewportInput({
       const hit = ht.hitTest(mouseX, mouseY, visibleIds);
       if (!hit) return false;
 
-      useSelectionStore.getState().select({
-        type: 'layer', id: hit.layerId, compositionId: compId,
-      });
+      const selStore = useSelectionStore.getState();
+      const isAlreadySelected = selStore.isSelected(hit.layerId);
+
+      // Multi-select behavior:
+      // - Shift/Ctrl/Cmd + click on selected layer → remove from selection
+      // - Shift/Ctrl/Cmd + click on unselected layer → add to selection
+      // - Click on already-selected layer → preserve selection (for multi-drag)
+      // - Click on unselected layer → replace selection
+      if (shiftKey || ctrlKey || metaKey) {
+        if (isAlreadySelected) {
+          selStore.deselect(hit.layerId);
+        } else {
+          selStore.select({ type: 'layer', id: hit.layerId, compositionId: compId }, true);
+        }
+      } else if (!isAlreadySelected) {
+        selStore.select({ type: 'layer', id: hit.layerId, compositionId: compId });
+      }
+      // If already selected and no modifier, keep current selection intact (multi-drag)
+
+      // Only start modal transform if there are selected layers
+      const remainingSelected = useSelectionStore.getState().getSelectedIds();
+      if (remainingSelected.length === 0) return true;
 
       if (mtRef.current) {
         const tool = getTool();
@@ -307,11 +326,33 @@ export function useViewportInput({
 
     if (container) container.addEventListener('mousedown', gizmoMouseDown);
 
+    // Document-level mouseup to reset cursor if released outside canvas during pan
+    let panDocMouseup: ((e: MouseEvent) => void) | null = null;
+    function attachPanDocMouseup(): void {
+      removePanDocMouseup();
+      panDocMouseup = () => {
+        if (isPanning.current) {
+          isPanning.current = false;
+          document.body.style.cursor = '';
+        }
+        removePanDocMouseup();
+      };
+      document.addEventListener('mouseup', panDocMouseup);
+    }
+    function removePanDocMouseup(): void {
+      if (panDocMouseup) {
+        document.removeEventListener('mouseup', panDocMouseup);
+        panDocMouseup = null;
+      }
+    }
+
     const onMouseDown = (e: MouseEvent) => {
       // Middle mouse = pan
       if (e.button === 1) {
         isPanning.current = true;
         lastMouse.current = { x: e.clientX, y: e.clientY };
+        document.body.style.cursor = 'grabbing';
+        attachPanDocMouseup();
         e.preventDefault();
         return;
       }
@@ -325,6 +366,8 @@ export function useViewportInput({
       if (tool === (TOOLS.HAND as ToolId)) {
         isPanning.current = true;
         lastMouse.current = { x: e.clientX, y: e.clientY };
+        document.body.style.cursor = 'grabbing';
+        attachPanDocMouseup();
         e.preventDefault();
         return;
       }
@@ -384,6 +427,16 @@ export function useViewportInput({
         return;
       }
 
+      // Gradient tool: do nothing on empty-space click (handles have their own listeners)
+      if (tool === (TOOLS.GRADIENT as ToolId)) {
+        // Still let user click layers to select
+        if (hitTestAndSelect(mouseX, mouseY, e.clientX, e.clientY, e.shiftKey, e.ctrlKey, e.metaKey)) {
+          // But immediately cancel modal transform — gradient tool doesn't move layers
+          if (mtRef.current?.active) mtRef.current.cancel();
+        }
+        return;
+      }
+
       if (tool === (TOOLS.SHAPE_RECT as ToolId) || tool === (TOOLS.SHAPE_ELLIPSE as ToolId)) {
         boxStart.current = { x: mouseX, y: mouseY };
         isDrawing.current = true;
@@ -392,7 +445,7 @@ export function useViewportInput({
       }
 
       // MOVE/ROTATE/SCALE/SELECT: hit test first
-      if (hitTestAndSelect(mouseX, mouseY, e.clientX, e.clientY)) return;
+      if (hitTestAndSelect(mouseX, mouseY, e.clientX, e.clientY, e.shiftKey, e.ctrlKey, e.metaKey)) return;
 
       // No hit → box select
       isBoxSelecting.current = true;
@@ -411,19 +464,79 @@ export function useViewportInput({
       const my = e.clientY - rect.top;
 
       if (isDrawing.current && cmRef.current) {
-        const x = Math.min(boxStart.current.x, mx);
-        const y = Math.min(boxStart.current.y, my);
-        const w = Math.abs(mx - boxStart.current.x);
-        const h = Math.abs(my - boxStart.current.y);
+        const ns = 'http://www.w3.org/2000/svg';
+        const dx = mx - boxStart.current.x;
+        const dy = my - boxStart.current.y;
+        const altHeld = e.altKey;
+        const shiftHeld = e.shiftKey;
+
+        let drawW: number, drawH: number, drawX: number, drawY: number;
+
+        if (altHeld) {
+          // Alt: draw from center outward
+          let halfW = Math.abs(dx);
+          let halfH = Math.abs(dy);
+          if (shiftHeld) { const s = Math.max(halfW, halfH); halfW = s; halfH = s; }
+          drawW = halfW * 2;
+          drawH = halfH * 2;
+          drawX = boxStart.current.x - halfW;
+          drawY = boxStart.current.y - halfH;
+        } else {
+          // Normal: draw from corner to corner
+          let w = Math.abs(dx);
+          let h = Math.abs(dy);
+          if (shiftHeld) { const s = Math.max(w, h); w = s; h = s; }
+          drawW = w;
+          drawH = h;
+          drawX = dx >= 0 ? boxStart.current.x : boxStart.current.x - w;
+          drawY = dy >= 0 ? boxStart.current.y : boxStart.current.y - h;
+        }
+
         if (drawSvg) {
           drawSvg.innerHTML = '';
-          const shape = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-          shape.setAttribute('x', String(x)); shape.setAttribute('y', String(y));
-          shape.setAttribute('width', String(w)); shape.setAttribute('height', String(h));
+          // Black shadow for visibility
+          const shadow = document.createElementNS(ns, 'rect');
+          shadow.setAttribute('x', String(drawX)); shadow.setAttribute('y', String(drawY));
+          shadow.setAttribute('width', String(drawW)); shadow.setAttribute('height', String(drawH));
+          shadow.setAttribute('fill', 'rgba(0,0,0,0.1)');
+          shadow.setAttribute('stroke', '#000000');
+          shadow.setAttribute('stroke-width', '1');
+          drawSvg.appendChild(shadow);
+          // Accent preview
+          const shape = document.createElementNS(ns, 'rect');
+          shape.setAttribute('x', String(drawX)); shape.setAttribute('y', String(drawY));
+          shape.setAttribute('width', String(drawW)); shape.setAttribute('height', String(drawH));
           shape.setAttribute('fill', 'rgba(71,114,179,0.2)');
           shape.setAttribute('stroke', 'var(--color-accent)');
-          shape.setAttribute('stroke-width', '1');
+          shape.setAttribute('stroke-width', '1.5');
           drawSvg.appendChild(shape);
+          // Center crosshair when Alt
+          if (altHeld) {
+            const ch = document.createElementNS(ns, 'line');
+            ch.setAttribute('x1', String(boxStart.current.x - 6)); ch.setAttribute('y1', String(boxStart.current.y));
+            ch.setAttribute('x2', String(boxStart.current.x + 6)); ch.setAttribute('y2', String(boxStart.current.y));
+            ch.setAttribute('stroke', 'var(--color-accent)'); ch.setAttribute('stroke-width', '1');
+            drawSvg.appendChild(ch);
+            const cv = document.createElementNS(ns, 'line');
+            cv.setAttribute('x1', String(boxStart.current.x)); cv.setAttribute('y1', String(boxStart.current.y - 6));
+            cv.setAttribute('x2', String(boxStart.current.x)); cv.setAttribute('y2', String(boxStart.current.y + 6));
+            cv.setAttribute('stroke', 'var(--color-accent)'); cv.setAttribute('stroke-width', '1');
+            drawSvg.appendChild(cv);
+          }
+          // Dimension label
+          const worldPP = 1 / cmRef.current.zoom;
+          const labelX = drawX + drawW + 6;
+          const labelY = drawY + drawH / 2;
+          const worldW = Math.round(drawW * worldPP);
+          const worldH = Math.round(drawH * worldPP);
+          const label = document.createElementNS(ns, 'text');
+          label.setAttribute('x', String(Math.min(labelX, (el.clientWidth || 800) - 80)));
+          label.setAttribute('y', String(Math.max(labelY, 12)));
+          label.setAttribute('fill', 'var(--color-text-secondary)');
+          label.setAttribute('font-size', '10');
+          label.setAttribute('font-family', 'monospace');
+          label.textContent = `${worldW} × ${worldH}`;
+          drawSvg.appendChild(label);
         }
         return;
       }
@@ -479,10 +592,15 @@ export function useViewportInput({
     };
 
     const onMouseUp = (e: MouseEvent) => {
-      if (e.button === 1) { isPanning.current = false; return; }
+      if (e.button === 1) {
+        isPanning.current = false;
+        document.body.style.cursor = '';
+        return;
+      }
       if (e.button !== 0) return;
 
       isPanning.current = false;
+      document.body.style.cursor = '';
 
       if (isDrawing.current) {
         isDrawing.current = false;
@@ -493,32 +611,53 @@ export function useViewportInput({
         const rect = el.getBoundingClientRect();
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
-        const w = Math.abs(mx - boxStart.current.x);
-        const h = Math.abs(my - boxStart.current.y);
-        if (w < 5 || h < 5 || !cmRef.current) return;
-
+        const dx = mx - boxStart.current.x;
+        const dy = my - boxStart.current.y;
+        const dragDist = Math.hypot(dx, dy);
+        const altHeld = e.altKey;
         const shiftHeld = e.shiftKey;
-        let dw = w, dh = h;
-        if (shiftHeld) { const s = Math.max(dw, dh); dw = s; dh = s; }
-
-        const centerScreen = {
-          x: (boxStart.current.x + mx) / 2,
-          y: (boxStart.current.y + my) / 2,
-        };
-        const centerWorld = cmRef.current.screenToWorld(centerScreen.x, centerScreen.y);
-        // FIX: world size = screen pixels / zoom (zoom is world-units-per-pixel inverse)
-        const worldPerPixel = 1 / cmRef.current.zoom;
-        const worldW = dw * worldPerPixel;
-        const worldH = dh * worldPerPixel;
 
         const compState = useCompositionStore.getState();
         const compId = compState.activeCompositionId;
-        if (!compId) return;
+        if (!compId || !cmRef.current) return;
         const comp = compState.compositions.find((c) => c.id === compId);
         if (!comp) return;
 
         const isRect = tool === (TOOLS.SHAPE_RECT as ToolId);
         const count = comp.layers.filter((l) => l.type === 'shape').length + 1;
+        const worldPerPixel = 1 / cmRef.current.zoom;
+
+        let worldW: number, worldH: number, centerWorld: { x: number; y: number };
+
+        if (dragDist < 5) {
+          // Fallback: create default-size shape at click point
+          const clickWorld = cmRef.current.screenToWorld(boxStart.current.x, boxStart.current.y);
+          centerWorld = { x: clickWorld.x, y: clickWorld.y };
+          worldW = 200;
+          worldH = 150;
+        } else if (altHeld) {
+          // Alt: start point is center, drag defines half-size
+          centerWorld = cmRef.current.screenToWorld(boxStart.current.x, boxStart.current.y);
+          let halfW = Math.abs(dx) * worldPerPixel;
+          let halfH = Math.abs(dy) * worldPerPixel;
+          if (shiftHeld) { const s = Math.max(halfW, halfH); halfW = s; halfH = s; }
+          worldW = halfW * 2;
+          worldH = halfH * 2;
+        } else {
+          // Normal: corner to corner
+          let dw = Math.abs(dx);
+          let dh = Math.abs(dy);
+          if (shiftHeld) { const s = Math.max(dw, dh); dw = s; dh = s; }
+          const startWorld = cmRef.current.screenToWorld(boxStart.current.x, boxStart.current.y);
+          const endWorld = cmRef.current.screenToWorld(boxStart.current.x + (dx >= 0 ? dw : -dw), boxStart.current.y + (dy >= 0 ? dh : -dh));
+          worldW = Math.abs(endWorld.x - startWorld.x);
+          worldH = Math.abs(endWorld.y - startWorld.y);
+          centerWorld = {
+            x: (startWorld.x + endWorld.x) / 2,
+            y: (startWorld.y + endWorld.y) / 2,
+          };
+        }
+
         const base = createDefaultLayer('shape', `${isRect ? 'Rectangle' : 'Ellipse'} ${count}`);
         const layer: Layer = {
           ...base, id: genId(), zIndex: comp.layers.length + 1,
@@ -554,15 +693,31 @@ export function useViewportInput({
       requestRender?.();
     };
 
-    const onKeyDown = (_e: KeyboardEvent) => {
-      // Space-to-pan removed — use middle mouse button instead.
-      // Space is reserved for play/pause.
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Escape cancels shape drawing
+      if (e.key === 'Escape' && isDrawing.current) {
+        isDrawing.current = false;
+        if (drawSvg?.parentElement) drawSvg.parentElement.removeChild(drawSvg);
+        drawSvg = null;
+      }
     };
 
     const onKeyUp = (_e: KeyboardEvent) => { /* no-op */ };
 
     const onTransformStart = () => {
-      if (mtRef.current?.active) attachDocListeners();
+      if (mtRef.current?.active) {
+        attachDocListeners();
+      } else if (mtRef.current) {
+        // Keyboard shortcut started transform — begin modal without pointer lock
+        const tool = getTool();
+        const mode = tool === (TOOLS.ROTATE as ToolId) ? 'rotate'
+          : tool === (TOOLS.SCALE as ToolId) ? 'scale'
+          : 'grab';
+        mtRef.current.start(mode);
+        mouseMoved.current = false;
+        lastMouse.current = { x: 0, y: 0 };
+        attachDocListeners();
+      }
     };
 
     document.addEventListener('transform:grab', onTransformStart);
@@ -636,9 +791,12 @@ export function useViewportInput({
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('keyup', onKeyUp);
       detachDocListeners();
+      removePanDocMouseup();
       drawSvg?.parentElement?.removeChild(drawSvg);
       boxSvg?.parentElement?.removeChild(boxSvg);
       removeAxisGuide();
+      // Reset cursor on cleanup
+      document.body.style.cursor = '';
     };
   }, [canvas]);
 }

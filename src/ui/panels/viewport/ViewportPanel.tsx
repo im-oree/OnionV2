@@ -2,6 +2,7 @@ import React, { useRef, useCallback, useEffect } from 'react';
 import { useRenderer } from './hooks/useRenderer';
 import { useViewportInput } from './hooks/useViewportInput';
 import { useViewportSize } from './hooks/useViewportSize';
+import { useCursor } from './hooks/useCursor';
 import { ViewportHUD } from './ViewportHUD';
 import { TransformHUD } from './TransformHUD';
 import { Rulers } from './Rulers';
@@ -13,6 +14,8 @@ import { ContextMenu } from '../../common/ContextMenu';
 import { useContextMenu } from '../../common/useContextMenu';
 import { buildViewportContextMenu, buildInsertKeyframeMenu } from './contextMenus';
 import { Breadcrumb } from './Breadcrumb';
+import { GradientOverlay } from './GradientOverlay';
+import { CompBoundsCSS } from './CompBoundsCSS';
 
 export const ViewportPanel: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -21,6 +24,8 @@ export const ViewportPanel: React.FC = () => {
 
   const viewportSize = useViewportSize(containerRef as React.RefObject<HTMLElement | null>);
   const { state, viewportState, renderer } = useRenderer(containerRef.current);
+
+  useCursor(renderer?.canvas ?? null);
 
   const comp = useCompositionStore((s) => {
     const id = s.activeCompositionId;
@@ -39,7 +44,6 @@ export const ViewportPanel: React.FC = () => {
     requestRender: renderer ? () => renderer.renderLoop.requestRender() : undefined,
   });
 
-  // Track mouse position + hover state on the viewport
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -56,7 +60,6 @@ export const ViewportPanel: React.FC = () => {
     };
   }, []);
 
-  // I key → insert keyframe menu (only when viewport hovered)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'i' && e.key !== 'I') return;
@@ -64,10 +67,7 @@ export const ViewportPanel: React.FC = () => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (!isHovering.current) return;
       const items = buildInsertKeyframeMenu();
-      if (items.length === 0) {
-        console.warn('[Insert Keyframe] No layer selected');
-        return;
-      }
+      if (items.length === 0) { console.warn('[Insert Keyframe] No layer selected'); return; }
       e.preventDefault();
       ctxMenu.open({ clientX: lastMouse.current.x, clientY: lastMouse.current.y }, items);
     };
@@ -81,7 +81,21 @@ export const ViewportPanel: React.FC = () => {
   }, [renderer, ctxMenu]);
 
   return (
-    <div className="w-full h-full relative overflow-hidden bg-[var(--viewport-bg)]">
+    <div
+      className="w-full h-full relative overflow-hidden"
+      style={{ background: 'var(--color-app-bg)' }}
+    >
+      {/* Layer 0: CSS-based comp bounds (bottom) */}
+      {comp && (
+        <CompBoundsCSS
+          comp={comp}
+          viewportSize={viewportSize}
+          cameraManager={renderer?.cameraManager ?? null}
+          zoom={state.zoom}
+        />
+      )}
+
+      {/* Layer 1: Three.js canvas (transparent, on top of bounds) */}
       <div
         ref={containerRef}
         className="absolute inset-0"
@@ -89,6 +103,7 @@ export const ViewportPanel: React.FC = () => {
         onContextMenu={handleCtx}
       />
 
+      {/* Layer 2+: overlays */}
       {comp && <Breadcrumb />}
 
       {comp && (
@@ -100,22 +115,31 @@ export const ViewportPanel: React.FC = () => {
         </div>
       )}
 
+      {comp && (
+        <GradientOverlay
+          cameraManager={renderer?.cameraManager ?? null}
+          viewportSize={viewportSize}
+        />
+      )}
+
       {comp && <AxisGizmo />}
       {comp && <TransformHUD modalTransform={renderer?.modalTransform ?? null} cameraManager={renderer?.cameraManager ?? null} />}
 
+      {comp && comp.layers.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <div className="text-center opacity-50">
+            <p className="text-[12px] text-text-disabled">Add a layer from the Add menu, or drag files here</p>
+          </div>
+        </div>
+      )}
+
       {comp && (
         <ViewportHUD
-          fps={state.fps}
-          zoom={state.zoom}
-          viewportSize={viewportSize}
+          fps={state.fps} zoom={state.zoom} viewportSize={viewportSize}
           selectedLayerIds={viewportState.selectedLayerIds}
           transformMode={viewportState.transformMode}
-          onZoomChange={(z) => {
-            if (renderer) { renderer.cameraManager.setZoom(z); renderer.renderLoop.requestRender(); }
-          }}
-          onFitToViewport={() => {
-            if (renderer) renderer.cameraManager.fitToComposition();
-          }}
+          onZoomChange={(z) => { if (renderer) { renderer.cameraManager.setZoom(z); renderer.renderLoop.requestRender(); } }}
+          onFitToViewport={() => { if (renderer) renderer.cameraManager.fitToComposition(); }}
         />
       )}
 

@@ -3,6 +3,8 @@ import type { Composition } from './composition';
 export interface ProjectSettings {
   adaptiveResolution:boolean; ramPreview:boolean;
   targetFps:number; gridSnap:boolean; snapToGuides:boolean;
+  autoSaveInterval?:number; defaultWidth?:number; defaultHeight?:number; defaultFps?:number;
+  notes?:string;
 }
 
 export interface ProjectAsset {

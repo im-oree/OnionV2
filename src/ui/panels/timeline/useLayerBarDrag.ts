@@ -1,11 +1,17 @@
 import { useCallback, useRef } from 'react';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { useSelectionStore } from '../../../state/selectionStore';
 import { useTimelineStore } from '../../../state/timelineStore';
 import { snapFrame, buildSnapTargets } from './snapping';
 import { animationClock } from './PlaybackControls';
 import type { Layer } from '../../../types/layer';
 
 type DragMode = 'move' | 'trimStart' | 'trimEnd';
+
+interface LayerSnapshot {
+  startFrame: number;
+  endFrame: number;
+}
 
 export function useLayerBarDrag(
   layer: Layer,
@@ -18,8 +24,8 @@ export function useLayerBarDrag(
   const dragState = useRef<{
     mode: DragMode;
     startX: number;
-    startFrame: number;
-    endFrame: number;
+    /** Snapshot of ALL layers being dragged (selected + the dragged one) */
+    snapshots: Map<string, LayerSnapshot>;
   } | null>(null);
 
   const onMouseDown = useCallback((mode: DragMode) => (e: React.MouseEvent) => {
@@ -27,16 +33,29 @@ export function useLayerBarDrag(
     e.preventDefault();
     e.stopPropagation();
 
-    dragState.current = {
-      mode,
-      startX: e.clientX,
-      startFrame: layer.startFrame,
-      endFrame: layer.endFrame,
-    };
+    // Collect all selected layer IDs — if the dragged layer is already selected,
+    // drag all selected layers together; otherwise just drag the single layer.
+    const selectedIds = useSelectionStore.getState().getSelectedIds();
+    const dragIds = selectedIds.includes(layer.id)
+      ? selectedIds
+      : [layer.id];
 
     const cs = useCompositionStore.getState();
     const comp = cs.compositions.find(c => c.id === compId);
     if (!comp) return;
+
+    // Build start-frame snapshots for every layer being dragged
+    const snapshots = new Map<string, LayerSnapshot>();
+    for (const id of dragIds) {
+      const l = comp.layers.find(ll => ll.id === id);
+      if (l) snapshots.set(id, { startFrame: l.startFrame, endFrame: l.endFrame });
+    }
+    // Ensure the primary layer is always present
+    if (!snapshots.has(layer.id)) {
+      snapshots.set(layer.id, { startFrame: layer.startFrame, endFrame: layer.endFrame });
+    }
+
+    dragState.current = { mode, startX: e.clientX, snapshots };
 
     const buildTargets = () => buildSnapTargets({
       currentFrame: animationClock.currentFrame,
@@ -45,6 +64,7 @@ export function useLayerBarDrag(
       workAreaEnd: comp.workAreaEnd != null ? Math.floor(comp.workAreaEnd * comp.fps) : undefined,
       layers: comp.layers,
       keyframes: [],
+      // Exclude all dragged layers from snap targets to avoid intra-selection snapping
       excludeId: layer.id,
     });
 
@@ -57,47 +77,70 @@ export function useLayerBarDrag(
       const snappingOn = useTimelineStore.getState().snapping;
       const useSnap = ev.ctrlKey ? !snappingOn : snappingOn;
 
-      let newStart = st.startFrame;
-      let newEnd = st.endFrame;
+      // Primary layer new bounds (used for snapping)
+      const primary = st.snapshots.get(layer.id)!;
+      let primaryStart = primary.startFrame;
+      let primaryEnd = primary.endFrame;
 
       if (st.mode === 'move') {
-        newStart = st.startFrame + dxFrames;
-        newEnd = st.endFrame + dxFrames;
+        primaryStart = primary.startFrame + dxFrames;
+        primaryEnd = primary.endFrame + dxFrames;
       } else if (st.mode === 'trimStart') {
-        newStart = Math.min(st.endFrame - 1, st.startFrame + dxFrames);
+        primaryStart = Math.min(primary.endFrame - 1, primary.startFrame + dxFrames);
       } else if (st.mode === 'trimEnd') {
-        newEnd = Math.max(st.startFrame + 1, st.endFrame + dxFrames);
+        primaryEnd = Math.max(primary.startFrame + 1, primary.endFrame + dxFrames);
       }
 
       if (useSnap) {
         const targets = buildTargets();
         const threshold = Math.max(1, 8 / zoom);
         if (st.mode === 'move') {
-          const snapS = snapFrame(newStart, targets, threshold);
+          const snapS = snapFrame(primaryStart, targets, threshold);
           if (snapS.snappedTo) {
-            const shift = snapS.frame - newStart;
-            newStart += shift; newEnd += shift;
+            const shift = snapS.frame - primaryStart;
+            primaryStart += shift; primaryEnd += shift;
           } else {
-            const snapE = snapFrame(newEnd, targets, threshold);
+            const snapE = snapFrame(primaryEnd, targets, threshold);
             if (snapE.snappedTo) {
-              const shift = snapE.frame - newEnd;
-              newStart += shift; newEnd += shift;
+              const shift = snapE.frame - primaryEnd;
+              primaryStart += shift; primaryEnd += shift;
             }
           }
         } else if (st.mode === 'trimStart') {
-          newStart = snapFrame(newStart, targets, threshold).frame;
+          primaryStart = snapFrame(primaryStart, targets, threshold).frame;
         } else {
-          newEnd = snapFrame(newEnd, targets, threshold).frame;
+          primaryEnd = snapFrame(primaryEnd, targets, threshold).frame;
         }
       }
 
-      newStart = Math.max(0, newStart);
-      newEnd = Math.min(totalFrames, newEnd);
-      if (newEnd <= newStart) newEnd = newStart + 1;
+      // Clamp
+      primaryStart = Math.max(0, primaryStart);
+      primaryEnd = Math.min(totalFrames, primaryEnd);
+      if (primaryEnd <= primaryStart) primaryEnd = primaryStart + 1;
 
-      useCompositionStore.getState().updateLayer(compId, layer.id, {
-        startFrame: newStart, endFrame: newEnd,
-      });
+      // Compute the delta relative to the primary layer's original snapshot
+      const deltaStart = primaryStart - primary.startFrame;
+      const deltaEnd = primaryEnd - primary.endFrame;
+
+      // Apply delta to ALL selected layers
+      const store = useCompositionStore.getState();
+      for (const [id, snap] of st.snapshots) {
+        let ns: number, ne: number;
+        if (st.mode === 'move') {
+          ns = snap.startFrame + deltaStart;
+          ne = snap.endFrame + deltaStart;
+        } else if (st.mode === 'trimStart') {
+          ns = snap.startFrame + deltaStart;
+          ne = snap.endFrame;
+        } else {
+          ns = snap.startFrame;
+          ne = snap.endFrame + deltaEnd;
+        }
+        ns = Math.max(0, ns);
+        ne = Math.min(totalFrames, ne);
+        if (ne <= ns) ne = ns + 1;
+        store.updateLayer(compId, id, { startFrame: ns, endFrame: ne });
+      }
     };
 
     const onUp = () => {

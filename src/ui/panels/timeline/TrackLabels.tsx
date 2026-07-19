@@ -13,8 +13,8 @@ interface TrackLabelsProps {
 }
 
 const LAYER_ICONS: Record<string, string> = {
-  solid: 'square', shape: 'triangle', text: 'type',
-  image: 'image', video: 'film',
+  solid: 'rectangle', shape: 'polygon', text: 'text',
+  image: 'image', video: 'video',
 };
 
 export const TrackLabels: React.FC<TrackLabelsProps> = ({
@@ -28,15 +28,26 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
 
   return (
     <div className="overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center h-[28px] px-2 bg-surface-alt border-b border-border text-ui-xs text-text-secondary font-medium">
+      <div
+        className="flex items-center px-3"
+        style={{
+          height: 32,
+          background: 'transparent',
+          borderBottom: '1px solid var(--color-border)',
+          fontSize: 'var(--font-size-sm)',
+          color: 'var(--color-text-secondary)',
+          fontWeight: 500,
+        }}
+      >
         <span>Layers</span>
       </div>
 
-      {/* Track rows */}
       <div className="overflow-auto">
         {layers.length === 0 && (
-          <div className="text-ui-xs text-text-disabled text-center py-4 px-2">
+          <div
+            className="text-center py-6 px-2"
+            style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-disabled)' }}
+          >
             No layers
           </div>
         )}
@@ -46,49 +57,67 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
           const isSelected = selectedIds.includes(layer.id);
           return (
             <div key={layer.id}>
-              {/* Layer track row */}
               <div
-                className={`flex items-center h-[24px] px-1 gap-1 cursor-pointer text-ui-xs select-none border-b border-border/30 ${isSelected ? 'bg-accent/20 text-text-primary' : 'hover:bg-panel-hover'}`}
+                className="flex items-center gap-1.5 cursor-pointer select-none transition-colors"
                 onClick={() => handleSelect(layer.id)}
+                style={{
+                  height: 28,
+                  padding: '0 8px',
+                  fontSize: 'var(--font-size-sm)',
+                  background: isSelected ? 'var(--color-accent-muted)' : 'transparent',
+                  color: isSelected ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                  borderBottom: '1px solid var(--color-divider)',
+                }}
+                onMouseEnter={(e) => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; }}
+                onMouseLeave={(e) => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
               >
-                {/* Expand chevron */}
                 <button
-                  className="w-[14px] h-[14px] flex items-center justify-center border-0 bg-transparent cursor-pointer text-text-disabled hover:text-text-secondary shrink-0"
+                  className="w-[16px] h-[16px] flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
+                  style={{ color: 'var(--color-text-disabled)' }}
                   onClick={(e) => { e.stopPropagation(); onToggleExpand(layer.id); }}
                 >
-                  <Icon name="chevronRight" size={10}
-                    className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-                  />
+                  <Icon name="chevronRight" size={11} strokeWidth={2}
+                    className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                 </button>
 
-                {/* Layer type icon */}
-                <Icon name={(LAYER_ICONS[layer.type] ?? 'circle') as any} size={12}
-                  className={`shrink-0 ${isSelected ? 'text-accent' : 'text-text-disabled'}`}
+                <Icon
+                  name={(LAYER_ICONS[layer.type] ?? 'ellipse') as any}
+                  size={13}
+                  strokeWidth={1.75}
+                  className="shrink-0"
                 />
 
-                {/* Name */}
                 <span className="truncate flex-1">{layer.name}</span>
 
-                {/* Keyframe diamond indicator */}
                 <div className="mr-1 w-[10px] flex items-center justify-center">
-                  <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" className="text-accent">
+                  <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" style={{ color: 'var(--color-accent)' }}>
                     <polygon points="4,0 8,4 4,8 0,4" />
                   </svg>
                 </div>
               </div>
 
-              {/* Property sub-rows (when expanded) */}
               {isExpanded && propertyPaths.map((prop) => (
                 <div
                   key={prop.path}
-                  className="flex items-center h-[20px] pl-[30px] pr-1 text-ui-xs text-text-disabled border-b border-border/20 hover:bg-panel-hover cursor-pointer"
+                  className="flex items-center cursor-pointer transition-colors"
                   onClick={() => handleSelect(layer.id)}
                   title={prop.path}
+                  style={{
+                    height: 22,
+                    paddingLeft: 34, paddingRight: 8,
+                    fontSize: 'var(--font-size-sm)',
+                    color: 'var(--color-text-tertiary)',
+                    borderBottom: '1px solid var(--color-divider)',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'}
+                  onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.background = 'transparent'}
                 >
                   <span className="truncate flex-1">{prop.label}</span>
-                  {/* Keyframe navigation */}
-                  <button className="w-[12px] h-[12px] flex items-center justify-center border-0 bg-transparent cursor-pointer hover:text-text-secondary"
-                    title="Add/remove keyframe">
+                  <button
+                    className="w-[14px] h-[14px] flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
+                    style={{ color: 'var(--color-text-disabled)' }}
+                    title="Add/remove keyframe"
+                  >
                     <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1">
                       <polygon points="4,0 8,4 4,8 0,4" />
                     </svg>

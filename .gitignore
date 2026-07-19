@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.freebuff/
+nul
+*.db
+*.db-shm
+*.db-wal

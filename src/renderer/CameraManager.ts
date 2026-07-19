@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { VIEWPORT_CONFIG } from '../config/viewportConfig';
+import { emitCameraChange } from './utils/CameraEvents';
 
 export interface ViewportTransform {
   panX: number;
@@ -62,6 +63,7 @@ export class CameraManager {
     this.camera.bottom = -halfH + this._panY;
     this.camera.updateProjectionMatrix();
     this.onChanged?.();
+    emitCameraChange();
   }
 
   get zoom(): number { return this._zoom; }
@@ -75,7 +77,8 @@ export class CameraManager {
   zoomOut(factor = 1.25): void { this.setZoom(this._zoom / factor); }
 
   fitToComposition(): void {
-    this._zoom = 1;
+    // N11: Add 10% margin around composition for breathing room
+    this._zoom = 0.9;
     this._panX = 0;
     this._panY = 0;
     this.updateProjection();

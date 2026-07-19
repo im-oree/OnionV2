@@ -10,13 +10,9 @@ import { useMaskStore } from '../state/maskStore';
 import { useViewportStore } from '../state/viewportStore';
 import { useTimelineStore } from '../state/timelineStore';
 
-const CURRENT_VERSION = '1.0';
-const APP_VERSION = '0.1.0';
+import { runMigrations, validateProjectData, CURRENT_VERSION } from './migrations';
 
-/** Migrations registry for future-proofing */
-const MIGRATIONS: Array<(data: any) => any> = [
-  // v1.0 is initial — no migrations yet
-];
+const APP_VERSION = '0.1.0';
 
 export class ProjectSerializer {
   /** Capture all in-memory state into a serializable project */
@@ -188,19 +184,13 @@ export class ProjectSerializer {
 
   /** Run schema migrations if needed */
   static runMigrations(data: SerializedProject): SerializedProject {
-    let current = { ...data } as any;
-    const fromVersion = current.version ?? '0.0';
+    const fromVersion = (data as any).version ?? '0.0';
+    if (fromVersion === CURRENT_VERSION) return data;
+    return runMigrations(data, fromVersion, CURRENT_VERSION) as SerializedProject;
+  }
 
-    if (fromVersion === CURRENT_VERSION) return current;
-
-    // Find the starting migration index
-    let startIdx = 0;
-    // Each migration handles incrementing version
-    for (let i = startIdx; i < MIGRATIONS.length; i++) {
-      current = MIGRATIONS[i](current);
-    }
-
-    current.version = CURRENT_VERSION;
-    return current as SerializedProject;
+  /** Validate loaded project data before deserializing */
+  static validate(data: any): { valid: true } | { valid: false; error: string } {
+    return validateProjectData(data);
   }
 }

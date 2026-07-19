@@ -56,5 +56,14 @@ export const editMenu: MenuItemDefinition[] = [
     useSelectionStore.getState().replaceSelection(inverted, compId);
   }},
   { id: 'edit.sep3', label: '', divider: true, onClick: () => {} },
-  { id: 'edit.preferences', label: 'Preferences...', onClick: () => console.log('[Menu] Edit > Preferences') },
+  { id: 'edit.preferences', label: 'Preferences...', onClick: () => {
+    import('../../dialogs/index').then(({ openPreferencesDialog }) => openPreferencesDialog());
+  } },
+  { id: 'edit.sep4', label: '', divider: true, onClick: () => {} },
+  { id: 'edit.copyKeyframes', label: 'Copy Keyframes', shortcut: 'Ctrl+Shift+C', onClick: () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true }));
+  }},
+  { id: 'edit.pasteKeyframes', label: 'Paste Keyframes', shortcut: 'Ctrl+Shift+V', onClick: () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true }));
+  }},
 ];

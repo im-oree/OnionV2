@@ -7,6 +7,31 @@ import { useViewportStore } from '../../../state/viewportStore';
 
 export const viewMenu: MenuItemDefinition[] = [
   {
+    id: 'view.timeDisplay',
+    label: 'Time Display',
+    children: [
+      { id: 'view.timeFrames', label: 'Frames', onClick: () => import('../../../state/timelineStore').then(m => m.useTimelineStore.getState().setTimeDisplay('frames')) },
+      { id: 'view.timeSeconds', label: 'Seconds', onClick: () => import('../../../state/timelineStore').then(m => m.useTimelineStore.getState().setTimeDisplay('seconds')) },
+      { id: 'view.timeSMPTE', label: 'SMPTE Timecode', onClick: () => import('../../../state/timelineStore').then(m => m.useTimelineStore.getState().setTimeDisplay('smpte')) },
+    ],
+  },
+  {
+    id: 'view.toggleLoopPlayback',
+    label: 'Loop Playback',
+    onClick: () => {
+      import('../../../state/timelineStore').then(m => {
+        const s = m.useTimelineStore.getState();
+        s.setLoop(!s.loop);
+      });
+    },
+  },
+  {
+    id: 'view.sep0',
+    label: '',
+    divider: true,
+    onClick: () => {},
+  },
+  {
     id: 'view.toggleGrid',
     label: 'Show Grid',
     shortcut: 'Ctrl+G',

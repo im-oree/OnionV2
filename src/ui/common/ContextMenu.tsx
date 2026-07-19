@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { Check, ChevronRight } from 'lucide-react';
 
 export interface ContextMenuItem {
   id: string;
@@ -51,9 +52,7 @@ const MenuLevel: React.FC<MenuLevelProps> = ({ items, position, onClose, isRoot 
       for (const m of menus) if (m.contains(e.target as Node)) return;
       onClose();
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
-    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose(); } };
     const t = setTimeout(() => {
       document.addEventListener('mousedown', onDown);
       document.addEventListener('keydown', onKey);
@@ -68,7 +67,7 @@ const MenuLevel: React.FC<MenuLevelProps> = ({ items, position, onClose, isRoot 
   const onHover = useCallback((item: ContextMenuItem, el: HTMLElement) => {
     if (item.children?.length) {
       const r = el.getBoundingClientRect();
-      setSub({ id: item.id, pos: { x: r.right - 2, y: r.top } });
+      setSub({ id: item.id, pos: { x: r.right - 4, y: r.top } });
     } else setSub(null);
   }, []);
 
@@ -76,7 +75,7 @@ const MenuLevel: React.FC<MenuLevelProps> = ({ items, position, onClose, isRoot 
     if (item.disabled) return;
     if (item.children?.length) {
       const r = el.getBoundingClientRect();
-      setSub({ id: item.id, pos: { x: r.right - 2, y: r.top } });
+      setSub({ id: item.id, pos: { x: r.right - 4, y: r.top } });
       return;
     }
     item.onClick?.();
@@ -89,18 +88,24 @@ const MenuLevel: React.FC<MenuLevelProps> = ({ items, position, onClose, isRoot 
     <>
       <div
         ref={ref} data-ctx-menu="true"
-        style={{ left: pos.x, top: pos.y }}
-        className="fixed z-[9999] min-w-[180px] py-1 bg-panel border border-border rounded-sm shadow-dropdown select-none"
+        style={{
+          left: pos.x, top: pos.y,
+          background: 'var(--color-panel-raised)',
+          borderRadius: 'var(--radius-md)',
+          boxShadow: 'var(--shadow-dropdown)',
+          animation: 'dropdown-in 140ms var(--ease-out)',
+        }}
+        className="fixed z-[9999] min-w-[220px] py-1.5 select-none"
       >
         {items.map((item, i) => {
-          if (item.divider) return <div key={`d${i}`} className="h-px bg-border my-0.5 mx-1" />;
+          if (item.divider) return (
+            <div key={`d${i}`} className="h-px my-1.5 mx-2" style={{ background: 'var(--color-divider)' }} />
+          );
           return (
-            <CtxRow
-              key={item.id} item={item}
+            <CtxRow key={item.id} item={item}
               hasSub={!!(item.children?.length)}
               isSubOpen={sub?.id === item.id}
-              onHover={onHover} onClick={onItemClick}
-            />
+              onHover={onHover} onClick={onItemClick} />
           );
         })}
       </div>
@@ -124,23 +129,38 @@ const CtxRow: React.FC<CtxRowProps> = ({ item, hasSub, isSubOpen, onHover, onCli
   return (
     <button
       ref={ref} disabled={item.disabled}
-      className={[
-        'flex items-center w-full px-2 py-[3px] gap-2 text-left border-0 text-ui-xs bg-transparent',
-        item.disabled ? 'text-text-disabled cursor-default' : 'cursor-pointer text-text-primary',
-        !item.disabled && isSubOpen ? 'bg-panel-hover' : '',
-        !item.disabled ? 'hover:bg-panel-hover' : '',
-      ].join(' ')}
-      onMouseEnter={() => ref.current && onHover(item, ref.current)}
+      className="flex items-center w-full text-left border-0 bg-transparent transition-colors"
+      style={{
+        height: 30,
+        padding: '0 14px',
+        gap: 10,
+        fontSize: 'var(--font-size-md)',
+        color: item.disabled ? 'var(--color-text-disabled)' : 'var(--color-text-primary)',
+        cursor: item.disabled ? 'default' : 'pointer',
+        background: isSubOpen ? 'var(--color-panel-hover)' : 'transparent',
+      }}
+      onMouseEnter={(e) => {
+        if (!item.disabled) (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)';
+        if (ref.current) onHover(item, ref.current);
+      }}
+      onMouseLeave={(e) => {
+        if (!isSubOpen) (e.currentTarget as HTMLElement).style.background = 'transparent';
+      }}
       onClick={() => ref.current && onClick(item, ref.current)}
     >
-      <span className="w-4 flex items-center justify-center text-text-disabled shrink-0">
-        {item.checked ? '✓' : (item.icon ?? null)}
+      <span className="w-4 flex items-center justify-center shrink-0" style={{ color: 'var(--color-accent)' }}>
+        {item.checked ? <Check size={12} strokeWidth={2.5} /> : (item.icon ?? null)}
       </span>
       <span className="flex-1 whitespace-nowrap">{item.label}</span>
       {item.shortcut && (
-        <span className="text-text-disabled text-[10px] ml-4 whitespace-nowrap">{item.shortcut}</span>
+        <span
+          className="ml-6 whitespace-nowrap font-mono"
+          style={{ color: 'var(--color-text-tertiary)', fontSize: 'var(--font-size-xs)' }}
+        >
+          {item.shortcut}
+        </span>
       )}
-      {hasSub && <span className="text-text-disabled ml-1">▸</span>}
+      {hasSub && <ChevronRight size={12} strokeWidth={2} style={{ color: 'var(--color-text-tertiary)', marginLeft: 4 }} />}
     </button>
   );
 };

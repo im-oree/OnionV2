@@ -79,12 +79,20 @@ export class SelectionOverlay {
       const corners = this._getWorldCorners(r);
       if (corners.length < 4) continue;
 
-      // ── 1. Selection polygon (rotated rectangle outline) ──
+      // N2: Selection polygon — double outline for visibility on any background
       const pts = corners.map((c) => `${c.x},${c.y}`).join(' ');
+      // Black shadow outline underneath
+      const shadow = document.createElementNS(NS, 'polygon');
+      shadow.setAttribute('points', pts);
+      shadow.setAttribute('fill', 'none');
+      shadow.setAttribute('stroke', '#000000');
+      shadow.setAttribute('stroke-width', '3');
+      this.svg.appendChild(shadow);
+      // Main accent outline on top
       const poly = document.createElementNS(NS, 'polygon');
       poly.setAttribute('points', pts);
       poly.setAttribute('fill', 'none');
-      poly.setAttribute('stroke', renderers.length > 1 ? 'rgba(71,114,179,0.5)' : accent);
+      poly.setAttribute('stroke', renderers.length > 1 ? 'rgba(71,114,179,0.8)' : accent);
       poly.setAttribute('stroke-width', '1.5');
       this.svg.appendChild(poly);
 
@@ -333,14 +341,18 @@ export class SelectionOverlay {
     this._compassRose(cx, cy, 6, accent, white);
   }
 
-  // ── Anchor crosshair ──────────────────────────────────────
+  // ── N3: Anchor crosshair — larger, double-color for visibility ──
   private _drawAnchor(worldX: number, worldY: number): void {
     const screen = this.cameraManager.worldToScreen(worldX, worldY);
-    const cs = 6;
-    const accent = 'var(--color-accent)';
-    this.svg!.appendChild(this._line(screen.x - cs, screen.y, screen.x + cs, screen.y, accent, 1));
-    this.svg!.appendChild(this._line(screen.x, screen.y - cs, screen.x, screen.y + cs, accent, 1));
-    this._dot(screen.x, screen.y, 2, accent, 'none');
+    const cs = 10; // 12px crosshair
+    // White outer lines for contrast on any background
+    this.svg!.appendChild(this._line(screen.x - cs, screen.y, screen.x + cs, screen.y, '#ffffff', 2));
+    this.svg!.appendChild(this._line(screen.x, screen.y - cs, screen.x, screen.y + cs, '#ffffff', 2));
+    // Accent inner lines on top
+    this.svg!.appendChild(this._line(screen.x - cs, screen.y, screen.x + cs, screen.y, '#4772b3', 1));
+    this.svg!.appendChild(this._line(screen.x, screen.y - cs, screen.x, screen.y + cs, '#4772b3', 1));
+    // 4px filled dot at center
+    this._dot(screen.x, screen.y, 4, '#ffffff', '#4772b3');
   }
 
   // ── SVG helpers ─────────────────────────────────────────

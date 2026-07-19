@@ -2,8 +2,9 @@
  * ResizeHandler — observes a DOM element for size changes and updates
  * the renderer and camera accordingly. Uses ResizeObserver.
  * Caps devicePixelRatio at 2 for performance.
- * CRITICAL: calls renderLoop.requestRender() on each resize frame
- * to prevent the viewport from going blank (A2/A3 fix).
+ *
+ * IMPORTANT: Uses TRANSPARENT clear color so the CSS-based CompBoundsCSS
+ * layer beneath the canvas is visible. Never sets opaque background here.
  */
 import * as THREE from 'three';
 import { CameraManager } from './CameraManager';
@@ -28,7 +29,6 @@ export class ResizeHandler {
     this.renderLoop = renderLoop;
   }
 
-  /** Start observing a container element for resize events */
   observe(el: HTMLElement): void {
     this.disconnect();
 
@@ -38,7 +38,6 @@ export class ResizeHandler {
         if (this.rafId) cancelAnimationFrame(this.rafId);
         this.rafId = requestAnimationFrame(() => {
           this.handleResize(Math.floor(width), Math.floor(height));
-          // Keep rendering during resize gesture
           this.renderLoop.requestRender();
         });
       }
@@ -46,18 +45,14 @@ export class ResizeHandler {
 
     this.observer.observe(el);
 
-    // Initial resize
     const rect = el.getBoundingClientRect();
     this.handleResize(Math.floor(rect.width), Math.floor(rect.height));
-    this.renderLoop.requestRender();
   }
 
-  /** Set a callback fired on resize */
   setCallback(cb: (width: number, height: number) => void): void {
     this.onResize = cb;
   }
 
-  /** Update renderer pixel size and camera viewport */
   private handleResize(cssWidth: number, cssHeight: number): void {
     if (cssWidth === 0 || cssHeight === 0) return;
 
@@ -67,11 +62,13 @@ export class ResizeHandler {
 
     this.renderer.setSize(pixelWidth, pixelHeight);
     this.renderer.setPixelRatio(dpr);
+    // CRITICAL: Transparent clear — do NOT overwrite with opaque bg.
+    // The CSS-based CompBoundsCSS layer under the canvas provides the bg.
+    this.renderer.setClearColor(0x000000, 0);
     this.cameraManager.setViewportSize(cssWidth, cssHeight);
     this.onResize?.(cssWidth, cssHeight);
   }
 
-  /** Stop observing and clean up */
   disconnect(): void {
     if (this.observer) {
       this.observer.disconnect();
@@ -83,7 +80,6 @@ export class ResizeHandler {
     }
   }
 
-  /** Dispose */
   dispose(): void {
     this.disconnect();
   }

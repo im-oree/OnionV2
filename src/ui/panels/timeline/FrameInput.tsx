@@ -9,9 +9,10 @@ interface Props {
   width?: number;
 }
 
-export const FrameInput: React.FC<Props> = ({ value, onChange, min = 0, max, label, width = 52 }) => {
+export const FrameInput: React.FC<Props> = ({ value, onChange, min = 0, max, label, width = 58 }) => {
   const [local, setLocal] = useState(String(value));
   const [editing, setEditing] = useState(false);
+  const [focused, setFocused] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
 
   useEffect(() => { if (!editing) setLocal(String(Math.round(value))); }, [value, editing]);
@@ -29,8 +30,7 @@ export const FrameInput: React.FC<Props> = ({ value, onChange, min = 0, max, lab
   const scrub = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
     e.preventDefault();
-    const sx = e.clientX;
-    const sv = value;
+    const sx = e.clientX, sv = value;
     let moved = false;
     document.body.style.cursor = 'ew-resize';
     const mm = (ev: MouseEvent) => {
@@ -53,12 +53,27 @@ export const FrameInput: React.FC<Props> = ({ value, onChange, min = 0, max, lab
 
   return (
     <div
-      className="flex items-center h-[20px] bg-panel-input border border-border rounded-sm overflow-hidden"
-      style={{ width }}
+      className="flex items-center overflow-hidden"
+      style={{
+        width,
+        height: 26,
+        borderRadius: 'var(--radius-sm)',
+        background: 'var(--color-input-bg)',
+        border: `1px solid ${focused ? 'var(--color-accent)' : 'var(--color-border)'}`,
+        boxShadow: focused ? '0 0 0 3px var(--color-accent-muted)' : 'none',
+        transition: 'border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out)',
+      }}
     >
       {label && (
         <span
-          className="px-1.5 text-[10px] text-text-secondary select-none cursor-ew-resize h-full flex items-center bg-panel-header/60 border-r border-border"
+          className="flex items-center h-full select-none cursor-ew-resize"
+          style={{
+            padding: '0 8px',
+            fontSize: 'var(--font-size-xs)',
+            color: 'var(--color-text-tertiary)',
+            borderRight: '1px solid var(--color-border)',
+            fontWeight: 500,
+          }}
           onMouseDown={scrub}
         >
           {label}
@@ -69,13 +84,19 @@ export const FrameInput: React.FC<Props> = ({ value, onChange, min = 0, max, lab
         type="text"
         value={editing ? local : String(Math.round(value))}
         onChange={(e) => { setEditing(true); setLocal(e.target.value); }}
-        onFocus={(e) => { setEditing(true); e.target.select(); }}
-        onBlur={() => { setEditing(false); commit(local); }}
+        onFocus={(e) => { setEditing(true); setFocused(true); e.target.select(); }}
+        onBlur={() => { setEditing(false); setFocused(false); commit(local); }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') { commit(local); ref.current?.blur(); }
           if (e.key === 'Escape') { setLocal(String(Math.round(value))); setEditing(false); ref.current?.blur(); }
         }}
-        className="flex-1 h-full min-w-0 bg-transparent text-ui-xs text-text-primary text-center outline-none border-0 font-mono"
+        className="flex-1 h-full min-w-0 bg-transparent text-center outline-none border-0"
+        style={{
+          color: 'var(--color-text-primary)',
+          fontSize: 'var(--font-size-sm)',
+          fontFamily: 'var(--font-family-mono)',
+          fontVariantNumeric: 'tabular-nums',
+        }}
       />
     </div>
   );

@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import { getCSSColor } from '../../utils/theme';
+import { APP_BG_COLOR } from '../../config/rendererColors';
 
 export class CompBoundsOverlay {
   public readonly group: THREE.Group;
   private border: THREE.LineSegments | null = null;
+  private glowLine: THREE.LineSegments | null = null;
   private darkOutside: THREE.Mesh | null = null;
   private bgQuad: THREE.Mesh | null = null;
   private _visible = true;
@@ -11,6 +13,7 @@ export class CompBoundsOverlay {
   constructor() {
     this.group = new THREE.Group();
     this.group.name = 'comp-bounds-overlay';
+    this.group.visible = false; // Disabled — CSS layer handles this now
   }
 
   update(width: number, height: number, bgColor: string): void {
@@ -20,22 +23,32 @@ export class CompBoundsOverlay {
     const halfH = height / 2;
     const worldSize = Math.max(width, height) * 10;
 
-    // Outside area — medium grey (reads from CSS var, falls back to #3d3d3d)
-    const outsideColor = getCSSColor('--viewport-outside', '#3d3d3d');
+    // Outside area — matches the app background (darker charcoal)
+    const outsideColor = getCSSColor('--viewport-outside', `#${APP_BG_COLOR.toString(16).padStart(6, '0')}`);
     const outsideGeo = this._buildOutsideQuad(worldSize, halfW, halfH);
     const outsideMat = new THREE.MeshBasicMaterial({
       color: outsideColor,
       depthTest: false,
       side: THREE.DoubleSide,
     });
-    // Set render order so outside is behind everything
     this.darkOutside = new THREE.Mesh(outsideGeo, outsideMat);
     this.darkOutside.renderOrder = -20;
     this.group.add(this.darkOutside);
 
-    // Comp background quad (inside area)
+    // Composition background — ALWAYS visible.
+    // If user hasn't set a bg color (or it matches app bg), use a slightly
+    // lighter fill so the comp area is always distinct from outside.
+    let effectiveBg = bgColor;
+    const isDefaultOrEmpty = !bgColor
+      || bgColor.toLowerCase() === '#000000'
+      || bgColor.toLowerCase() === '#000';
+    if (isDefaultOrEmpty) {
+      // Use viewport-bg (defined in theme.css) for that "canvas surface" look
+      effectiveBg = getCSSColor('--viewport-bg', '#13151a');
+    }
+
     const bgMat = new THREE.MeshBasicMaterial({
-      color: bgColor,
+      color: effectiveBg,
       depthTest: false,
       side: THREE.DoubleSide,
     });
@@ -44,7 +57,7 @@ export class CompBoundsOverlay {
     this.bgQuad.renderOrder = -18;
     this.group.add(this.bgQuad);
 
-    // Border line (subtle accent)
+    // Comp border — subtle indigo hairline, always visible
     const borderPos = [
       -halfW, -halfH, 0, halfW, -halfH, 0,
       halfW, -halfH, 0, halfW, halfH, 0,
@@ -53,17 +66,39 @@ export class CompBoundsOverlay {
     ];
     const borderGeo = new THREE.BufferGeometry();
     borderGeo.setAttribute('position', new THREE.Float32BufferAttribute(borderPos, 3));
+    const borderColor = getCSSColor('--color-accent', '#5865ff');
     const borderMat = new THREE.LineBasicMaterial({
-      color: 0x4772b3,
+      color: borderColor,
       depthTest: false,
       transparent: true,
-      opacity: 0.4,
+      opacity: 0.35,
+      linewidth: 1,
     });
     this.border = new THREE.LineSegments(borderGeo, borderMat);
     this.border.renderOrder = -16;
     this.group.add(this.border);
 
-    this.group.visible = this._visible;
+    // Soft outer shadow line (subtle depth)
+    const glowOffset = 2;
+    const glowPos = [
+      -halfW - glowOffset, -halfH - glowOffset, 0, halfW + glowOffset, -halfH - glowOffset, 0,
+      halfW + glowOffset, -halfH - glowOffset, 0, halfW + glowOffset, halfH + glowOffset, 0,
+      halfW + glowOffset, halfH + glowOffset, 0, -halfW - glowOffset, halfH + glowOffset, 0,
+      -halfW - glowOffset, halfH + glowOffset, 0, -halfW - glowOffset, -halfH - glowOffset, 0,
+    ];
+    const glowGeo = new THREE.BufferGeometry();
+    glowGeo.setAttribute('position', new THREE.Float32BufferAttribute(glowPos, 3));
+    const glowMat = new THREE.LineBasicMaterial({
+      color: 0x000000,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.4,
+    });
+    this.glowLine = new THREE.LineSegments(glowGeo, glowMat);
+    this.glowLine.renderOrder = -19;
+    this.group.add(this.glowLine);
+
+    this.group.visible = false; // Disabled — CSS layer handles this now
   }
 
   show(): void { this._visible = true; this.group.visible = true; }
@@ -84,14 +119,17 @@ export class CompBoundsOverlay {
   }
 
   private clear(): void {
-    [this.border, this.darkOutside, this.bgQuad].forEach(obj => {
+    [this.border, this.glowLine, this.darkOutside, this.bgQuad].forEach(obj => {
       if (obj) {
         this.group.remove(obj);
         obj.geometry.dispose();
-        if (obj instanceof THREE.Mesh) (obj.material as THREE.Material).dispose();
+        const mat = (obj as any).material;
+        if (mat instanceof THREE.Material) mat.dispose();
+        else if (Array.isArray(mat)) mat.forEach((m: any) => m instanceof THREE.Material && m.dispose());
       }
     });
     this.border = null;
+    this.glowLine = null;
     this.darkOutside = null;
     this.bgQuad = null;
   }

@@ -15,23 +15,76 @@ export interface Transform {
   anchorPoint: { x: number; y: number };
 }
 
-/** Shape-specific data */
+/** ─── Gradient types ─── */
+export interface GradientStop {
+  offset: number; // 0–1
+  color: string;  // hex
+}
+
+export interface LinearGradient {
+  type: 'linear-gradient';
+  angle: number;       // degrees
+  stops: GradientStop[];
+}
+
+export interface RadialGradient {
+  type: 'radial-gradient';
+  centerX: number;     // 0–1 relative to shape
+  centerY: number;     // 0–1 relative to shape
+  radius: number;      // 0–1
+  stops: GradientStop[];
+}
+
+export type GradientFill = LinearGradient | RadialGradient;
+
+/** ─── Shape fill/stroke ─── */
+export interface ShapeFill {
+  type: 'solid' | 'linear-gradient' | 'radial-gradient';
+  color: string;               // used when type='solid'
+  opacity: number;             // 0–100
+  gradient?: GradientFill;     // used when type is gradient
+}
+
+export interface ShapeStroke {
+  enabled: boolean;
+  color: string;
+  width: number;
+  opacity: number;  // 0–100
+}
+
+/** Default fill */
+export function defaultShapeFill(): ShapeFill {
+  return { type: 'solid', color: '#ffffff', opacity: 100 };
+}
+
+/** Default stroke */
+export function defaultShapeStroke(): ShapeStroke {
+  return { enabled: false, color: '#ffffff', width: 2, opacity: 100 };
+}
+
+/** ─── Shape-specific data ─── */
 export interface ShapeRectangle {
   type: 'rectangle';
   width: number;
   height: number;
   borderRadius: number;
+  fill?: ShapeFill;
+  stroke?: ShapeStroke;
 }
 export interface ShapeEllipse {
   type: 'ellipse';
   radiusX: number;
   radiusY: number;
+  fill?: ShapeFill;
+  stroke?: ShapeStroke;
 }
 export interface ShapePolygon {
   type: 'polygon';
   sides: number;
   radius: number;
   roundness: number;
+  fill?: ShapeFill;
+  stroke?: ShapeStroke;
 }
 export interface ShapeStar {
   type: 'star';
@@ -39,6 +92,8 @@ export interface ShapeStar {
   radius: number;
   innerRadius: number;
   roundness: number;
+  fill?: ShapeFill;
+  stroke?: ShapeStroke;
 }
 export type ShapeData = ShapeRectangle | ShapeEllipse | ShapePolygon | ShapeStar;
 
@@ -48,13 +103,9 @@ export interface VideoData { assetId: string; naturalWidth: number; naturalHeigh
 export interface TextData { text: string; fontFamily: string; fontSize: number; fontWeight: number; color: string; lineHeight: number; letterSpacing: number; alignment: 'left'|'center'|'right' }
 
 export interface CompData {
-  /** ID of the source Composition to render inside this layer */
   sourceCompId: string;
-  /** Loop when parent time exceeds nested comp duration */
   loop: boolean;
-  /** Playback speed multiplier for the nested comp (1.0 = normal) */
   timeScale: number;
-  /** Frame offset — nested comp starts at this local frame */
   timeOffset: number;
 }
 
@@ -82,12 +133,12 @@ export interface BaseLayer {
   zIndex: number;
   effects: EffectInstance[];
   masks: Mask[];
+  color?: string;
   data?: LayerPayload;
 }
 
 export type Layer = BaseLayer;
 
-/** Helper to create a default transform */
 export function defaultTransform(): Transform {
   return {
     position: { x: 0, y: 0 },

@@ -1,5 +1,8 @@
 import React from 'react';
+import { ChevronDown, ChevronRight, Code2 } from 'lucide-react';
 import { useKeyframeStore } from '../../../state/keyframeStore';
+import { useExpressionStore } from '../../../state/expressionStore';
+import { ExpressionEditor } from './ExpressionEditor';
 import { useContextMenu } from '../../common/useContextMenu';
 import { ContextMenu } from '../../common/ContextMenu';
 import { useCompositionStore } from '../../../state/compositionStore';
@@ -17,13 +20,26 @@ export const Section: React.FC<SectionProps> = ({ label, defaultOpen = true, chi
   return (
     <div>
       <button
-        className="flex items-center w-full h-panel-header px-2 gap-1 border-0 cursor-pointer text-ui-xs font-medium text-text-secondary uppercase tracking-wider bg-panel-header hover:bg-panel-hover"
+        className="flex items-center w-full gap-2 border-0 cursor-pointer transition-colors"
+        style={{
+          height: 30,
+          padding: '0 12px',
+          background: 'transparent',
+          borderBottom: '1px solid var(--color-divider)',
+          color: 'var(--color-text-secondary)',
+          fontSize: 'var(--font-size-xs)',
+          fontWeight: 600,
+          letterSpacing: '0.08em',
+          textTransform: 'uppercase',
+        }}
+        onMouseEnter={(e)=>{ (e.currentTarget as HTMLElement).style.color='var(--color-text-primary)'; }}
+        onMouseLeave={(e)=>{ (e.currentTarget as HTMLElement).style.color='var(--color-text-secondary)'; }}
         onClick={() => setOpen(!open)}
       >
-        <span className="text-text-disabled text-[8px] w-3">{open ? '▼' : '▸'}</span>
+        {open ? <ChevronDown size={12} strokeWidth={2} /> : <ChevronRight size={12} strokeWidth={2} />}
         <span>{label}</span>
       </button>
-      {open && <div className="py-1 px-2 space-y-1">{children}</div>}
+      {open && <div style={{ padding: '8px 12px' }} className="space-y-1.5">{children}</div>}
     </div>
   );
 };
@@ -41,6 +57,7 @@ export const PropRow: React.FC<PropRowProps> = ({
   label, children, animatable, layer, currentFrame = 0, compId,
 }) => {
   const revision = useKeyframeStore(s => s.revision);
+  const exprRevision = useExpressionStore(s => s.revision);
   const ctxMenu = useContextMenu();
 
   const isAnimated = React.useMemo(() => {
@@ -87,58 +104,100 @@ export const PropRow: React.FC<PropRowProps> = ({
 
   const handleContext = (e: React.MouseEvent) => {
     if (!animatable || !layer || !compId) return;
-    ctxMenu.open(e, buildPropertyContextMenu({
+    const baseItems = buildPropertyContextMenu({
       layer, compId, basePath: animatable,
       getValue: () => getCurrentPropertyValue(animatable, layer),
       applyReset: (val) => applyValueToLayer(compId, layer.id, animatable, val),
-    }));
+    });
+    const hasExpr = useExpressionStore.getState().getExpression(layer.id, animatable);
+    const exprItems = hasExpr
+      ? [{ id: 'expr.remove', label: 'Remove Expression',
+          onClick: () => useExpressionStore.getState().removeExpression(layer.id, animatable) }]
+      : [{ id: 'expr.add', label: 'Add Expression', shortcut: 'Alt+E',
+          onClick: () => useExpressionStore.getState().setExpression(layer.id, animatable, 'value') }];
+    ctxMenu.open(e, [
+      ...baseItems,
+      { id: 'sep.expr', label: '', divider: true, onClick: () => {} },
+      ...exprItems,
+    ]);
   };
 
-  // Background tint when animated
-  const bgClass = hasKfAtFrame
-    ? 'bg-yellow-500/15'
+  const rowBg = hasKfAtFrame
+    ? 'rgba(88, 101, 255, 0.12)'
     : isAnimated
-      ? 'bg-yellow-500/[0.06]'
-      : '';
+      ? 'rgba(88, 101, 255, 0.05)'
+      : 'transparent';
 
   return (
     <div
-      className={`flex items-center justify-between min-h-[20px] group rounded-sm ${bgClass}`}
+      className="flex items-center justify-between group"
+      style={{
+        minHeight: 24,
+        borderRadius: 'var(--radius-sm)',
+        padding: '2px 4px',
+        background: rowBg,
+        transition: 'background var(--dur-fast) var(--ease-out)',
+      }}
       onContextMenu={handleContext}
     >
-      <div className="flex items-center gap-0.5 shrink-0" style={{ width: 70 }}>
+      <div className="flex items-center gap-1.5 shrink-0" style={{ width: 88 }}>
+        {animatable && layer && useExpressionStore.getState().hasExpression(layer.id, animatable) && (
+          <Code2 size={11} strokeWidth={2} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
+        )}
         {animatable && layer && (
           <button
-            className={`w-3 h-3 flex items-center justify-center border-0 bg-transparent cursor-pointer rounded-sm transition-colors
-              ${isAnimated ? 'text-accent' : 'text-text-disabled opacity-0 group-hover:opacity-40 hover:opacity-100'}`}
+            className="flex items-center justify-center border-0 bg-transparent cursor-pointer transition-colors"
+            style={{
+              width: 14, height: 14,
+              color: isAnimated ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+              opacity: isAnimated ? 1 : 0,
+            }}
+            onMouseEnter={(e)=>{ if(!isAnimated)(e.currentTarget as HTMLElement).style.opacity='1'; }}
+            onMouseLeave={(e)=>{ if(!isAnimated)(e.currentTarget as HTMLElement).style.opacity='0'; }}
             onClick={handleStopwatch}
             title={isAnimated ? 'Disable animation' : 'Enable animation'}
           >
-            <svg width="10" height="10" viewBox="0 0 10 10">
-              <circle cx="5" cy="5" r="4" fill="none" stroke="currentColor" strokeWidth="1.2" />
-              <line x1="5" y1="2" x2="5" y2="5" stroke="currentColor" strokeWidth="1.2" />
-              <line x1="5" y1="5" x2="7" y2="6" stroke="currentColor" strokeWidth="0.8" />
+            <svg width="11" height="11" viewBox="0 0 11 11">
+              <circle cx="5.5" cy="5.5" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+              <line x1="5.5" y1="2.5" x2="5.5" y2="5.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              <line x1="5.5" y1="5.5" x2="7.5" y2="6.5" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
             </svg>
           </button>
         )}
-        <span className="text-ui-xs text-text-secondary truncate">{label}</span>
+        <span
+          className="truncate"
+          style={{
+            fontSize: 'var(--font-size-sm)',
+            color: 'var(--color-text-secondary)',
+          }}
+        >
+          {label}
+        </span>
       </div>
       <div className="flex-1 min-w-0">{children}</div>
       {animatable && isAnimated && (
         <button
-          className={`w-3 h-3 flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0 ml-1 transition-colors
-            ${hasKfAtFrame ? 'text-yellow-400' : 'text-text-disabled'}`}
+          className="flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0 ml-2 transition-colors"
+          style={{
+            width: 14, height: 14,
+            color: hasKfAtFrame ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+          }}
           onClick={handleDiamond}
           title={hasKfAtFrame ? 'Remove keyframe' : 'Add keyframe'}
         >
-          <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
+          <svg width="9" height="9" viewBox="0 0 8 8" fill="currentColor">
             {hasKfAtFrame
               ? <polygon points="4,0 8,4 4,8 0,4" />
-              : <polygon points="4,0 8,4 4,8 0,4" fill="none" stroke="currentColor" strokeWidth="0.8" />}
+              : <polygon points="4,0 8,4 4,8 0,4" fill="none" stroke="currentColor" strokeWidth="1" />}
           </svg>
         </button>
       )}
       {ctxMenu.menu && <ContextMenu items={ctxMenu.menu.items} position={ctxMenu.menu.position} onClose={ctxMenu.close} />}
+      {animatable && layer && useExpressionStore.getState().getExpression(layer.id, animatable) && (
+        <div style={{ width: '100%', marginTop: 4 }}>
+          <ExpressionEditor layerId={layer.id} property={animatable} />
+        </div>
+      )}
     </div>
   );
 };

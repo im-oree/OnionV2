@@ -24,26 +24,49 @@ const MENUS:MenuDef[]=[
 export const MenuBar:React.FC = ()=>{
   const [openMenu,setOpenMenu]=useState<string|null>(null);
   const close=useCallback(()=>setOpenMenu(null),[]);
-  useEffect(()=>{const hk=(e:KeyboardEvent)=>{if(e.key==='Escape')close()};document.addEventListener('keydown',hk);return()=>document.removeEventListener('keydown',hk)},[close]);
+  useEffect(()=>{
+    const hk=(e:KeyboardEvent)=>{if(e.key==='Escape')close()};
+    document.addEventListener('keydown',hk);
+    return()=>document.removeEventListener('keydown',hk);
+  },[close]);
 
   return(
-    <div className="flex items-center h-menubar bg-menubar border-b border-border">
+    <div
+      className="flex items-center h-full px-2"
+      style={{ background: 'transparent' }}
+    >
       {MENUS.map(m=>(
-        <div key={m.label} className="relative h-full">
+        <div key={m.label} className="relative h-full flex items-center">
           <button
-            className={[
-              'h-full px-3 border-0 cursor-pointer text-ui-sm transition-colors duration-fast',
-              openMenu===m.label ? 'bg-panel-active text-white' : 'bg-transparent text-menubar hover:bg-menubar-item-hover',
-            ].join(' ')}
+            className="h-[24px] px-3 rounded-md cursor-pointer transition-colors duration-fast"
+            style={{
+              fontSize: 'var(--font-size-sm)',
+              fontWeight: 500,
+              color: openMenu===m.label ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+              background: openMenu===m.label ? 'var(--color-panel-hover)' : 'transparent',
+            }}
+            onMouseEnter={(e)=>{
+              if(openMenu) setOpenMenu(m.label);
+              else (e.currentTarget as HTMLElement).style.color='var(--color-text-primary)';
+            }}
+            onMouseLeave={(e)=>{
+              if(openMenu!==m.label)
+                (e.currentTarget as HTMLElement).style.color='var(--color-text-secondary)';
+            }}
             onClick={()=>setOpenMenu(p=>p===m.label?null:m.label)}
-            onMouseEnter={()=>{if(openMenu)setOpenMenu(m.label)}}>
+          >
             {m.label}
           </button>
           {openMenu===m.label&&<MenuDropdown items={m.items} onClose={close}/>}
         </div>
       ))}
       <div className="flex-1"/>
-      <span className="px-3 text-ui-xs text-text-disabled">OnionV2 v0.1.0</span>
+      <span
+        className="px-3"
+        style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-disabled)', letterSpacing: '0.03em' }}
+      >
+        OnionV2 v0.1.0
+      </span>
     </div>
   );
 };

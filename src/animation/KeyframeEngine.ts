@@ -161,9 +161,11 @@ export class KeyframeEngine {
     const range = next.time - prev.time;
     const t = range > 0 ? (frame - prev.time) / range : 0;
 
-    if (prev.interpolation === 'bezier' && prev.outTangent && next.inTangent) {
-      // Cubic bezier interpolation using tangent handles
-      const tAdj = solveBezierTime(prev.outTangent, next.inTangent, t);
+    if (prev.interpolation === 'bezier') {
+      // Fallback to easy-ease tangents if missing
+      const outT = prev.outTangent ?? { x: 0.333, y: 0 };
+      const inT = next.inTangent ?? { x: 0.333, y: 0 };
+      const tAdj = solveBezierTime(outT, inT, t);
       return { value: interpolateValue(prev.value, next.value, tAdj), inKeyframe: false };
     }
 

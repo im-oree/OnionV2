@@ -5,6 +5,8 @@ import { useViewportStore } from '../../state/viewportStore';
 import { registerModalActiveCheck } from '../../input/ShortcutRegistry';
 import { Snapping, type SnapTargets } from '../utils/Snapping';
 import type { Layer } from '../../types/layer';
+import { useTimelineStore } from '../../state/timelineStore';
+import { autoKeyTransform } from './KeyframeHelpers';
 
 export type TransformMode = 'grab' | 'rotate' | 'scale';
 
@@ -53,6 +55,8 @@ export class ModalTransform {
   private _startTransforms = new Map<string, LayerSnapshot>();
   public startMouseScreen = { x: 0, y: 0 };
   private _handlePivotWorld: { x: number; y: number } | null = null;
+  /** M3: Store the initial mouse-to-pivot angle when rotate starts */
+  private _startRotateAngle: number | null = null;
   private _compId: string | null = null;
   private _canvas: HTMLCanvasElement | null = null;
   private _exitingByChoice = false;
@@ -60,14 +64,19 @@ export class ModalTransform {
   private _boundPointerLockChange: (() => void) | null = null;
   private _cachedSnapTargets: SnapTargets | null = null;
   private _pendingFirstDelta = false;
-  /** For pivot-based rotation: initial angle from pivot to layer center */
-  private _rotationStartAngle = 0;
   public lastSnapLines: Array<{ type: 'horizontal' | 'vertical'; position: number }> = [];
 
   constructor(cameraManager: CameraManager, snapping?: Snapping) {
     this.cameraManager = cameraManager;
     this.snapping = snapping ?? new Snapping();
-    registerModalActiveCheck(() => ModalTransform.activeAnywhere);
+    // Safety: the static flag must match instance _active — if they diverge
+    // (e.g., pointer lock edge case), the flag is corrected to unblock shortcuts.
+    registerModalActiveCheck(() => {
+      if (ModalTransform.activeAnywhere && !this._active) {
+        ModalTransform.activeAnywhere = false;
+      }
+      return ModalTransform.activeAnywhere;
+    });
     document.addEventListener('mousemove', (e) => { document._lastMouseEvent = e; }, { passive: true });
   }
 
@@ -96,9 +105,11 @@ export class ModalTransform {
     }
     if (startTransforms.size === 0) return;
 
+    // M15: FULLY reset all state fields before starting
     this._mode = mode;
     this._active = true;
     ModalTransform.activeAnywhere = true;
+    document.dispatchEvent(new CustomEvent('renderer:interactive', { detail: { on: true } }));
     this._axisLock = null;
     this._axisExclude = null;
     this._accumulatedDelta = { x: 0, y: 0 };
@@ -114,7 +125,7 @@ export class ModalTransform {
     this._exitingByChoice = false;
     this._cachedSnapTargets = null;
     this._handlePivotWorld = null;
-    this._rotationStartAngle = 0;
+    this._startRotateAngle = null;
     this.lastSnapLines = [];
     this._pendingFirstDelta = canvas ? true : false;
     this._cachedSnapTargets = this._buildSnapTargets(comp, layerIds);
@@ -133,8 +144,15 @@ export class ModalTransform {
     if (!this._active || !this._mode || !this._compId) return;
     if (useSelectionStore.getState().getSelectedIds().length === 0) { this.cancel(); return; }
     if (this._pendingFirstDelta) {
+      // First mousemove after pointer lock — record the delta but don't skip it entirely.
+      // Reset accumulated delta to 0 and apply the current movement to avoid a jump from
+      // any stale pre-lock mouse position, while still capturing the user's first motion.
       this._pendingFirstDelta = false;
       this._accumulatedDelta = { x: 0, y: 0 };
+      // Apply this first movement so the user doesn't lose the initial drag
+      this._accumulatedDelta.x += movementX;
+      this._accumulatedDelta.y -= movementY;
+      this._applyTransform();
       this._emitState();
       return;
     }
@@ -158,12 +176,36 @@ export class ModalTransform {
   confirm(): void {
     if (!this._active) return;
     this._releasePointerLock();
+    document.dispatchEvent(new CustomEvent('renderer:interactive', { detail: { on: false } }));
     this._active = false;
     ModalTransform.activeAnywhere = false;
     this.lastSnapLines = [];
     this._cachedSnapTargets = null;
     this._handlePivotWorld = null;
+    this._startRotateAngle = null;
     this._emitState();
+
+    // Auto-keying: if autoKey is ON, insert keyframes for the changed transforms
+    this._autoKeyChangedTransforms();
+  }
+
+  /** When auto-key is enabled, insert keyframes for any transform values that changed */
+  private _autoKeyChangedTransforms(): void {
+    if (!useTimelineStore.getState().autoKey) return;
+    const compId = this._compId;
+    if (!compId) return;
+
+    const compState = useCompositionStore.getState();
+    const comp = compState.compositions.find(c => c.id === compId);
+    if (!comp) return;
+
+    const currentFrame = Math.round(comp.currentTime * comp.fps);
+
+    for (const [layerId, start] of this._startTransforms) {
+      const layer = comp.layers.find(l => l.id === layerId);
+      if (!layer) continue;
+      autoKeyTransform(layerId, layer.transform, start, currentFrame);
+    }
   }
 
   cancel(): void {
@@ -186,6 +228,7 @@ export class ModalTransform {
     this.lastSnapLines = [];
     this._cachedSnapTargets = null;
     this._handlePivotWorld = null;
+    this._startRotateAngle = null;
     this._emitState();
   }
 
@@ -333,30 +376,31 @@ export class ModalTransform {
       case 'rotate': {
         let rawAngle: number;
         if (this._handlePivotWorld) {
-          // Handle-based rotation: angle from pivot to mouse
+          // M3: Handle-based rotation: angle from pivot to mouse
           const pivot = this._handlePivotWorld;
-          const startWorld = this.cameraManager.screenToWorld(this.startMouseScreen.x, this.startMouseScreen.y);
-          // FIX: delta.y is already inverted to world-up in updateDelta.
-          // So current screen Y = startScreenY - delta.y (because +delta.y means went up)
           const currentScreenX = this.startMouseScreen.x + delta.x;
           const currentScreenY = this.startMouseScreen.y - delta.y;
           const currentWorld = this.cameraManager.screenToWorld(currentScreenX, currentScreenY);
-          const startAngle = Math.atan2(startWorld.y - pivot.y, startWorld.x - pivot.x);
+          if (this._startRotateAngle === null) {
+            // First frame: store the initial angle but apply ZERO rotation
+            const startWorld = this.cameraManager.screenToWorld(this.startMouseScreen.x, this.startMouseScreen.y);
+            this._startRotateAngle = Math.atan2(startWorld.y - pivot.y, startWorld.x - pivot.x);
+          }
           const currentAngle = Math.atan2(currentWorld.y - pivot.y, currentWorld.x - pivot.x);
-          rawAngle = (currentAngle - startAngle) * (180 / Math.PI);
+          rawAngle = (currentAngle - this._startRotateAngle) * (180 / Math.PI);
         } else {
           // Free rotation (keyboard R):
-          // FIX: rotation follows horizontal mouse; positive delta.x = mouse right = CCW rotation (Blender convention)
-          // In screen space X increases right, in Y-up world CCW is positive angle.
-          // Convention: mouse right = CCW = positive angle
-          rawAngle = delta.x * (_precisionMode ? 0.05 : 0.5);
+          rawAngle = delta.x * (_precisionMode ? 0.02 : 0.2);
         }
-        const snappedAngle = _snapMode ? Math.round(rawAngle / 5) * 5 : rawAngle;
+        const snappedAngle = _snapMode ? Math.round(rawAngle / 1) : rawAngle;
         for (const [layerId, start] of _startTransforms) {
+          // Normalize accumulated rotation to [-180, 180] to prevent unbounded growth
+          let newRotation = start.rotation + snappedAngle;
+          newRotation = ((newRotation + 180) % 360 + 360) % 360 - 180;
           store.updateLayer(_compId, layerId, {
             transform: {
               position: start.pos, scale: start.scale,
-              rotation: start.rotation + snappedAngle,
+              rotation: newRotation,
               anchorPoint: { x: 0, y: 0 },
             },
           });
@@ -368,24 +412,28 @@ export class ModalTransform {
         let factorX = 1, factorY = 1;
 
         if (this._handlePivotWorld) {
+          // M2 FIX: Use signed distance from pivot, NOT absolute distance.
+          // Absolute distance loses directional sign when mouse crosses pivot,
+          // causing scale to never shrink below 1 when dragging handle past pivot.
+          // Signed distance preserves the sign: positive = right/up of pivot,
+          // negative = left/down of pivot, so ratio correctly reflects scale direction.
           const pivot = this._handlePivotWorld;
           const startWorld = this.cameraManager.screenToWorld(this.startMouseScreen.x, this.startMouseScreen.y);
           const currentScreenX = this.startMouseScreen.x + delta.x;
           const currentScreenY = this.startMouseScreen.y - delta.y;
           const currentWorld = this.cameraManager.screenToWorld(currentScreenX, currentScreenY);
-          const startDistX = Math.abs(startWorld.x - pivot.x);
-          const startDistY = Math.abs(startWorld.y - pivot.y);
-          const curDistX = Math.abs(currentWorld.x - pivot.x);
-          const curDistY = Math.abs(currentWorld.y - pivot.y);
-          factorX = startDistX > 0.5 ? curDistX / startDistX : 1;
-          factorY = startDistY > 0.5 ? curDistY / startDistY : 1;
+          const startDistX = startWorld.x - pivot.x;
+          const startDistY = startWorld.y - pivot.y;
+          const curDistX = currentWorld.x - pivot.x;
+          const curDistY = currentWorld.y - pivot.y;
+          // Use signed division: if startDist is negative (mouse started left of pivot),
+          // the ratio naturally handles the sign correctly
+          factorX = Math.abs(startDistX) > 0.5 ? curDistX / startDistX : 1;
+          factorY = Math.abs(startDistY) > 0.5 ? curDistY / startDistY : 1;
           factorX = Math.max(0.01, factorX);
           factorY = Math.max(0.01, factorY);
         } else {
-          // FIX: Free scale (keyboard S) — Blender-style
-          // Compute current mouse distance from pivot (start position = layer center in screen).
-          // Factor = currentDist / startDist. At time 0, currentDist === startDist → factor = 1.
-          // Pivot in screen space = position of the layer at drag start.
+          // Free scale (keyboard S) — distance-based from layer center
           const firstId = Array.from(_startTransforms.keys())[0];
           if (firstId) {
             const start = _startTransforms.get(firstId)!;
@@ -404,10 +452,20 @@ export class ModalTransform {
             // If pivot is basically under the mouse (< 10px), fall back to travel-based scaling
             let factor: number;
             if (startDist < 10) {
-              // Use total travel distance with sign from horizontal component
+              // Determine sign by comparing current distance to pivot vs anchor distance.
+              // We use the distance from the mouse to the computed handle pivot (not the layer center)
+              // to determine if the mouse is moving toward or away.
+              const pivotWorld = this._handlePivotWorld;
+              const pivotScreen = pivotWorld
+                ? this.cameraManager.worldToScreen(pivotWorld.x, pivotWorld.y)
+                : this.cameraManager.worldToScreen(start.pos.x, start.pos.y);
+              const curDxPivot = (this.startMouseScreen.x + delta.x) - pivotScreen.x;
+              const curDyPivot = (this.startMouseScreen.y - delta.y) - pivotScreen.y;
+              const curDistFromPivot = Math.hypot(curDxPivot, curDyPivot);
+              // If current distance > start distance, sign is positive (scaling up)
+              const sign = curDistFromPivot > startDist ? 1 : -1;
               const travel = Math.hypot(delta.x, delta.y);
-              const sign = delta.x >= 0 ? 1 : -1;
-              factor = Math.max(0.01, 1 + sign * travel * 0.005);
+              factor = Math.max(0.01, 1 + sign * travel * 0.02);
             } else {
               factor = Math.max(0.01, curDist / startDist);
             }
@@ -436,8 +494,9 @@ export class ModalTransform {
         }
 
         if (_snapMode) {
-          sx = Math.round(sx * 10) / 10 || 0.1;
-          sy = Math.round(sy * 10) / 10 || 0.1;
+          // Snap scale to 5% increments for intuitive behavior
+          sx = Math.round(sx * 20) / 20 || 0.05;
+          sy = Math.round(sy * 20) / 20 || 0.05;
         }
 
         sx = Math.max(0.01, sx);
@@ -447,7 +506,7 @@ export class ModalTransform {
           store.updateLayer(_compId, layerId, {
             transform: {
               position: start.pos,
-              scale: { x: start.scale.x * sx, y: start.scale.y * sy },
+              scale: { x: Math.max(0.01, start.scale.x * sx), y: Math.max(0.01, start.scale.y * sy) },
               rotation: start.rotation,
               anchorPoint: { x: 0, y: 0 },
             },

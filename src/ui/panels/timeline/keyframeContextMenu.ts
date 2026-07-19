@@ -2,6 +2,7 @@ import type { ContextMenuItem } from '../../common/ContextMenu';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { keyframeClipboard } from './keyframeClipboard';
 import { animationClock } from './PlaybackControls';
+import type { EasingPresetName } from '../../../animation/EasingPresets';
 
 export function buildKeyframeContextMenu(): ContextMenuItem[] {
   const store = useKeyframeStore.getState();
@@ -39,6 +40,10 @@ export function buildKeyframeContextMenu(): ContextMenuItem[] {
     }
   };
 
+  const applyEase = (preset: EasingPresetName) => {
+    useKeyframeStore.getState().applyEasingPreset(preset);
+  };
+
   return [
     { id: 'kf.hdr', label: `${selectedCount} keyframe${selectedCount === 1 ? '' : 's'}`, disabled: true },
     { id: 'kf.d0', divider: true },
@@ -50,12 +55,22 @@ export function buildKeyframeContextMenu(): ContextMenuItem[] {
     { id: 'kf.scale', label: 'Scale Around Playhead', shortcut: 'S', disabled: !has, onClick: () => document.dispatchEvent(new CustomEvent('kfmodal:scale')) },
     { id: 'kf.d2', divider: true },
     {
-      id: 'kf.interp', label: 'Interpolation',
-      disabled: !has,
+      id: 'kf.assistant', label: 'Keyframe Assistant', disabled: !has,
       children: [
-        { id: 'kf.i.lin', label: 'Linear', onClick: () => setInterp('linear') },
-        { id: 'kf.i.bez', label: 'Bezier', onClick: () => setInterp('bezier') },
-        { id: 'kf.i.hold', label: 'Hold', onClick: () => setInterp('hold') },
+        { id: 'kf.a.easyEase', label: 'Easy Ease',      shortcut: 'F9',       onClick: () => applyEase('easyEase') },
+        { id: 'kf.a.easeIn',   label: 'Easy Ease In',   shortcut: 'Shift+F9', onClick: () => applyEase('easeIn') },
+        { id: 'kf.a.easeOut',  label: 'Easy Ease Out',  shortcut: 'Ctrl+F9',  onClick: () => applyEase('easeOut') },
+        { id: 'kf.a.d1', divider: true },
+        { id: 'kf.a.fast',     label: 'Fast Ease',      onClick: () => applyEase('fastEase') },
+        { id: 'kf.a.slow',     label: 'Slow Ease',      onClick: () => applyEase('slowEase') },
+      ],
+    },
+    {
+      id: 'kf.interp', label: 'Interpolation', disabled: !has,
+      children: [
+        { id: 'kf.i.lin',  label: 'Linear',  shortcut: 'Ctrl+L', onClick: () => setInterp('linear') },
+        { id: 'kf.i.bez',  label: 'Bezier',                       onClick: () => setInterp('bezier') },
+        { id: 'kf.i.hold', label: 'Hold',    shortcut: 'Ctrl+H', onClick: () => setInterp('hold') },
       ],
     },
     { id: 'kf.d3', divider: true },

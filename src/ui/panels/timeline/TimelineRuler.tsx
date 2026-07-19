@@ -1,7 +1,9 @@
 import React, { useRef, useCallback } from 'react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useMarkerStore } from '../../../state/markerStore';
+import { useTimelineStore } from '../../../state/timelineStore';
 import { animationClock } from './PlaybackControls';
+import { formatTime } from '../../../utils/time';
 
 interface Props {
   totalFrames: number;
@@ -14,7 +16,6 @@ interface Props {
   workAreaEnd?: number;
 }
 
-/** Pick a "nice" frame step so labels are roughly `targetPx` px apart. */
 function niceStep(zoom: number, targetPx: number): number {
   const rawFrames = targetPx / zoom;
   const steps = [1, 2, 5, 10, 15, 20, 25, 30, 50, 60, 100, 150, 200, 250, 500, 1000, 2000, 5000, 10000];
@@ -28,6 +29,7 @@ export const TimelineRuler: React.FC<Props> = ({
 }) => {
   const rulerRef = useRef<HTMLDivElement>(null);
   const scrubbing = useRef(false);
+  const timeDisplay = useTimelineStore(s => s.timeDisplay);
 
   const frameFromX = useCallback((clientX: number): number => {
     if (!rulerRef.current) return 0;
@@ -43,7 +45,6 @@ export const TimelineRuler: React.FC<Props> = ({
     const f = frameFromX(e.clientX);
     animationClock.seekToFrame(f);
     useCompositionStore.getState().setCurrentTime(compId, f / fps);
-
     const onMove = (ev: MouseEvent) => {
       if (!scrubbing.current) return;
       const fr = frameFromX(ev.clientX);
@@ -59,16 +60,13 @@ export const TimelineRuler: React.FC<Props> = ({
     document.addEventListener('mouseup', onUp);
   }, [frameFromX, compId, fps]);
 
-  // Density: aim for a labeled tick every ~55px, minor tick every ~11px
-  const labelStep = niceStep(zoom, 55);
+  const labelStep = niceStep(zoom, 60);
   const minorStep = Math.max(1, Math.round(labelStep / 5));
-
-  // Only render ticks within the visible window (+ margin) for perf
   const viewportWidthPx = rulerRef.current?.clientWidth ?? 2000;
   const firstFrame = Math.max(0, Math.floor(scrollX / zoom) - minorStep);
   const lastFrame = Math.min(totalFrames, Math.ceil((scrollX + viewportWidthPx) / zoom) + minorStep);
-
   const startTick = Math.floor(firstFrame / minorStep) * minorStep;
+
   const ticks: React.ReactNode[] = [];
   for (let f = startTick; f <= lastFrame; f += minorStep) {
     if (f < 0) continue;
@@ -76,22 +74,30 @@ export const TimelineRuler: React.FC<Props> = ({
     ticks.push(
       <div key={f} className="absolute top-0" style={{ left: f * zoom }}>
         <div
-          className="bg-border-light"
-          style={{ width: 1, height: isLabel ? 12 : 5, opacity: isLabel ? 1 : 0.55 }}
+          style={{
+            width: 1,
+            height: isLabel ? 10 : 4,
+            background: 'var(--color-border-strong)',
+            opacity: isLabel ? 0.9 : 0.4,
+          }}
         />
         {isLabel && (
           <span
-            className="absolute top-[12px] text-[9px] text-text-secondary font-mono leading-none whitespace-nowrap"
-            style={{ left: 3 }}
+            className="absolute font-mono leading-none whitespace-nowrap"
+            style={{
+              top: 12, left: 4,
+              fontSize: 10,
+              color: 'var(--color-text-tertiary)',
+              letterSpacing: '0.02em',
+            }}
           >
-            {f}
+            {formatTime(f / fps, fps, timeDisplay)}
           </span>
         )}
       </div>,
     );
   }
 
-  // Markers for this composition — reactive Zustand subscription
   const markers = useMarkerStore(s => s.markersByComposition[compId]);
 
   const handleMarkerMouseDown = useCallback((e: React.MouseEvent, markerId: string) => {
@@ -105,33 +111,62 @@ export const TimelineRuler: React.FC<Props> = ({
   }, [compId]);
 
   return (
-    <div className="relative flex-shrink-0 bg-surface border-b border-border overflow-hidden" style={{ height: 28 }}>
-      <div
-        ref={rulerRef}
-        className="absolute inset-0 cursor-ew-resize"
-        onMouseDown={handleDown}
-      >
+    <div
+      className="relative flex-shrink-0 overflow-hidden"
+      style={{
+        height: 30,
+        background: 'transparent',
+        borderBottom: '1px solid var(--color-border)',
+      }}
+    >
+      <div ref={rulerRef} className="absolute inset-0 cursor-ew-resize" onMouseDown={handleDown}>
         <div
           style={{
             width: totalFrames * zoom + 100,
-            height: '100%',
-            position: 'relative',
+            height: '100%', position: 'relative',
             transform: `translateX(${-scrollX}px)`,
           }}
         >
           {workAreaStart !== undefined && workAreaEnd !== undefined && (
             <>
+              {/* Dark outside left */}
               {workAreaStart > 0 && (
-                <div className="absolute top-0 bottom-0 bg-black/25" style={{ left: 0, width: workAreaStart * zoom }} />
+                <div
+                  className="absolute top-0 bottom-0 pointer-events-none"
+                  style={{
+                    left: 0,
+                    width: workAreaStart * zoom,
+                    background: 'rgba(0,0,0,0.35)',
+                  }}
+                />
               )}
+
+              {/* Active work area highlight */}
+              <div
+                className="absolute top-0 bottom-0 pointer-events-none"
+                style={{
+                  left: workAreaStart * zoom,
+                  width: (workAreaEnd - workAreaStart) * zoom,
+                  background: 'rgba(255,255,255,0.04)',
+                  borderTop: '2px solid var(--color-accent)',
+                }}
+              />
+
+              {/* Dark outside right */}
               {workAreaEnd < totalFrames && (
-                <div className="absolute top-0 bottom-0 bg-black/25" style={{ left: workAreaEnd * zoom, width: (totalFrames - workAreaEnd) * zoom }} />
+                <div
+                  className="absolute top-0 bottom-0 pointer-events-none"
+                  style={{
+                    left: workAreaEnd * zoom,
+                    width: (totalFrames - workAreaEnd) * zoom,
+                    background: 'rgba(0,0,0,0.35)',
+                  }}
+                />
               )}
             </>
           )}
           {ticks}
 
-          {/* Markers */}
           {(markers ?? []).map(marker => (
             <div
               key={marker.id}
@@ -141,11 +176,12 @@ export const TimelineRuler: React.FC<Props> = ({
               title={marker.label || `Marker at frame ${marker.frame}`}
             >
               <svg width="10" height="14" viewBox="0 0 10 14">
-                <polygon points="0,0 10,0 10,10 5,14 0,10" fill={marker.color} stroke="#000" strokeWidth="0.5" />
+                <polygon points="0,0 10,0 10,10 5,14 0,10" fill={marker.color} stroke="rgba(0,0,0,0.4)" strokeWidth="0.5" />
               </svg>
               {marker.label && (
                 <span
-                  className="absolute left-[12px] top-0 text-[9px] text-text-secondary whitespace-nowrap hidden group-hover:block"
+                  className="absolute left-[12px] top-0 whitespace-nowrap hidden group-hover:block"
+                  style={{ fontSize: 10, color: 'var(--color-text-secondary)' }}
                 >
                   {marker.label}
                 </span>

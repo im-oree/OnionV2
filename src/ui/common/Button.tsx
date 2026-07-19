@@ -18,13 +18,13 @@ const VARIANTS: Record<BtnVariant,string> = {
   primary:  'bg-accent text-white border border-accent hover:bg-accent-hover',
   icon:     'bg-transparent text-text-secondary hover:bg-panel-hover border-0',
   ghost:    'bg-transparent text-text-secondary hover:bg-panel-hover border-0',
-  danger:   'bg-transparent text-text-primary border border-border hover:bg-danger',
+  danger:   'bg-transparent text-text-primary border border-border hover:bg-danger hover:border-danger',
 };
 
 const SIZES: Record<BtnSize,string> = {
-  sm: 'text-ui-xs h-row px-1',
-  md: 'text-ui-sm h-row px-2',
-  lg: 'text-ui-md h-8 px-3',
+  sm: 'text-ui-sm h-[26px] px-2',
+  md: 'text-ui-sm h-[28px] px-3',
+  lg: 'text-ui-md h-[32px] px-4',
 };
 
 export const Button: React.FC<ButtonProps> = React.memo(({
@@ -34,16 +34,16 @@ export const Button: React.FC<ButtonProps> = React.memo(({
 }) => (
   <button
     className={[
-      'inline-flex items-center justify-center gap-1 rounded-sm',
-      'transition-colors duration-fast',
-      'focus-visible:outline focus-visible:outline-1 focus-visible:outline-border-focus',
+      'inline-flex items-center justify-center gap-1.5 rounded-sm',
+      'transition-colors',
       VARIANTS[variant],
       SIZES[size],
-      active && 'bg-panel-active text-white',
+      active && 'bg-accent-muted text-accent',
       disabled && 'opacity-40 cursor-not-allowed pointer-events-none',
       !disabled && 'cursor-pointer',
       className,
     ].filter(Boolean).join(' ')}
+    style={{transitionDuration:'var(--dur-fast)',transitionTimingFunction:'var(--ease-out)'}}
     disabled={disabled}
     title={title}
     onClick={onClick}

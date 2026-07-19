@@ -1,119 +1,171 @@
 :root {
-  /* ── AE-exact colors (K6) ──────────────────────────────── */
-    /* Panel gutter — dark space BETWEEN panels (like Blender/AE) */
-  --color-gutter:          #131313;
-  --color-border:          #131313;
-  --color-border-light:    #1a1a1a;
-  --color-bg-app:          #232323;
-  --color-bg-surface:      #2b2b2b;
-  --color-bg-surface-alt:  #202020;
-  --color-bg-panel:        #303030;
-  --color-bg-panel-header: #2a2a2a;
-  --color-bg-hover:        #3a3a3a;
-  --color-bg-active:       #4772b3;
-  --color-bg-input:        #1e1e1e;
-  --color-bg-raised:       #353535;
-  --color-bg-overlay:      rgba(0,0,0,0.7);
+  /* ═══ Base — FLAT charcoal (no gradients), panels LIGHTER than bg ═══ */
+  --color-app-bg:            #16181d;
+  --color-app-bg-2:          #16181d;
+  --color-panel:             #1f2229;
+  --color-panel-raised:      #262a33;
+  --color-panel-header:      #1f2229;
+  --color-panel-hover:       #2a2e38;
+  --color-panel-active:      #323744;
+  --color-input-bg:          #191c22;
 
-  --color-border:          #131313;
-  --color-border-light:    #1a1a1a;
-  --color-border-focus:    #4772b3;
+  --color-bg-app:            var(--color-app-bg);
+  --color-bg-surface:        var(--color-panel);
+  --color-bg-surface-alt:    var(--color-panel-raised);
+  --color-bg-panel:          var(--color-panel);
+  --color-bg-panel-header:   var(--color-panel-header);
+  --color-bg-hover:          var(--color-panel-hover);
+  --color-bg-active:         var(--color-panel-active);
+  --color-bg-input:          var(--color-input-bg);
+  --color-bg-raised:         var(--color-panel-raised);
+  --color-bg-overlay:        rgba(0, 0, 0, 0.72);
 
-  --color-text-primary:    #e6e6e6;
-  --color-text-secondary:  #a0a0a0;
-  --color-text-disabled:   #555555;
-  --color-text-accent:     #8cb9f5;
+  /* ═══ Borders — barely visible ═══ */
+  --color-border:            rgba(255, 255, 255, 0.05);
+  --color-border-strong:     rgba(255, 255, 255, 0.09);
+  --color-border-light:      rgba(255, 255, 255, 0.03);
+  --color-border-focus:      #5865ff;
+  --color-divider:           rgba(255, 255, 255, 0.04);
+  --color-gutter:            var(--color-app-bg);
 
-  --color-bg-panel-input:  var(--color-bg-input);
-  --color-text-muted:      var(--color-text-secondary);
+  /* ═══ Text — softer whites ═══ */
+  --color-text-primary:      rgba(255, 255, 255, 0.90);
+  --color-text-secondary:    rgba(255, 255, 255, 0.55);
+  --color-text-tertiary:     rgba(255, 255, 255, 0.38);
+  --color-text-disabled:     rgba(255, 255, 255, 0.22);
+  --color-text-inverse:      #16181d;
+  --color-text-accent:       #8b95ff;
+  --color-text-muted:        var(--color-text-secondary);
 
-  --color-accent:          #4772b3;
-  --color-accent-hover:    #5a8cce;
-  --color-accent-muted:    #2a4a7a;
+  /* ═══ Accent — indigo ═══ */
+  --color-accent:            #5865ff;
+  --color-accent-hover:      #6f7bff;
+  --color-accent-pressed:    #4551e8;
+  --color-accent-muted:      rgba(88, 101, 255, 0.16);
 
-  --color-danger:          #b34747;
-  --color-warning:         #b3a247;
-  --color-success:         #47b35a;
+  --color-primary:           var(--color-accent);
+  --color-primary-hover:     var(--color-accent-hover);
+  --color-primary-pressed:   var(--color-accent-pressed);
+  --color-primary-muted:     var(--color-accent-muted);
 
-  /* ── Typography ─────────────────────────────────────────── */
-  --font-family:           'Inter', system-ui, -apple-system, sans-serif;
-  --font-family-mono:      'JetBrains Mono', 'Fira Code', Consolas, monospace;
-  --font-size-xs:          10px;
-  --font-size-sm:          11px;
-  --font-size-md:          12px;
-  --font-size-lg:          14px;
-  --font-weight-normal:    400;
-  --font-weight-medium:    500;
-  --font-weight-semibold:  600;
+  /* ═══ Gradient stops ═══ */
+  --accent-violet-a:         #7c4dff;
+  --accent-violet-b:         #5b3fff;
+  --accent-cyan-a:           #3ac9d1;
+  --accent-cyan-b:           #2ee6c0;
+  --accent-orange-a:         #ff8a4d;
+  --accent-orange-b:         #ff5540;
+  --accent-pink-a:           #ff4d9a;
+  --accent-pink-b:           #ff2e7a;
 
-  /* ── Sizing ─────────────────────────────────────────────── */
-  --size-menubar-height:   28px;
-  --size-tabs-height:      28px;
-  --size-toolbar-width:    40px;
-  --size-toolbar-icon:     24px;
-  --size-panel-header:     26px;
-  --size-splitter:         4px;
-  --size-timeline-height:  200px;
-  --size-icon-sm:          14px;
-  --size-icon-md:          16px;
-  --size-icon-lg:          20px;
-  --size-row:              22px;
-  --size-input:            22px;
-  --size-timeline-header:  28px;
-  --size-timeline-row:     20px;
-  --size-keyframe:          8px;
-  --size-scrollbar:         8px;
+  /* ═══ Layer labels ═══ */
+  --label-violet:            #8b6aff;
+  --label-blue:              #5b8fff;
+  --label-cyan:              #4dd4d1;
+  --label-green:             #6ad588;
+  --label-yellow:            #f0d060;
+  --label-orange:            #ff9a5c;
+  --label-pink:              #ff6ba3;
+  --label-red:               #e85555;
 
-  /* ── Spacing ────────────────────────────────────────────── */
-  --space-1:               2px;
-  --space-2:               4px;
-  --space-3:               6px;
-  --space-4:               8px;
-  --space-5:               12px;
-  --space-6:               16px;
+  --color-success:           #6ad588;
+  --color-warning:           #f0b660;
+  --color-danger:            #ff5c5c;
+  --color-info:              #5b8fff;
 
-  /* ── Radii ──────────────────────────────────────────────── */
-  --radius-sm:             2px;
-  --radius-md:             4px;
+  /* ═══ Timeline ═══ */
+  --timeline-playhead:       #5865ff;
+  --timeline-work-area:      rgba(88, 101, 255, 0.32);
+  --timeline-cache-full:     #5865ff;
+  --timeline-cache-half:     rgba(88, 101, 255, 0.5);
+  --timeline-track-bg:       #191c22;
+  --timeline-grid:           rgba(255, 255, 255, 0.04);
+  --timeline-grid-sub:       rgba(255, 255, 255, 0.02);
 
-  /* ── Shadows ────────────────────────────────────────────── */
-  --shadow-dropdown:       0 4px 12px rgba(0,0,0,0.4);
-  --shadow-modal:          0 8px 24px rgba(0,0,0,0.6);
-  --shadow-tooltip:        0 2px 8px rgba(0,0,0,0.5);
+  /* ═══ Radii — MUCH bigger ═══ */
+  --radius-xs:               5px;
+  --radius-sm:               8px;
+  --radius-md:               11px;
+  --radius-lg:               16px;
+  --radius-panel:            16px;
 
-  /* ── Transitions ────────────────────────────────────────── */
-  --transition-fast:       100ms;
-  --transition-normal:     200ms;
+  /* ═══ Spacing — generous ═══ */
+  --gap-panel:               10px;
+  --pad-panel:               18px;
+  --pad-row:                 8px 14px;
+  --row-h-normal:            34px;
+  --row-h-compact:           28px;
+  --row-h-comfortable:       40px;
+  --space-1:                 2px;
+  --space-2:                 4px;
+  --space-3:                 8px;
+  --space-4:                 12px;
+  --space-5:                 16px;
+  --space-6:                 24px;
 
-  /* ── Z-index ────────────────────────────────────────────── */
-  --z-base:                0;
-  --z-panel:               1;
-  --z-overlay:             10;
-  --z-dropdown:            20;
-  --z-menu:                30;
-  --z-modal:               40;
-  --z-tooltip:             50;
+  /* ═══ Shadows — very subtle, flat premium look ═══ */
+  --shadow-panel:            0 0 0 1px rgba(255,255,255,0.03), 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-dropdown:         0 16px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.05);
+  --shadow-modal:            0 24px 70px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.06);
+  --shadow-tooltip:          0 8px 20px rgba(0,0,0,0.5);
+  --shadow-focus:            0 0 0 3px rgba(88, 101, 255, 0.30);
 
-  /* ── Scrollbar ──────────────────────────────────────────── */
-  --scrollbar-track:       #282828;
-  --scrollbar-thumb:       #555;
-  --scrollbar-thumb-hover: #666;
+  --ease-out:                cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast:                120ms;
+  --dur-normal:              180ms;
+  --dur-slow:                260ms;
+  --transition-fast:         var(--dur-fast);
+  --transition-normal:       var(--dur-normal);
 
-  /* ── Viewport ───────────────────────────────────────────── */
-  --viewport-bg:           #1a1a1a;
-  --viewport-outside:      #3d3d3d;
-  --viewport-grid:         rgba(255,255,255,0.03);
-  --viewport-grid-major:   rgba(255,255,255,0.08);
-  --viewport-crosshair:    rgba(255,255,255,0.12);
+  /* ═══ Typography — bigger, more air ═══ */
+  --font-family:             'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-family-mono:        'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
+  --font-size-xs:            11px;
+  --font-size-sm:            12px;
+  --font-size-md:            13px;
+  --font-size-lg:            14px;
+  --font-size-xl:            16px;
+  --font-size-2xl:           20px;
+  --font-weight-normal:      400;
+  --font-weight-medium:      500;
+  --font-weight-semibold:    600;
 
-  /* ── Timeline ───────────────────────────────────────────── */
-  --timeline-playhead:     #e8b84b;
-  --timeline-grid:         #3a3a3a;
-  --timeline-grid-sub:     #333333;
+  /* ═══ Sizing — larger everywhere ═══ */
+  --size-menubar-height:     36px;
+  --size-tabs-height:        34px;
+  --size-toolbar-width:      52px;
+  --size-toolbar-icon:       20px;
+  --size-panel-header:       40px;
+  --size-splitter:           10px;
+  --size-timeline-height:    240px;
+  --size-icon-sm:            15px;
+  --size-icon-md:            18px;
+  --size-icon-lg:            22px;
+  --size-row:                34px;
+  --size-input:              30px;
+  --size-timeline-header:    36px;
+  --size-timeline-row:       30px;
+  --size-keyframe:           9px;
+  --size-scrollbar:          10px;
 
-  /* ── Outliner ───────────────────────────────────────────── */
-  --outliner-indent:       16px;
+  --z-base:                  0;
+  --z-panel:                 1;
+  --z-overlay:               10;
+  --z-dropdown:              20;
+  --z-menu:                  30;
+  --z-modal:                 40;
+  --z-tooltip:               50;
 
-  /* ── Properties ─────────────────────────────────────────── */
-  --prop-label-width:       80px;
+  --scrollbar-track:         transparent;
+  --scrollbar-thumb:         rgba(255, 255, 255, 0.06);
+  --scrollbar-thumb-hover:   rgba(255, 255, 255, 0.14);
+
+  --viewport-bg:             #0d0f13;
+  --viewport-outside:        var(--color-app-bg);
+  --viewport-grid:           rgba(255, 255, 255, 0.025);
+  --viewport-grid-major:     rgba(255, 255, 255, 0.05);
+  --viewport-crosshair:      rgba(255, 255, 255, 0.10);
+
+  --outliner-indent:         20px;
+  --prop-label-width:        96px;
 }

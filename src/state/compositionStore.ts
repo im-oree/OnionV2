@@ -3,6 +3,7 @@ import type { Composition } from '../types/composition';
 import type { Layer, CompData } from '../types/layer';
 import { DEFAULT_COMPOSITION } from '../config/defaults';
 import { canNestComposition, findCompositionsUsing } from '../utils/compositionGraph';
+import { markProjectDirty } from '../storage/StorageManager';
 
 function genId(): string { return `comp_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`; }
 
@@ -41,6 +42,7 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
       compositions: [...s.compositions, c],
       activeCompositionId: s.activeCompositionId ?? c.id,
     }));
+    markProjectDirty();
     return c;
   },
 
@@ -59,6 +61,7 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
         ? s.compositions.find(c => c.id !== id)?.id ?? null
         : s.activeCompositionId,
     }));
+    markProjectDirty();
     return { ok: true };
   },
 
@@ -92,11 +95,15 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
     set(s => ({
       compositions: s.compositions.map(c => c.id === id ? { ...c, ...updates } : c),
     }));
+    markProjectDirty();
   },
 
-  addLayer: (compId, layer) => set(s => ({
-    compositions: s.compositions.map(c => c.id === compId ? { ...c, layers: [...c.layers, layer] } : c),
-  })),
+  addLayer: (compId, layer) => {
+    set(s => ({
+      compositions: s.compositions.map(c => c.id === compId ? { ...c, layers: [...c.layers, layer] } : c),
+    }));
+    markProjectDirty();
+  },
 
   addCompLayer: (parentCompId, sourceCompId) => {
     const state = get();
@@ -137,34 +144,49 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
         c.id === parentCompId ? { ...c, layers: [...c.layers, layer] } : c,
       ),
     }));
+    markProjectDirty();
     return { ok: true, layer };
   },
 
-  removeLayer: (compId, layerId) => set(s => ({
-    compositions: s.compositions.map(c =>
-      c.id === compId ? { ...c, layers: c.layers.filter(l => l.id !== layerId) } : c,
-    ),
-  })),
+  removeLayer: (compId, layerId) => {
+    set(s => ({
+      compositions: s.compositions.map(c =>
+        c.id === compId ? { ...c, layers: c.layers.filter(l => l.id !== layerId) } : c,
+      ),
+    }));
+    markProjectDirty();
+  },
 
-  updateLayer: (compId, layerId, updates) => set(s => ({
-    compositions: s.compositions.map(c =>
-      c.id === compId ? { ...c, layers: c.layers.map(l => l.id === layerId ? { ...l, ...updates } : l) } : c,
-    ),
-  })),
+  updateLayer: (compId, layerId, updates) => {
+    set(s => ({
+      compositions: s.compositions.map(c =>
+        c.id === compId ? { ...c, layers: c.layers.map(l => l.id === layerId ? { ...l, ...updates } : l) } : c,
+      ),
+    }));
+    markProjectDirty();
+  },
 
-  reorderLayers: (compId, from, to) => set(s => ({
-    compositions: s.compositions.map(c => {
-      if (c.id !== compId) return c;
-      const layers = [...c.layers];
-      const [m] = layers.splice(from, 1);
-      if (m) layers.splice(to, 0, m);
-      return { ...c, layers };
-    }),
-  })),
 
-  setCurrentTime: (compId, time) => set(s => ({
-    compositions: s.compositions.map(c => c.id === compId ? { ...c, currentTime: time } : c),
-  })),
+  reorderLayers: (compId, from, to) => {
+    set(s => ({
+      compositions: s.compositions.map(c => {
+        if (c.id !== compId) return c;
+        const layers = [...c.layers];
+        const [m] = layers.splice(from, 1);
+        if (m) layers.splice(to, 0, m);
+        return { ...c, layers };
+      }),
+    }));
+    markProjectDirty();
+  },
+
+  setCurrentTime: (compId, time) => {
+    set(s => ({
+      compositions: s.compositions.map(c => c.id === compId ? { ...c, currentTime: time } : c),
+    }));
+  },
+  // (setCurrentTime intentionally does NOT mark dirty — it's a transient playback change)
+
 
   getActiveComposition: () => {
     const s = get();

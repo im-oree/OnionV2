@@ -16,7 +16,6 @@ export class NestedCompRenderer {
   private sceneManager: SceneManager;
   private factory: LayerFactory;
   private layerRenderers = new Map<string, ReturnType<LayerFactory['create']>>();
-  private lastLayerRevision = -1;
   public readonly texture: THREE.Texture;
   public readonly width: number;
   public readonly height: number;

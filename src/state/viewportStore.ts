@@ -1,13 +1,11 @@
 /**
  * ViewportStore — per-composition viewport settings.
- * Stores grid, rulers, guides, safe zones, and stats visibility toggles.
  */
 import { create } from 'zustand';
 
 export interface Guide {
   id: string;
   type: 'horizontal' | 'vertical';
-  /** World-space position */
   position: number;
   locked: boolean;
 }
@@ -20,18 +18,14 @@ export interface ViewportSettings {
   showStats: boolean;
   guidesLocked: boolean;
   snappingEnabled: boolean;
-  /** List of guide lines per composition */
   guides: Guide[];
-  /** Zoom level stored per composition */
   zoom: number;
-  /** Pan offsets stored per composition */
   panX: number;
   panY: number;
 }
 
 export interface ViewportStoreState {
   settings: ViewportSettings;
-  // Actions
   setShowGrid: (v: boolean) => void;
   toggleGrid: () => void;
   setShowRulers: (v: boolean) => void;
@@ -58,8 +52,8 @@ function genId(): string {
 }
 
 const DEFAULT_SETTINGS: ViewportSettings = {
-  showGrid: true,
-  showRulers: true,
+  showGrid: false,          // ← OFF by default (matches ref)
+  showRulers: false,        // ← OFF by default (cleaner look)
   showGuides: true,
   showSafeZones: false,
   showStats: false,

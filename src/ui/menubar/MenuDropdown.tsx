@@ -19,9 +19,18 @@ export const MenuDropdown:React.FC<Props> = ({items,onClose})=>{
   },[onClose]);
 
   return(
-    <div ref={ref}
-      className="absolute z-menu min-w-[200px] py-1 shadow-dropdown bg-panel-raised border border-border rounded-sm"
-      style={{top:'100%',left:0}}>
+    <div
+      ref={ref}
+      className="absolute z-menu min-w-[240px] py-1.5"
+      style={{
+        top: 'calc(100% + 4px)',
+        left: 0,
+        background: 'var(--color-panel-raised)',
+        borderRadius: 'var(--radius-md)',
+        boxShadow: 'var(--shadow-dropdown)',
+        animation: 'dropdown-in 140ms var(--ease-out)',
+      }}
+    >
       {items.map(item=><MenuItem key={item.id} item={item} onClose={onClose} depth={0}/>)}
     </div>
   );

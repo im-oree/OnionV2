@@ -1,11 +1,14 @@
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useState } from 'react';
 import { useUIStore } from '../../state/uiStore';
 
 import { MenuBar } from '../menubar/MenuBar';
-import { WorkspaceTabs } from './WorkspaceTabs';
 import { Toolbar } from '../toolbar/Toolbar';
 
 import { RightSidebar } from './RightSidebar';
+import { StatusBar } from './StatusBar';
+
+import { useCompositionStore } from '../../state/compositionStore';
+import { WelcomeScreen } from '../WelcomeScreen';
 
 const ProjectBrowserPanel = React.lazy(() => import('../panels/project/ProjectBrowserPanel'));
 const ViewportPanel = React.lazy(() => import('../panels/viewport/ViewportPanel'));
@@ -21,7 +24,7 @@ export const AppShell: React.FC = () => {
   const showRight = useUIStore((s) => s.showRightPanel);
   const showTimeline = useUIStore((s) => s.showTimeline);
   const setWs = useUIStore((s) => s.setWindowSize);
-
+  const hasComposition = useCompositionStore((s) => s.compositions.length > 0);
 
   const handleResize = useCallback(
     () => setWs({ width: window.innerWidth, height: window.innerHeight }),
@@ -32,217 +35,193 @@ export const AppShell: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, [handleResize]);
 
-  // Column widths (0 if hidden)
-  const leftCol = showLeft ? `${leftW}px` : '0px';
-  const leftSplit = showLeft ? '3px' : '0px';
-  const rightTabStrip = showRight ? '32px' : '0px';
-  const rightCol = showRight ? `${rightW}px` : '0px';
-  const rightSplit = showRight ? '3px' : '0px';
-  const tlRow = showTimeline ? `${tlH}px` : '0px';
-  const tlSplit = showTimeline ? '3px' : '0px';
+  const G = 10;
+  const TB = 52;
+  const RSB = 36;
 
+  // Grid columns:
+  // 1: toolbar  2: gap  3: leftPanel  4: gap  5: viewport  6: gap  7: rightPanel  8: gap  9: rightSidebar
   return (
     <div
-      className="h-full w-full overflow-hidden bg-app"
+      className="h-full w-full overflow-hidden"
       style={{
         display: 'grid',
-        gridTemplateColumns: `40px ${leftCol} ${leftSplit} 1fr ${rightSplit} ${rightTabStrip} ${rightCol}`,
-        gridTemplateRows: `28px 28px 1fr ${tlSplit} ${tlRow}`,
+        padding: `0 ${G}px ${G}px ${G}px`,
+        gridTemplateColumns: `${TB}px ${G}px ${showLeft ? `${leftW}px` : '0px'} ${G}px 1fr ${G}px ${showRight ? `${rightW}px` : '0px'} ${G}px ${showRight ? `${RSB}px` : '0px'}`,
+        gridTemplateRows: `var(--size-menubar-height) ${G}px 1fr ${G}px ${showTimeline ? `${tlH}px` : '0px'} var(--size-panel-header)`,
         gap: 0,
       }}
     >
-      {/* Row 0: Menubar */}
+      {/* Menubar */}
       <div style={{ gridColumn: '1 / -1', gridRow: '1' }} className="overflow-hidden">
         <MenuBar />
       </div>
+      <div style={{ gridColumn: '1 / -1', gridRow: '2' }} />
 
-      {/* Row 1: Workspace tabs */}
-      <div style={{ gridColumn: '1 / -1', gridRow: '2' }} className="overflow-hidden">
-        <WorkspaceTabs />
-      </div>
-
-      {/* Row 2: Main content area */}
-      {/* Col 0: Toolbar */}
-      <div
-        style={{ gridColumn: '1', gridRow: '3 / 6' }}
-        className="overflow-hidden bg-surface border-r border-border"
-      >
+      {/* Toolbar - spans viewport + timeline rows (3 to 5) */}
+      <div style={{ gridColumn: '1', gridRow: '3 / 6' }} className="overflow-hidden">
         <Toolbar />
       </div>
+      <div style={{ gridColumn: '2', gridRow: '3 / 6' }} />
 
-      {/* Col 1: Project Browser (left panel) */}
+      {/* Left panel - ONLY in viewport row (row 3) */}
       {showLeft && (
-        <div
-          style={{ gridColumn: '2', gridRow: '3 / 6' }}
-          className="overflow-hidden bg-panel border-r border-border"
-        >
+        <div style={{ gridColumn: '3', gridRow: '3' }} className="overflow-hidden">
           <React.Suspense fallback={<Fallback />}>
             <ProjectBrowserPanel />
           </React.Suspense>
         </div>
       )}
-
-      {/* Col 2: Left splitter */}
       {showLeft && (
-        <div style={{ gridColumn: '3', gridRow: '3 / 6' }}>
+        <div style={{ gridColumn: '4', gridRow: '3' }}>
           <VSplitDrag which="left" />
         </div>
       )}
 
-      {/* Col 3: Center Viewport */}
-      <div style={{ gridColumn: '4', gridRow: '3' }} className="overflow-hidden relative bg-app">
-        <React.Suspense fallback={<Fallback />}>
-          <ViewportPanel />
-        </React.Suspense>
-      </div>
-
-      {showTimeline && (
-        <div style={{ gridColumn: '4', gridRow: '4' }}>
-          <HSplitDrag />
+      {!hasComposition ? (
+        <div style={{ gridColumn: '5', gridRow: '3 / 6' }} className="relative">
+          <WelcomeScreen />
+          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10 }}>
+            <StatusBar />
+          </div>
         </div>
+      ) : (
+        <>
+          {/* Viewport */}
+          <div style={{ gridColumn: '5', gridRow: '3' }} className="overflow-hidden relative">
+            <React.Suspense fallback={<Fallback />}>
+              <ViewportPanel />
+            </React.Suspense>
+          </div>
+
+          {/* Horizontal splitter row */}
+          {showTimeline && (
+            <div style={{ gridColumn: '3 / 8', gridRow: '4' }}>
+              <HSplitDrag />
+            </div>
+          )}
+
+          {/* Timeline - spans from col 3 (left) to col 7 (right panel) — FULL WIDTH */}
+          {showTimeline && (
+            <div style={{ gridColumn: '3 / 8', gridRow: '5' }} className="overflow-hidden">
+              <React.Suspense fallback={<Fallback />}>
+                <TimelinePanel />
+              </React.Suspense>
+            </div>
+          )}
+
+          {/* Status bar - full width below timeline */}
+          <div style={{ gridColumn: '3 / 8', gridRow: '6' }} className="overflow-hidden">
+            <StatusBar />
+          </div>
+        </>
       )}
 
-      {showTimeline && (
-        <div style={{ gridColumn: '4', gridRow: '5' }} className="overflow-hidden bg-panel">
-          <React.Suspense fallback={<Fallback />}>
-            <TimelinePanel />
-          </React.Suspense>
-        </div>
-      )}
-
-      {/* Col 4: Right splitter */}
+      {/* Right panel splitter - only in viewport row */}
       {showRight && (
-        <div style={{ gridColumn: '5', gridRow: '3 / 6' }}>
+        <div style={{ gridColumn: '6', gridRow: '3' }}>
           <VSplitDrag which="right" />
         </div>
       )}
 
-      {/* Col 5: Right tab strip */}
+      {/* Right panel - ONLY in viewport row (row 3) */}
       {showRight && (
-        <div
-          style={{ gridColumn: '6', gridRow: '3 / 6' }}
-          className="overflow-hidden bg-surface border-r border-border"
-        >
-          <RightSidebar />
+        <div style={{ gridColumn: '7', gridRow: '3' }} className="overflow-hidden">
+          <RightPanelContent />
         </div>
       )}
 
-      {/* Col 6: Right panel content */}
+      {showRight && <div style={{ gridColumn: '8', gridRow: '3 / 6' }} />}
+
+      {/* Right sidebar - spans viewport + timeline (like toolbar) */}
       {showRight && (
-        <div
-          style={{ gridColumn: '7', gridRow: '3 / 6' }}
-          className="overflow-hidden bg-panel"
-        >
-          <RightPanelContent />
+        <div style={{ gridColumn: '9', gridRow: '3 / 6' }} className="overflow-hidden">
+          <RightSidebar />
         </div>
       )}
     </div>
   );
 };
 
-/** Renders the currently selected right-tab panel content */
-const RightPanelContent: React.FC = () => {
-  const tab = useUIStore((s) => s.activeRightTab);
-  const PropertiesPanel = React.useMemo(
-    () => React.lazy(() => import('../panels/properties/PropertiesPanel')),
-    [],
-  );
-  const EffectsPanel = React.useMemo(
-    () => React.lazy(() => import('../panels/properties/EffectsPanelWrapper')),
-    [],
-  );
-  const AlignPanel = React.useMemo(
-    () => React.lazy(() => import('../panels/align/AlignPanel')),
-    [],
-  );
-  const InfoPanel = React.useMemo(
-    () => React.lazy(() => import('../panels/info/InfoPanel')),
-    [],
-  );
-  const RenderPanel = React.useMemo(
-    () => React.lazy(() => import('../panels/render/RenderPanel')),
-    [],
-  );
-  const CharacterPanel = React.useMemo(
-    () => React.lazy(() => import('../panels/character/CharacterPanel')),
-    [],
-  );
-
-  return (
-    <React.Suspense fallback={<Fallback />}>
-      {tab === 'properties' && <PropertiesPanel />}
-      {tab === 'effects' && <EffectsPanel />}
-      {tab === 'align' && <AlignPanel />}
-      {tab === 'info' && <InfoPanel />}
-      {tab === 'render' && <RenderPanel />}
-      {tab === 'character' && <CharacterPanel />}
-    </React.Suspense>
-  );
-};
-
 const VSplitDrag: React.FC<{ which: 'left' | 'right' }> = ({ which }) => {
   const setLeft = useUIStore((s) => s.setLeftPanelWidth);
   const setRight = useUIStore((s) => s.setRightPanelWidth);
-  const onDown = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      const startX = e.clientX;
-      const startW =
-        which === 'left'
-          ? useUIStore.getState().leftPanelWidth
-          : useUIStore.getState().rightPanelWidth;
-      const mm = (ev: MouseEvent) => {
-        const delta = ev.clientX - startX;
-        const w = which === 'left' ? startW + delta : startW - delta;
-        const clamped = Math.max(180, Math.min(600, w));
-        if (which === 'left') setLeft(clamped);
-        else setRight(clamped);
-      };
-      const mu = () => {
-        document.removeEventListener('mousemove', mm);
-        document.removeEventListener('mouseup', mu);
-        document.body.style.cursor = '';
-      };
-      document.body.style.cursor = 'col-resize';
-      document.addEventListener('mousemove', mm);
-      document.addEventListener('mouseup', mu);
-    },
-    [which, setLeft, setRight],
-  );
+  const [hovered, setHovered] = useState(false);
+  const onDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = which === 'left'
+      ? useUIStore.getState().leftPanelWidth
+      : useUIStore.getState().rightPanelWidth;
+    const mm = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      const w = which === 'left' ? startW + delta : startW - delta;
+      const clamped = Math.max(180, Math.min(600, w));
+      if (which === 'left') setLeft(clamped); else setRight(clamped);
+    };
+    const mu = () => {
+      document.removeEventListener('mousemove', mm);
+      document.removeEventListener('mouseup', mu);
+      document.body.style.cursor = '';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.addEventListener('mousemove', mm);
+    document.addEventListener('mouseup', mu);
+  }, [which, setLeft, setRight]);
   return (
-    <div
-      onMouseDown={onDown}
-      className="w-full h-full cursor-col-resize bg-border hover:bg-accent transition-colors"
-    />
+    <div onMouseDown={onDown} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+      className="w-full h-full cursor-col-resize"
+      style={{ background: hovered ? 'var(--color-accent)' : 'transparent', opacity: hovered ? 0.3 : 0, transition: 'opacity 120ms ease-out' }} />
   );
 };
 
 const HSplitDrag: React.FC = () => {
   const setTh = useUIStore((s) => s.setTimelineHeight);
-  const onDown = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      const startY = e.clientY;
-      const startH = useUIStore.getState().timelineHeight;
-      const mm = (ev: MouseEvent) => {
-        const h = Math.max(120, Math.min(600, startH + startY - ev.clientY));
-        setTh(h);
-      };
-      const mu = () => {
-        document.removeEventListener('mousemove', mm);
-        document.removeEventListener('mouseup', mu);
-        document.body.style.cursor = '';
-      };
-      document.body.style.cursor = 'row-resize';
-      document.addEventListener('mousemove', mm);
-      document.addEventListener('mouseup', mu);
-    },
-    [setTh],
-  );
+  const [hovered, setHovered] = useState(false);
+  const onDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = useUIStore.getState().timelineHeight;
+    const mm = (ev: MouseEvent) => {
+      const h = Math.max(120, Math.min(600, startH + startY - ev.clientY));
+      setTh(h);
+    };
+    const mu = () => {
+      document.removeEventListener('mousemove', mm);
+      document.removeEventListener('mouseup', mu);
+      document.body.style.cursor = '';
+    };
+    document.body.style.cursor = 'row-resize';
+    document.addEventListener('mousemove', mm);
+    document.addEventListener('mouseup', mu);
+  }, [setTh]);
   return (
-    <div
-      onMouseDown={onDown}
-      className="w-full h-full cursor-row-resize bg-border hover:bg-accent transition-colors"
-    />
+    <div onMouseDown={onDown} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+      className="w-full h-full cursor-row-resize"
+      style={{ background: hovered ? 'var(--color-accent)' : 'transparent', opacity: hovered ? 0.3 : 0, transition: 'opacity 120ms ease-out' }} />
+  );
+};
+
+const RightPanelContent: React.FC = () => {
+  const tab = useUIStore((s) => s.activeRightTab);
+  const PropertiesPanel = React.useMemo(() => React.lazy(() => import('../panels/properties/PropertiesPanel')), []);
+  const EffectsPanel = React.useMemo(() => React.lazy(() => import('../panels/properties/EffectsPanelWrapper')), []);
+  const AlignPanel = React.useMemo(() => React.lazy(() => import('../panels/align/AlignPanel')), []);
+  const InfoPanel = React.useMemo(() => React.lazy(() => import('../panels/info/InfoPanel')), []);
+  const RenderPanel = React.useMemo(() => React.lazy(() => import('../panels/render/RenderPanel')), []);
+  const CharacterPanel = React.useMemo(() => React.lazy(() => import('../panels/character/CharacterPanel')), []);
+  const PerformancePanel = React.useMemo(() => React.lazy(() => import('../panels/performance/PerformancePanel')), []);
+  const GraphEditorPanel = React.useMemo(() => React.lazy(() => import('../panels/grapheditor/GraphEditorPanel')), []);
+  return (
+    <React.Suspense fallback={<Fallback />}>
+      {tab === 'properties' && <PropertiesPanel />}
+      {tab === 'effects' && <EffectsPanel />}
+      {tab === 'graph' && <GraphEditorPanel />}
+      {tab === 'align' && <AlignPanel />}
+      {tab === 'info' && <InfoPanel />}
+      {tab === 'render' && <RenderPanel />}
+      {tab === 'character' && <CharacterPanel />}
+      {tab === 'performance' && <PerformancePanel />}
+    </React.Suspense>
   );
 };
