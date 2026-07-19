@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Eye, EyeOff, Lock, Unlock, Circle } from 'lucide-react';
+import { Eye, EyeOff, Lock, Unlock, Circle, ChevronUp, ChevronDown } from 'lucide-react';
 import type { Layer } from '../../../types/layer';
 import { Icon } from '../../common/Icon';
 
@@ -23,12 +23,17 @@ interface LayerRowProps {
   onDelete?: (id: string) => void;
   forceRename?: boolean;
   onDoubleClick?: (id: string) => void;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }
 
 export const LayerRow: React.FC<LayerRowProps> = ({
   layer, depth, isSelected,
   onSelect, onToggleVisibility, onToggleLock, onToggleSolo,
-  onRename, onDragStart, onDrop, onDuplicate, onDelete, forceRename, onDoubleClick,
+  onRename, onDragStart, onDrop,  onDuplicate, onDelete, forceRename, onDoubleClick,
+  canMoveUp, canMoveDown, onMoveUp, onMoveDown,
 }) => {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(layer.name);
@@ -148,6 +153,16 @@ export const LayerRow: React.FC<LayerRowProps> = ({
 
         {!editing && (
           <div className="flex items-center gap-1 shrink-0">
+            {onMoveUp && (
+              <IconBtn disabled={!canMoveUp} onClick={(e)=>{ e.stopPropagation(); onMoveUp(); }} title="Move Up">
+                <ChevronUp size={13} strokeWidth={2}/>
+              </IconBtn>
+            )}
+            {onMoveDown && (
+              <IconBtn disabled={!canMoveDown} onClick={(e)=>{ e.stopPropagation(); onMoveDown(); }} title="Move Down">
+                <ChevronDown size={13} strokeWidth={2}/>
+              </IconBtn>
+            )}
             <IconBtn active={layer.visible} onClick={(e)=>{ e.stopPropagation(); onToggleVisibility(layer.id); }} title="Visibility">
               {layer.visible ? <Eye size={13} strokeWidth={1.75}/> : <EyeOff size={13} strokeWidth={1.75}/>}
             </IconBtn>
@@ -194,15 +209,17 @@ export const LayerRow: React.FC<LayerRowProps> = ({
   );
 };
 
-const IconBtn: React.FC<{ active?: boolean; accent?: boolean; onClick: (e: React.MouseEvent)=>void; title: string; children: React.ReactNode }> = ({ active, accent, onClick, title, children }) => (
+const IconBtn: React.FC<{ active?: boolean; accent?: boolean; disabled?: boolean; onClick: (e: React.MouseEvent)=>void; title: string; children: React.ReactNode }> = ({ active, accent, disabled, onClick, title, children }) => (
   <button
     onClick={onClick} title={title}
     className="border-0 bg-transparent cursor-pointer flex items-center justify-center transition-colors"
     style={{
       width: 20, height: 20, borderRadius: 'var(--radius-xs)',
-      color: accent && active ? 'var(--color-accent)' : active ? 'var(--color-text-secondary)' : 'var(--color-text-disabled)',
+      color: disabled ? 'var(--color-text-disabled)' : accent && active ? 'var(--color-accent)' : active ? 'var(--color-text-secondary)' : 'var(--color-text-disabled)',
+      opacity: disabled ? 0.3 : 1,
+      pointerEvents: disabled ? 'none' : undefined,
     }}
-    onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.color='var(--color-text-primary)'}
-    onMouseLeave={(e)=>{ (e.currentTarget as HTMLElement).style.color = accent && active ? 'var(--color-accent)' : active ? 'var(--color-text-secondary)' : 'var(--color-text-disabled)'; }}
+    onMouseEnter={(e)=>{ if(!disabled) (e.currentTarget as HTMLElement).style.color='var(--color-text-primary)'; }}
+    onMouseLeave={(e)=>{ if(!disabled) (e.currentTarget as HTMLElement).style.color = accent && active ? 'var(--color-accent)' : active ? 'var(--color-text-secondary)' : 'var(--color-text-disabled)'; }}
   >{children}</button>
 );

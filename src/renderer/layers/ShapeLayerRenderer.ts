@@ -18,7 +18,9 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
   constructor(id: string, data: ShapeData) {
     const canvas = document.createElement('canvas');
     canvas.width = 256; canvas.height = 256;
-    const ctx = canvas.getContext('2d', { alpha: true })!;
+    const ctx = canvas.getContext('2d')!;
+    // Ensure transparent background
+    ctx.clearRect(0, 0, 256, 256);
     const tex = new THREE.CanvasTexture(canvas);
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;

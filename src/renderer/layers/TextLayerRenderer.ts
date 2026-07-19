@@ -40,11 +40,13 @@ export class TextLayerRenderer extends BaseLayerRenderer {
     const cw = Math.min(MAX_TEX, Math.ceil(logW * DPI));
     const ch = Math.min(MAX_TEX, Math.ceil(logH * DPI));
 
-    // Create canvas at correct size
+    // Create canvas at correct size — must have alpha for transparent background
     const canvas = document.createElement('canvas');
     canvas.width = cw;
     canvas.height = ch;
-    const ctx = canvas.getContext('2d', { alpha: true, willReadFrequently: false })!;
+    const ctx = canvas.getContext('2d')!;
+    // Ensure transparent background
+    ctx.clearRect(0, 0, cw, ch);
 
     // Create texture from canvas
     const tex = new THREE.CanvasTexture(canvas);
@@ -57,7 +59,7 @@ export class TextLayerRenderer extends BaseLayerRenderer {
     // Create geometry at correct proportions (NOT swapped later)
     const geo = new THREE.PlaneGeometry(logW, logH);
 
-    // Material
+    // Material — premultipliedAlpha true for correct transparency over dark backgrounds
     const mat = new THREE.MeshBasicMaterial({
       map: tex,
       depthTest: false,
@@ -174,6 +176,8 @@ export class TextLayerRenderer extends BaseLayerRenderer {
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+    // CRITICAL: set globalAlpha to 1 and fill background transparent
+    ctx.globalAlpha = 1;
     ctx.scale(DPI, DPI);
     ctx.font = font;
 

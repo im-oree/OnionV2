@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo } from 'react';
-import { Plus, Square, Triangle, Type as TypeI, Image as ImageI, Film } from 'lucide-react';
+import { Plus, Square, Triangle, Type as TypeI, Image as ImageI, Film, ChevronUp, ChevronDown } from 'lucide-react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useSelectionStore } from '../../../state/selectionStore';
 import { LayerRow } from './LayerRow';
@@ -59,6 +59,20 @@ export const OutlinerPanel: React.FC = () => {
   const toggleV = useCallback((id: string) => { if (!comp) return; const l = comp.layers.find(x => x.id === id); if (l) updateLayer(comp.id, id, { visible: !l.visible }); }, [comp, updateLayer]);
   const toggleL = useCallback((id: string) => { if (!comp) return; const l = comp.layers.find(x => x.id === id); if (l) updateLayer(comp.id, id, { locked: !l.locked }); }, [comp, updateLayer]);
   const toggleS = useCallback((id: string) => { if (!comp) return; const l = comp.layers.find(x => x.id === id); if (l) updateLayer(comp.id, id, { soloed: !l.soloed }); }, [comp, updateLayer]);
+
+  const moveLayerUp = useCallback((id: string) => {
+    if (!comp) return;
+    const idx = comp.layers.findIndex((l) => l.id === id);
+    if (idx <= 0) return;
+    reorderLayers(comp.id, idx, idx - 1);
+  }, [comp, reorderLayers]);
+
+  const moveLayerDown = useCallback((id: string) => {
+    if (!comp) return;
+    const idx = comp.layers.findIndex((l) => l.id === id);
+    if (idx < 0 || idx >= comp.layers.length - 1) return;
+    reorderLayers(comp.id, idx, idx + 1);
+  }, [comp, reorderLayers]);
   const handleRename = useCallback((id: string, name: string) => { if (comp) updateLayer(comp.id, id, { name }); }, [comp, updateLayer]);
   const handleDragStart = useCallback((_id: string) => {}, []);
 
@@ -221,7 +235,7 @@ export const OutlinerPanel: React.FC = () => {
             {search ? 'No layers match search' : 'No layers — click + to add'}
           </div>
         ) : (
-          rootLayers.map(({ layer, depth }) => (
+          rootLayers.map(({ layer, depth }, i) => (
             <LayerRow
               key={layer.id} layer={layer} depth={depth}
               isSelected={selectedIds.includes(layer.id)}
@@ -236,6 +250,10 @@ export const OutlinerPanel: React.FC = () => {
               onDelete={handleDeleteLayer}
               forceRename={renameLayerId === layer.id}
               onDoubleClick={handleDoubleClick}
+              canMoveUp={i > 0}
+              canMoveDown={i < rootLayers.length - 1}
+              onMoveUp={() => moveLayerUp(layer.id)}
+              onMoveDown={() => moveLayerDown(layer.id)}
             />
           ))
         )}

@@ -42,7 +42,7 @@ export const AppShell: React.FC = () => {
         gridTemplateRows: `var(--size-menubar-height) ${G}px 1fr ${G}px ${showTimeline ? `${tlH}px` : '0px'} var(--size-panel-header)`,
         gap: 0,
       }}>
-      <div style={{ gridColumn: '1 / -1', gridRow: '1' }} className="overflow-hidden"><MenuBar /></div>
+      <div style={{ gridColumn: '1 / -1', gridRow: '1' }} className="overflow-visible"><MenuBar /></div>
       <div style={{ gridColumn: '1 / -1', gridRow: '2' }} />
       <div style={{ gridColumn: '1', gridRow: '3 / 6' }} className="overflow-hidden"><Toolbar /></div>
       <div style={{ gridColumn: '2', gridRow: '3 / 6' }} />
@@ -87,7 +87,7 @@ export const AppShell: React.FC = () => {
       )}
       {showRight && <div style={{ gridColumn: '6', gridRow: '3' }}><VSplitDrag which="right" /></div>}
       {showRight && (
-        <div style={{ gridColumn: '7', gridRow: '3' }} className="overflow-hidden"><RightPanelContent /></div>
+        <div style={{ gridColumn: '7', gridRow: '3' }} className="min-h-0 overflow-hidden"><RightPanelContent /></div>
       )}
       {showRight && <div style={{ gridColumn: '8', gridRow: '3 / 6' }} />}
       {showRight && (
@@ -159,24 +159,26 @@ const HSplitDrag: React.FC = () => {
   );
 };
 
+// Lazy panels at module scope — NEVER inside useMemo to avoid re-mount on parent re-render
+const LazyPropertiesPanel = React.lazy(() => import('../panels/properties/PropertiesPanel'));
+const LazyEffectsPanel = React.lazy(() => import('../panels/properties/EffectsPanelWrapper'));
+const LazyAlignPanel = React.lazy(() => import('../panels/align/AlignPanel'));
+const LazyInfoPanel = React.lazy(() => import('../panels/info/InfoPanel'));
+const LazyRenderPanel = React.lazy(() => import('../panels/render/RenderPanel'));
+const LazyCharacterPanel = React.lazy(() => import('../panels/character/CharacterPanel'));
+const LazyPerformancePanel = React.lazy(() => import('../panels/performance/PerformancePanel'));
+
 const RightPanelContent: React.FC = () => {
   const tab = useUIStore((s) => s.activeRightTab);
-  const PropertiesPanel = React.useMemo(() => React.lazy(() => import('../panels/properties/PropertiesPanel')), []);
-  const EffectsPanel = React.useMemo(() => React.lazy(() => import('../panels/properties/EffectsPanelWrapper')), []);
-  const AlignPanel = React.useMemo(() => React.lazy(() => import('../panels/align/AlignPanel')), []);
-  const InfoPanel = React.useMemo(() => React.lazy(() => import('../panels/info/InfoPanel')), []);
-  const RenderPanel = React.useMemo(() => React.lazy(() => import('../panels/render/RenderPanel')), []);
-  const CharacterPanel = React.useMemo(() => React.lazy(() => import('../panels/character/CharacterPanel')), []);
-  const PerformancePanel = React.useMemo(() => React.lazy(() => import('../panels/performance/PerformancePanel')), []);
   return (
     <React.Suspense fallback={<Fallback />}>
-      {tab === 'properties' && <PropertiesPanel />}
-      {tab === 'effects' && <EffectsPanel />}
-      {tab === 'align' && <AlignPanel />}
-      {tab === 'info' && <InfoPanel />}
-      {tab === 'render' && <RenderPanel />}
-      {tab === 'character' && <CharacterPanel />}
-      {tab === 'performance' && <PerformancePanel />}
+      {tab === 'properties' && <LazyPropertiesPanel />}
+      {tab === 'effects' && <LazyEffectsPanel />}
+      {tab === 'align' && <LazyAlignPanel />}
+      {tab === 'info' && <LazyInfoPanel />}
+      {tab === 'render' && <LazyRenderPanel />}
+      {tab === 'character' && <LazyCharacterPanel />}
+      {tab === 'performance' && <LazyPerformancePanel />}
     </React.Suspense>
   );
 };
