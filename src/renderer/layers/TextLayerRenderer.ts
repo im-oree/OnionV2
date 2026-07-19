@@ -59,7 +59,7 @@ export class TextLayerRenderer extends BaseLayerRenderer {
     // Create geometry at correct proportions (NOT swapped later)
     const geo = new THREE.PlaneGeometry(logW, logH);
 
-    // Material — premultipliedAlpha true for correct transparency over dark backgrounds
+    // Material — straight alpha from canvas (not premultiplied)
     const mat = new THREE.MeshBasicMaterial({
       map: tex,
       depthTest: false,

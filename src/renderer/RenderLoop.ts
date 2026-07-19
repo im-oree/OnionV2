@@ -1,8 +1,9 @@
 /**
  * RenderLoop — manages the requestAnimationFrame render cycle.
- * Tracks frame time and can pause/resume.
- * IDLE PAUSE: pauses the loop after 500ms of no render requests to save CPU/GPU.
- * FPS CAP: limits render rate to the composition's target fps (uncapped during interactive input).
+ *
+ * NEW: pauseForCacheBuild() / resumeFromCacheBuild() lets the
+ * RAMPreviewBuilder halt the RAF loop entirely so its synchronous
+ * renders don't compete with the live loop.
  */
 import * as THREE from 'three';
 import { VIEWPORT_CONFIG } from '../config/viewportConfig';
@@ -27,15 +28,16 @@ export class RenderLoop {
   private running = false;
   private _onFrame?: (stats: FrameStats) => void;
 
-  // Idle pause
   private idleTimeout: ReturnType<typeof setTimeout> | null = null;
   private needsRender = false;
   private _idlePaused = false;
 
-  /** Cap render rate to this fps. 0 = uncapped (monitor refresh). */
   private _targetFps = 0;
-  /** True when interactive input is happening (scrub, drag, modal transform) — uncap for smooth feedback */
   private _interactive = false;
+  private _originalPixelRatio = 1;
+
+  /** True when a cache build has paused the loop. */
+  private _pausedForCacheBuild = false;
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -45,32 +47,40 @@ export class RenderLoop {
     this.renderer = renderer;
     this.scene = scene;
     this.camera = camera;
+    this._originalPixelRatio = renderer.getPixelRatio();
   }
 
-  /** Optional callback fired BEFORE each frame render (for effects processing) */
   public beforeRender: (() => void) | null = null;
-
-  /** Optional callback fired when a frame is dropped (skipped due to FPS cap) */
   public onFrameDropped: (() => void) | null = null;
 
-  /** Optional callback fired each frame with stats */
   set onFrame(cb: ((stats: FrameStats) => void) | undefined) {
     this._onFrame = cb;
   }
 
-  /** Set the target FPS cap. 0 = uncapped (monitor refresh). */
   setTargetFps(fps: number): void {
     this._targetFps = Math.max(0, fps);
   }
 
-  /** Enable/disable interactive mode (uncaps render rate for smooth feedback) */
   setInteractive(v: boolean): void {
     this._interactive = v;
-    if (v) this.requestRender();
+    if (v) {
+      // During interactive operations (scrubbing, dragging, transform)
+      // render at reduced resolution for immediate GPU feedback, then
+      // restore full quality when the user stops interacting.
+      this.renderer.setPixelRatio(
+        Math.max(0.5, this._originalPixelRatio * 0.5),
+      );
+      this.requestRender();
+    } else {
+      // Restore full-quality rendering
+      this.renderer.setPixelRatio(this._originalPixelRatio);
+      // Force a full-quality render immediately
+      this.requestRender();
+    }
   }
 
-  /** Request a render. Wakes up the loop if idle-paused. */
   requestRender(): void {
+    if (this._pausedForCacheBuild) return;
     this.needsRender = true;
     if (this.idleTimeout) {
       clearTimeout(this.idleTimeout);
@@ -83,7 +93,6 @@ export class RenderLoop {
     }
   }
 
-  /** Start the render loop */
   start(): void {
     if (this.running) return;
     this.running = true;
@@ -93,7 +102,6 @@ export class RenderLoop {
     this.tick(this.lastTime);
   }
 
-  /** Stop the render loop */
   stop(): void {
     this.running = false;
     this._idlePaused = false;
@@ -107,32 +115,51 @@ export class RenderLoop {
     }
   }
 
-  /** Single render call (for manual stepping) */
   render(): void {
     this.renderer.render(this.scene, this.camera);
   }
 
-  get isRunning(): boolean {
-    return this.running;
+  /**
+   * Pause the RAF loop for a cache build. The RAMPreviewBuilder
+   * will run synchronous renders while paused; when it's done it
+   * calls resumeFromCacheBuild().
+   */
+  pauseForCacheBuild(): void {
+    this._pausedForCacheBuild = true;
+    if (this.animFrameId !== null) {
+      cancelAnimationFrame(this.animFrameId);
+      this.animFrameId = null;
+    }
+    if (this.idleTimeout) {
+      clearTimeout(this.idleTimeout);
+      this.idleTimeout = null;
+    }
   }
 
-  get currentFps(): number {
-    return this._currentFps;
+  resumeFromCacheBuild(): void {
+    if (!this._pausedForCacheBuild) return;
+    this._pausedForCacheBuild = false;
+    if (this.running) {
+      this.needsRender = true;
+      this.lastTime = performance.now();
+      this.animFrameId = requestAnimationFrame(this.tick);
+    }
   }
 
-  get idlePaused(): boolean {
-    return this._idlePaused;
-  }
+  get isPausedForCacheBuild(): boolean { return this._pausedForCacheBuild; }
 
-  get targetFps(): number {
-    return this._targetFps;
-  }
+  get isRunning(): boolean { return this.running; }
+  get currentFps(): number { return this._currentFps; }
+  get idlePaused(): boolean { return this._idlePaused; }
+  get targetFps(): number { return this._targetFps; }
 
-  /** The main tick function */
   private tick = (now: number): void => {
     if (!this.running) return;
+    if (this._pausedForCacheBuild) {
+      this.animFrameId = null;
+      return;
+    }
 
-    // Check if we should enter idle pause
     if (!this.needsRender) {
       if (!this.idleTimeout) {
         this.idleTimeout = setTimeout(() => {
@@ -140,44 +167,32 @@ export class RenderLoop {
           this.idleTimeout = null;
         }, VIEWPORT_CONFIG.IDLE_PAUSE_MS);
       }
-
-      // If idle-paused, stop scheduling rAF completely
       if (this._idlePaused) {
         this.animFrameId = null;
         return;
       }
-
-      // Waiting for the idle timeout — keep scheduling rAF but skip render
       this.animFrameId = requestAnimationFrame(this.tick);
       return;
     }
 
-    // ---- FPS CAP ----
-    // Skip this rAF tick if not enough time has passed since last render.
-    // Skip capping when interactive (dragging/scrubbing/modal transforms).
     const cap = this._interactive ? 0 : this._targetFps;
     if (cap > 0) {
       const minDelta = 1000 / cap;
       const sinceLast = now - this.lastRenderTime;
-      // Allow small tolerance (1ms) so we don't miss frames due to rAF jitter
       if (sinceLast < minDelta - 1) {
-        // Report dropped frame (FPS cap prevented rendering)
         this.onFrameDropped?.();
         this.animFrameId = requestAnimationFrame(this.tick);
         return;
       }
     }
 
-    // ---- Actually render ----
     this.needsRender = false;
     this.lastRenderTime = now;
 
     const deltaMs = now - this.lastTime;
-    // Always advance lastTime so FPS calculation reflects real time, not skipped frames
     this.lastTime = now;
     this.frameCount++;
 
-    // Update FPS averaging
     this.fpsAccumulator += deltaMs;
     this.fpsFrames++;
     if (this.fpsAccumulator >= 1000) {
@@ -186,20 +201,15 @@ export class RenderLoop {
       this.fpsFrames = 0;
     }
 
-    // Fire before-render callback
     this.beforeRender?.();
-
-    // Render the scene
     this.renderer.render(this.scene, this.camera);
 
-    // Fire frame callback
     this._onFrame?.({
       deltaMs,
       fps: this._currentFps,
       frameCount: this.frameCount,
     });
 
-    // Schedule next frame
     this.animFrameId = requestAnimationFrame(this.tick);
   };
 

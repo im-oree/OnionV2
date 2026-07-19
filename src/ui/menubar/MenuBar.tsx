@@ -33,7 +33,7 @@ export const MenuBar:React.FC = ()=>{
   return(
     <div
       className="flex items-center h-full px-2"
-      style={{ background: 'transparent' }}
+      style={{ background: 'var(--color-panel)' }}
     >
       {MENUS.map(m=>(
         <div key={m.label} className="relative h-full flex items-center">

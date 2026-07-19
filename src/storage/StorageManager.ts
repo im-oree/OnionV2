@@ -164,6 +164,16 @@ export class StorageManager {
 
   /** Load a project from a handle */
   async load(handle: ProjectHandle): Promise<SerializedProject> {
+    // Auto-select the correct adapter based on handle type — prevents
+    // "getFileHandle is not a function" when loading IndexedDB projects
+    // with the FileSystemAPI adapter active.
+    if (handle.adapterType === 'indexeddb' && this.adapter?.type !== 'indexeddb') {
+      const { IndexedDBAdapter } = await import('./IndexedDBAdapter');
+      this.adapter = new IndexedDBAdapter();
+    } else if (handle.adapterType === 'filesystem' && this.adapter?.type !== 'filesystem') {
+      const { FileSystemAPIAdapter } = await import('./FileSystemAPIAdapter');
+      this.adapter = new FileSystemAPIAdapter();
+    }
     if (!this.adapter) await this.detectBestAdapter();
     if (!this.adapter) throw new Error('No storage adapter available');
 

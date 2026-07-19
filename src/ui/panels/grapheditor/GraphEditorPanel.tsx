@@ -227,13 +227,13 @@ export const GraphEditorPanel: React.FC = () => {
       <GraphRuler viewBox={viewBox} fps={comp.fps} currentFrame={currentFrame}
         workAreaStart={workAreaStart} workAreaEnd={workAreaEnd} compId={comp.id}
         svgWidth={width} />
-      {curves.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center"
-          style={{ fontSize: 'var(--font-size-sm)', color: 'rgba(160,180,210,0.4)' }}>
-          Select a layer with keyframes to view curves
-        </div>
-      ) : (
-        <div ref={containerRef} className="flex-1 overflow-hidden relative" data-graph-editor="1" tabIndex={0}>
+      <div ref={containerRef} className="flex-1 overflow-hidden relative" data-graph-editor="1" tabIndex={0}>
+        {curves.length === 0 ? (
+          <div className="flex h-full items-center justify-center"
+            style={{ fontSize: 'var(--font-size-sm)', color: 'rgba(160,180,210,0.4)' }}>
+            Select a layer with keyframes to view curves
+          </div>
+        ) : (
           <svg ref={svgRef} width={width} height={height}
             onWheel={handleWheel} onMouseDown={handleMouseDown}
             style={{ cursor, display: 'block', shapeRendering: 'geometricPrecision' }}>
@@ -257,8 +257,8 @@ export const GraphEditorPanel: React.FC = () => {
                 strokeWidth={1} strokeDasharray="4 3" rx={2} />
             )}
           </svg>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 };

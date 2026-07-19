@@ -249,6 +249,9 @@ export class FileSystemAPIAdapter implements StorageAdapter {
   async loadProject(handle: ProjectHandle): Promise<SerializedProject> {
     await this._ensurePermission();
     const dirHandle = handle.internal as FileSystemDirectoryHandle;
+    if (!dirHandle || typeof dirHandle.getFileHandle !== 'function') {
+      throw new Error('Invalid project handle — the project may have been created with a different storage adapter (e.g. IndexedDB). Please create a new project or re-import from the File menu.');
+    }
     const fileHandle = await dirHandle.getFileHandle('project.onion');
     const file = await fileHandle.getFile();
     const text = await file.text();

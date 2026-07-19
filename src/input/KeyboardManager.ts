@@ -347,4 +347,33 @@ export function registerAllShortcuts(): void {
   shortcutRegistry.register({ id: 'tool.polygon', key: 'p', shift: true, context: 'global', handler: () => {
     useToolStore.getState().setActiveTool('shapePolygon');
   }, remappable: true });
+
+  // Layer reorder — Ctrl+] / Ctrl+[
+  shortcutRegistry.register({ id: 'layer.bringForward', key: ']', ctrl: true, context: 'global', handler: () => {
+    const ctx = getCtx(); if (!ctx) return;
+    const ids = useSelectionStore.getState().getSelectedIds();
+    if (ids.length === 0) return;
+    // Re-read state on each iteration — reorderLayers mutates the store
+    for (const id of ids) {
+      const comp = useCompositionStore.getState().compositions.find(c => c.id === ctx.compId);
+      if (!comp) continue;
+      const idx = comp.layers.findIndex(l => l.id === id);
+      if (idx >= 0 && idx < comp.layers.length - 1) {
+        useCompositionStore.getState().reorderLayers(ctx.compId, idx, idx + 1);
+      }
+    }
+  }, remappable: true });
+  shortcutRegistry.register({ id: 'layer.sendBackward', key: '[', ctrl: true, context: 'global', handler: () => {
+    const ctx = getCtx(); if (!ctx) return;
+    const ids = useSelectionStore.getState().getSelectedIds();
+    if (ids.length === 0) return;
+    for (const id of ids) {
+      const comp = useCompositionStore.getState().compositions.find(c => c.id === ctx.compId);
+      if (!comp) continue;
+      const idx = comp.layers.findIndex(l => l.id === id);
+      if (idx > 0) {
+        useCompositionStore.getState().reorderLayers(ctx.compId, idx, idx - 1);
+      }
+    }
+  }, remappable: true });
 }

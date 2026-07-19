@@ -130,23 +130,27 @@ export const fileMenu: MenuItemDefinition[] = [
     label: 'Import File...',
     shortcut: 'Ctrl+I',
     onClick: async () => {
-      const state = useCompositionStore.getState();
-      const compId = state.activeCompositionId;
-      if (!compId) return;
-      const comp = state.compositions.find((c) => c.id === compId);
-      if (!comp) return;
       const assets = await assetManager.importFromFilePicker();
+      if (assets.length === 0) return;
+      // Add to project assets panel (NOT directly to timeline)
+      const projStore = useProjectStore.getState();
       for (const asset of assets) {
-        const type = asset.type === 'video' ? 'video' : 'image';
-        const layer = createLayerInstance(type, comp, {
+        projStore.addAsset({
+          id: asset.id,
           name: asset.name,
-          data: type === 'video'
-            ? { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
-            : { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight },
+          type: asset.type,
+          path: asset.url,
+          size: asset.size,
+          originalName: asset.name,
+          mimeType: asset.mimeType,
+          importedAt: asset.importedAt,
         });
-        state.addLayer(compId, layer);
-        useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
       }
+      useNotificationStore.getState().addNotification({
+        type: 'success',
+        message: `Imported ${assets.length} file${assets.length > 1 ? 's' : ''} to project. Drag to viewport or timeline to add.`,
+        autoDismiss: 3000,
+      });
     },
   },
   {

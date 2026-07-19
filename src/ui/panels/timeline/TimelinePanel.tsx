@@ -2,6 +2,8 @@ import React, { useRef, useCallback, useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useTimelineStore } from '../../../state/timelineStore';
+import { useSelectionStore } from '../../../state/selectionStore';
+import { useNotificationStore } from '../../../state/notificationStore';
 import { PlaybackControls, animationClock } from './PlaybackControls';
 import { TimelineHeader } from './TimelineHeader';
 import { TimelineRuler } from './TimelineRuler';
@@ -13,6 +15,8 @@ import { buildTimelineContextMenu } from './timelineContextMenus';
 import { useKeyframeModal } from './useKeyframeModal';
 import { useKeyframeShortcuts } from './useKeyframeShortcuts';
 import { CacheIndicator } from './CacheIndicator';
+import { assetManager } from '../../../storage/AssetManager';
+import { createLayerInstance } from '../../../utils/createLayerInstance';
 
 export const TimelinePanel: React.FC = () => {
   const comp = useCompositionStore(s =>
@@ -38,6 +42,7 @@ export const TimelinePanel: React.FC = () => {
 
   const [buildProgress, setBuildProgress] = useState<{ currentFrame: number; totalFrames: number } | null>(null);
   const [isBuilding, setIsBuilding] = useState(false);
+  const [timelineDrop, setTimelineDrop] = useState(false);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -150,6 +155,30 @@ export const TimelinePanel: React.FC = () => {
     ctxMenu.open(e, buildTimelineContextMenu(frame, fps, comp.id));
   }, [comp, scrollX, zoom, fps, ctxMenu]);
 
+  // Handle asset drop from project panel onto timeline
+  const handleTimelineDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setTimelineDrop(false);
+    const assetId = e.dataTransfer.getData('application/onion-asset');
+    if (!assetId || !comp) return;
+    const asset = assetManager.getAsset(assetId);
+    if (!asset) return;
+    if (asset.type === 'audio') {
+      useNotificationStore.getState().addNotification({ type: 'warning', message: 'Audio files cannot be placed as layers.', autoDismiss: 3000 });
+      return;
+    }
+    const type = asset.type === 'video' ? 'video' : 'image';
+    const layer = createLayerInstance(type, comp, {
+      name: asset.name,
+      zIndex: comp.layers.length + 1,
+      data: type === 'video'
+        ? { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
+        : { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight },
+    });
+    useCompositionStore.getState().addLayer(comp.id, layer);
+    useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: comp.id });
+  }, [comp]);
+
   if (!comp) {
     return (
       <div
@@ -165,7 +194,10 @@ export const TimelinePanel: React.FC = () => {
     <div
       ref={rootRef}
       className="flex flex-col h-full select-none"
-      style={{ background: 'var(--color-panel)', borderRadius: 'var(--radius-panel)', overflow: 'hidden' }}
+      style={{ background: 'var(--color-panel)', borderRadius: 'var(--radius-panel)', overflow: 'hidden', outline: timelineDrop ? '2px dashed var(--color-accent)' : 'none', outlineOffset: -2 }}
+      onDragOver={(e) => { if (e.dataTransfer.types.includes('application/onion-asset')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setTimelineDrop(true); } }}
+      onDragLeave={() => setTimelineDrop(false)}
+      onDrop={handleTimelineDrop}
     >
       <PlaybackControls comp={comp} totalFrames={totalFrames} currentFrame={currentFrame} />
       <TimelineHeader comp={comp} currentFrame={currentFrame} totalFrames={totalFrames} />

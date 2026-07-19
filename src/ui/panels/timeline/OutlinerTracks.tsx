@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from 'react';
-import { ChevronRight, X } from 'lucide-react';
+import React, { useCallback, useRef, useState } from 'react';
+import { ChevronRight, ChevronUp, ChevronDown, X, GripVertical } from 'lucide-react';
 import type { Layer } from '../../../types/layer';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { useCompositionStore } from '../../../state/compositionStore';
@@ -21,13 +21,27 @@ const LAYER_ICONS: Record<string, string> = {
   image: 'image', video: 'video', null: 'ellipse', comp: 'grid',
 };
 
-function handleTrackDrop(e: React.DragEvent, compId: string): void {
+function handleTrackDrop(e: React.DragEvent, compId: string, targetLayerId?: string): void {
   e.preventDefault();
   const raw = e.dataTransfer.getData('text/plain');
   if (!raw) return;
   if (raw.startsWith('comp:')) {
     const r = useCompositionStore.getState().addCompLayer(compId, raw.slice(5));
     if (!r.ok && r.reason) console.warn('[OutlinerTracks] Drop rejected:', r.reason);
+    return;
+  }
+  // Layer reordering via drag-and-drop
+  if (raw.startsWith('layer:') && targetLayerId) {
+    const draggedId = raw.slice(6);
+    if (draggedId === targetLayerId) return;
+    const cs = useCompositionStore.getState();
+    const comp = cs.compositions.find(c => c.id === compId);
+    if (!comp) return;
+    const fromIdx = comp.layers.findIndex(l => l.id === draggedId);
+    const toIdx = comp.layers.findIndex(l => l.id === targetLayerId);
+    if (fromIdx !== -1 && toIdx !== -1) {
+      cs.reorderLayers(compId, fromIdx, toIdx);
+    }
   }
 }
 
@@ -53,8 +67,10 @@ function buildAddLayerMenu(compId: string): ContextMenuItem[] {
   ];
 }
 
-function buildLayerCtx(compId: string, layer: Layer): ContextMenuItem[] {
+function buildLayerCtx(compId: string, layer: Layer, idx: number, total: number): ContextMenuItem[] {
   const cs = useCompositionStore.getState();
+  const canUp = idx < total - 1;
+  const canDown = idx > 0;
   return [
     { id: 'l.hdr', label: layer.name, disabled: true },
     { id: 'l.d1', divider: true },
@@ -65,10 +81,16 @@ function buildLayerCtx(compId: string, layer: Layer): ContextMenuItem[] {
         useSelectionStore.getState().select({ type: 'layer', id: dup.id, compositionId: compId });
       });
     }},
+    { id: 'l.d0', divider: true },
+    { id: 'l.up', label: 'Bring Forward', shortcut: 'Ctrl+]', disabled: !canUp,
+      onClick: () => cs.reorderLayers(compId, idx, idx + 1) },
+    { id: 'l.down', label: 'Send Backward', shortcut: 'Ctrl+[', disabled: !canDown,
+      onClick: () => cs.reorderLayers(compId, idx, idx - 1) },
+    { id: 'l.d3', divider: true },
     { id: 'l.vis', label: layer.visible ? 'Hide' : 'Show', onClick: () => cs.updateLayer(compId, layer.id, { visible: !layer.visible }) },
     { id: 'l.lock', label: layer.locked ? 'Unlock' : 'Lock', onClick: () => cs.updateLayer(compId, layer.id, { locked: !layer.locked }) },
     { id: 'l.d2', divider: true },
-    { id: 'l.del', label: 'Delete', onClick: () => { cs.removeLayer(compId, layer.id); useSelectionStore.getState().deselect(layer.id); } },
+    { id: 'l.del', label: 'Delete', shortcut: 'Del', onClick: () => { cs.removeLayer(compId, layer.id); useSelectionStore.getState().deselect(layer.id); } },
   ];
 }
 
@@ -82,12 +104,38 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
   const sortedLayers = [...layers].sort((a, b) => b.zIndex - a.zIndex);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
 
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [dragOverPos, setDragOverPos] = useState<'above' | 'below' | null>(null);
+  const dragOverPosRef = useRef<'above' | 'below' | null>(null);
+
   const onClickLayer = useCallback((id: string) => select({ type: 'layer', id, compositionId: compId }), [compId, select]);
-  const onLayerContext = useCallback((e: React.MouseEvent, layer: Layer) => {
+  const onLayerContext = useCallback((e: React.MouseEvent, layer: Layer, layerIdx: number) => {
     e.preventDefault(); e.stopPropagation();
     if (!selectedIds.includes(layer.id)) onClickLayer(layer.id);
-    ctx.open(e, buildLayerCtx(compId, layer));
-  }, [ctx, compId, onClickLayer, selectedIds]);
+    ctx.open(e, buildLayerCtx(compId, layer, layerIdx, sortedLayers.length));
+  }, [ctx, compId, onClickLayer, selectedIds, sortedLayers.length]);
+
+  const moveLayerUp = useCallback((id: string) => {
+    const comp = useCompositionStore.getState().compositions.find(c => c.id === compId);
+    if (!comp) return;
+    const idx = comp.layers.findIndex(l => l.id === id);
+    // Note: in the store, higher index = rendered on top. "Up" in UI = higher z = higher index.
+    if (idx < 0 || idx >= comp.layers.length - 1) return;
+    useCompositionStore.getState().reorderLayers(compId, idx, idx + 1);
+  }, [compId]);
+
+  const moveLayerDown = useCallback((id: string) => {
+    const comp = useCompositionStore.getState().compositions.find(c => c.id === compId);
+    if (!comp) return;
+    const idx = comp.layers.findIndex(l => l.id === id);
+    if (idx <= 0) return;
+    useCompositionStore.getState().reorderLayers(compId, idx, idx - 1);
+  }, [compId]);
+
+  const handleLayerDragStart = useCallback((e: React.DragEvent, layerId: string) => {
+    e.dataTransfer.setData('text/plain', `layer:${layerId}`);
+    e.dataTransfer.effectAllowed = 'move';
+  }, []);
 
   const onEmptyContext = useCallback((e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('[data-tracks-row]')) return;
@@ -110,8 +158,13 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
         const hasKfs = props.length > 0;
         const isSel = selectedIds.includes(layer.id);
         const palette = LAYER_COLORS[li % LAYER_COLORS.length];
+        const isDragOver = dragOverId === layer.id;
         return (
-          <div key={layer.id}>
+          <div key={layer.id} style={{ position: 'relative' }}>
+            {/* Drag indicator line — above */}
+            {isDragOver && dragOverPos === 'above' && (
+              <div style={{ position: 'absolute', top: 0, left: 8, right: 8, height: 2, background: 'var(--color-accent)', borderRadius: 1, zIndex: 10 }} />
+            )}
             <div data-tracks-row="1"
               className="flex items-center gap-2 cursor-pointer transition-colors"
               style={{
@@ -125,11 +178,28 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
               onMouseEnter={(e) => { if (!isSel) (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; }}
               onMouseLeave={(e) => { if (!isSel) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
               onClick={() => onClickLayer(layer.id)}
-              onContextMenu={(e) => onLayerContext(e, layer)}
-              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDropTarget(layer.id); e.dataTransfer.dropEffect = 'copy'; }}
-              onDragLeave={() => setDropTarget(null)}
-              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDropTarget(null); handleTrackDrop(e, compId); }}
+              onContextMenu={(e) => onLayerContext(e, layer, li)}
+              draggable={true}
+              onDragStart={(e) => handleLayerDragStart(e, layer.id)}
+              onDragOver={(e) => {
+                e.preventDefault(); e.stopPropagation();
+                e.dataTransfer.dropEffect = 'move';
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                const y = e.clientY - rect.top;
+                const pos = y < rect.height / 2 ? 'above' : 'below';
+                setDropTarget(layer.id);
+                setDragOverId(layer.id);
+                setDragOverPos(pos);
+                dragOverPosRef.current = pos;
+              }}
+              onDragLeave={() => { setDropTarget(null); setDragOverId(null); setDragOverPos(null); }}
+              onDrop={(e) => {
+                e.preventDefault(); e.stopPropagation();
+                setDropTarget(null); setDragOverId(null); setDragOverPos(null);
+                handleTrackDrop(e, compId, layer.id);
+              }}
             >
+              <GripVertical size={12} strokeWidth={2} style={{ color: 'var(--color-text-disabled)', flexShrink: 0, cursor: 'grab' }} />
               <div className="shrink-0 rounded-full" style={{
                 width: 4, height: 16,
                 background: `linear-gradient(180deg, ${palette.from}, ${palette.to})`,
@@ -153,7 +223,23 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
                   borderRadius: 999, fontFamily: 'var(--font-family-mono)',
                 }}>{props.length}</span>
               )}
+              <button
+                className="border-0 bg-transparent cursor-pointer shrink-0 flex items-center justify-center"
+                style={{ width: 18, height: 18, color: li < sortedLayers.length - 1 ? 'var(--color-text-disabled)' : 'transparent', opacity: li < sortedLayers.length - 1 ? 0.6 : 0, pointerEvents: li < sortedLayers.length - 1 ? 'auto' : 'none' }}
+                title="Bring Forward (Ctrl+])"
+                onClick={(e) => { e.stopPropagation(); moveLayerUp(layer.id); }}
+              ><ChevronUp size={13} strokeWidth={2} /></button>
+              <button
+                className="border-0 bg-transparent cursor-pointer shrink-0 flex items-center justify-center"
+                style={{ width: 18, height: 18, color: li > 0 ? 'var(--color-text-disabled)' : 'transparent', opacity: li > 0 ? 0.6 : 0, pointerEvents: li > 0 ? 'auto' : 'none' }}
+                title="Send Backward (Ctrl+[)"
+                onClick={(e) => { e.stopPropagation(); moveLayerDown(layer.id); }}
+              ><ChevronDown size={13} strokeWidth={2} /></button>
             </div>
+            {/* Drag indicator line — below */}
+            {isDragOver && dragOverPos === 'below' && (
+              <div style={{ position: 'absolute', bottom: 0, left: 8, right: 8, height: 2, background: 'var(--color-accent)', borderRadius: 1, zIndex: 10 }} />
+            )}
             {expanded && props.map(propPath => (
               <div key={propPath} data-tracks-row="1"
                 className="flex items-center gap-2 transition-colors"

@@ -38,7 +38,11 @@ export abstract class BaseLayerRenderer {
 
   updateOpacity(opacity: number): void {
     const mat = this.material as THREE.MeshBasicMaterial;
-    mat.transparent = opacity < 1;
+    // Canvas/image/video textures ALWAYS need transparent:true so the alpha
+    // channel from the canvas is respected. Setting transparent=false when
+    // opacity===1 causes Three.js to ignore alpha, making transparent pixels
+    // render as opaque black (RGB 0,0,0).
+    mat.transparent = true;
     mat.opacity = opacity;
     mat.needsUpdate = true;
   }

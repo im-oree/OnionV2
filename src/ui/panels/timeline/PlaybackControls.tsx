@@ -4,13 +4,20 @@ import { useCompositionStore } from '../../../state/compositionStore';
 import { AnimationClock } from '../../../animation/AnimationClock';
 import type { Composition } from '../../../types/composition';
 
-interface Props { comp: Composition; totalFrames: number; currentFrame: number; }
+interface Props {
+  comp: Composition;
+  totalFrames: number;
+  currentFrame: number;
+}
 
 export const animationClock = new AnimationClock();
 
-export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
-  const loop = useTimelineStore(s => s.loop);
-  const setPlaybackState = useTimelineStore(s => s.setPlaybackState);
+export const PlaybackControls: React.FC<Props> = ({
+  comp,
+  totalFrames,
+}) => {
+  const loop = useTimelineStore((s) => s.loop);
+  const setPlaybackState = useTimelineStore((s) => s.setPlaybackState);
 
   React.useEffect(() => {
     animationClock.setFps(comp.fps);
@@ -18,46 +25,28 @@ export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
     animationClock.setLoopMode(loop ? 'loop' : 'none');
 
     const onFrame = (ev: { frame: number }) => {
+      console.log('[onFrame] frame=', ev.frame, 'compId=', comp.id, 'newTime=', ev.frame / comp.fps);
       useCompositionStore.getState().setCurrentTime(comp.id, ev.frame / comp.fps);
+      const afterUpdate = useCompositionStore.getState().compositions.find(c => c.id === comp.id);
+      console.log('[onFrame] after setCurrentTime, store currentTime=', afterUpdate?.currentTime);
       const renderer = (window as any).__renderer;
       if (renderer) renderer.renderLoop.requestRender();
-    };
-
-    let autoCacheInterval: ReturnType<typeof setInterval> | null = null;
-    const _stopAutoCache = () => {
-      if (autoCacheInterval !== null) { clearInterval(autoCacheInterval); autoCacheInterval = null; }
-    };
-    const _triggerPrefetch = (cid: string) => {
-      // Check autoCache flag on every tick — toggling it off while
-      // playing stops the interval and prevents further prefetches.
-      if (!useTimelineStore.getState().autoCache) {
-        _stopAutoCache();
-        // Also cancel any ongoing background prefetch build loop
-        // (it runs asynchronously via setTimeout and won't stop on its own)
-        const builder = (window as any).__ramPreviewBuilder;
-        if (builder && builder.isBuilding) builder.cancel();
-        return;
-      }
-      const builder = (window as any).__ramPreviewBuilder;
-      if (!builder || builder.isBuilding) return;
-      builder.startBackgroundPrefetch(cid, animationClock.currentFrame, 90);
-    };
-    const _startAutoCache = (cid: string) => {
-      _stopAutoCache();
-      _triggerPrefetch(cid);
-      autoCacheInterval = setInterval(() => _triggerPrefetch(cid), 2000);
     };
 
     const onPlay = () => {
       setPlaybackState('playing');
       const renderer = (window as any).__renderer;
       if (renderer?.propertyBinder) renderer.propertyBinder.setActive(true);
-      if (useTimelineStore.getState().autoCache) _startAutoCache(comp.id);
+
+      // Cancel any ongoing cache build — don't prefetch during live playback.
+      // The background prefetch loop was piling up setTimeout calls every
+      // 100ms inside _buildNextFrame's playback-pause branch, burning CPU.
+      const builder = (window as any).__ramPreviewBuilder;
+      if (builder?.isBuilding) builder.cancel();
     };
 
     const onPause = () => {
       setPlaybackState('paused');
-      _stopAutoCache();
       const renderer = (window as any).__renderer;
       if (renderer) {
         if (renderer.propertyBinder?.isActive) {
@@ -69,11 +58,24 @@ export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
         renderer.sceneManager.layerGroup.visible = true;
         renderer.renderLoop.requestRender();
       }
+
+      // After pausing, trigger a single background prefetch pass
+      // (if autoCache is enabled). This does NOT loop — idle caching
+      // handles long-running background caching via the activity tracker.
+      if (useTimelineStore.getState().autoCache) {
+        const builder = (window as any).__ramPreviewBuilder;
+        if (builder && !builder.isBuilding) {
+          builder.startBackgroundPrefetch(
+            comp.id,
+            animationClock.currentFrame,
+            120,
+          );
+        }
+      }
     };
 
     const onStop = () => {
       setPlaybackState('stopped');
-      _stopAutoCache();
       const renderer = (window as any).__renderer;
       if (renderer) {
         if (renderer.propertyBinder?.isActive) {
@@ -94,16 +96,24 @@ export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
 
     const onPrevKf = () => {
       const cs = useCompositionStore.getState();
-      const c = cs.activeCompositionId ? cs.compositions.find(x => x.id === cs.activeCompositionId) : null;
+      const c = cs.activeCompositionId
+        ? cs.compositions.find((x) => x.id === cs.activeCompositionId)
+        : null;
       if (!c) return;
       import('../../../state/selectionStore').then(({ useSelectionStore }) => {
         import('../../../state/keyframeStore').then(({ useKeyframeStore }) => {
           const ids = useSelectionStore.getState().getSelectedIds();
           const eng = useKeyframeStore.getState().engine;
           let all: number[] = [];
-          const src = ids.length > 0 ? ids : c.layers.map(l => l.id);
-          for (const id of src) all = all.concat(eng.getAllKeyframesForLayer(id).map(k => k.time));
-          const prev = [...all].sort((a, b) => a - b).reverse().find(t => t < animationClock.currentFrame);
+          const src = ids.length > 0 ? ids : c.layers.map((l) => l.id);
+          for (const id of src)
+            all = all.concat(
+              eng.getAllKeyframesForLayer(id).map((k) => k.time),
+            );
+          const prev = [...all]
+            .sort((a, b) => a - b)
+            .reverse()
+            .find((t) => t < animationClock.currentFrame);
           if (prev !== undefined) animationClock.seekToFrame(prev);
         });
       });
@@ -111,34 +121,36 @@ export const PlaybackControls: React.FC<Props> = ({ comp, totalFrames }) => {
 
     const onNextKf = () => {
       const cs = useCompositionStore.getState();
-      const c = cs.activeCompositionId ? cs.compositions.find(x => x.id === cs.activeCompositionId) : null;
+      const c = cs.activeCompositionId
+        ? cs.compositions.find((x) => x.id === cs.activeCompositionId)
+        : null;
       if (!c) return;
       import('../../../state/selectionStore').then(({ useSelectionStore }) => {
         import('../../../state/keyframeStore').then(({ useKeyframeStore }) => {
           const ids = useSelectionStore.getState().getSelectedIds();
           const eng = useKeyframeStore.getState().engine;
           let all: number[] = [];
-          const src = ids.length > 0 ? ids : c.layers.map(l => l.id);
-          for (const id of src) all = all.concat(eng.getAllKeyframesForLayer(id).map(k => k.time));
-          const next = all.sort((a, b) => a - b).find(t => t > animationClock.currentFrame);
+          const src = ids.length > 0 ? ids : c.layers.map((l) => l.id);
+          for (const id of src)
+            all = all.concat(
+              eng.getAllKeyframesForLayer(id).map((k) => k.time),
+            );
+          const next = all
+            .sort((a, b) => a - b)
+            .find((t) => t > animationClock.currentFrame);
           if (next !== undefined) animationClock.seekToFrame(next);
         });
       });
     };
 
-    const onRAMPreviewComplete = () => { animationClock.stop(); };
-
     document.addEventListener('playback:prevKeyframe', onPrevKf);
     document.addEventListener('playback:nextKeyframe', onNextKf);
-    document.addEventListener('rampreview:complete', onRAMPreviewComplete);
 
     return () => {
-      _stopAutoCache();
       animationClock.off('frame-changed', onFrame);
       animationClock.off('play', onPlay);
       animationClock.off('pause', onPause);
       animationClock.off('stop', onStop);
-      document.removeEventListener('rampreview:complete', onRAMPreviewComplete);
       document.removeEventListener('playback:prevKeyframe', onPrevKf);
       document.removeEventListener('playback:nextKeyframe', onNextKf);
     };

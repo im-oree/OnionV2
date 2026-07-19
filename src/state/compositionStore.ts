@@ -198,6 +198,9 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
         const layers = [...c.layers];
         const [m] = layers.splice(from, 1);
         if (m) layers.splice(to, 0, m);
+        // Update zIndex to match new array positions so sortedLayers
+        // (which sorts by zIndex) reflects the new order.
+        layers.forEach((l, i) => { l.zIndex = i; });
         return { ...c, layers };
       }),
     }));

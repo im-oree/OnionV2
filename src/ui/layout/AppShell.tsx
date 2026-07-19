@@ -7,6 +7,14 @@ import { StatusBar } from './StatusBar';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { useCompositionStore } from '../../state/compositionStore';
 import { WelcomeScreen } from '../WelcomeScreen';
+// Right panel — direct imports (no lazy/Suspense — panels are small, lazy causes stuck "Loading...")
+import { PropertiesPanel as RightPropertiesPanel } from '../panels/properties/PropertiesPanel';
+import EffectsPanelWrapper from '../panels/properties/EffectsPanelWrapper';
+import AlignPanel from '../panels/align/AlignPanel';
+import InfoPanel from '../panels/info/InfoPanel';
+import RenderPanel from '../panels/render/RenderPanel';
+import CharacterPanel from '../panels/character/CharacterPanel';
+import PerformancePanel from '../panels/performance/PerformancePanel';
 
 const ProjectBrowserPanel = React.lazy(() => import('../panels/project/ProjectBrowserPanel'));
 const ViewportPanel = React.lazy(() => import('../panels/viewport/ViewportPanel'));
@@ -42,7 +50,7 @@ export const AppShell: React.FC = () => {
         gridTemplateRows: `var(--size-menubar-height) ${G}px 1fr ${G}px ${showTimeline ? `${tlH}px` : '0px'} var(--size-panel-header)`,
         gap: 0,
       }}>
-      <div style={{ gridColumn: '1 / -1', gridRow: '1' }} className="overflow-visible"><MenuBar /></div>
+      <div style={{ gridColumn: '1 / -1', gridRow: '1', overflow: 'visible' }}><MenuBar /></div>
       <div style={{ gridColumn: '1 / -1', gridRow: '2' }} />
       <div style={{ gridColumn: '1', gridRow: '3 / 6' }} className="overflow-hidden"><Toolbar /></div>
       <div style={{ gridColumn: '2', gridRow: '3 / 6' }} />
@@ -159,26 +167,17 @@ const HSplitDrag: React.FC = () => {
   );
 };
 
-// Lazy panels at module scope — NEVER inside useMemo to avoid re-mount on parent re-render
-const LazyPropertiesPanel = React.lazy(() => import('../panels/properties/PropertiesPanel'));
-const LazyEffectsPanel = React.lazy(() => import('../panels/properties/EffectsPanelWrapper'));
-const LazyAlignPanel = React.lazy(() => import('../panels/align/AlignPanel'));
-const LazyInfoPanel = React.lazy(() => import('../panels/info/InfoPanel'));
-const LazyRenderPanel = React.lazy(() => import('../panels/render/RenderPanel'));
-const LazyCharacterPanel = React.lazy(() => import('../panels/character/CharacterPanel'));
-const LazyPerformancePanel = React.lazy(() => import('../panels/performance/PerformancePanel'));
-
 const RightPanelContent: React.FC = () => {
   const tab = useUIStore((s) => s.activeRightTab);
   return (
-    <React.Suspense fallback={<Fallback />}>
-      {tab === 'properties' && <LazyPropertiesPanel />}
-      {tab === 'effects' && <LazyEffectsPanel />}
-      {tab === 'align' && <LazyAlignPanel />}
-      {tab === 'info' && <LazyInfoPanel />}
-      {tab === 'render' && <LazyRenderPanel />}
-      {tab === 'character' && <LazyCharacterPanel />}
-      {tab === 'performance' && <LazyPerformancePanel />}
-    </React.Suspense>
+    <>
+      {tab === 'properties' && <RightPropertiesPanel />}
+      {tab === 'effects' && <EffectsPanelWrapper />}
+      {tab === 'align' && <AlignPanel />}
+      {tab === 'info' && <InfoPanel />}
+      {tab === 'render' && <RenderPanel />}
+      {tab === 'character' && <CharacterPanel />}
+      {tab === 'performance' && <PerformancePanel />}
+    </>
   );
 };

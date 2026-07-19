@@ -31,6 +31,8 @@ export const NumberInput: React.FC<NumberInputProps> = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const isScrubbing = useRef(false);
   const scrubStart = useRef({ x: 0, val: 0 });
+  const valueRef = useRef(value);
+  valueRef.current = value;
 
   useEffect(() => {
     if (!editing) setLocalValue(String(roundTo(value, precision)));
@@ -44,14 +46,19 @@ export const NumberInput: React.FC<NumberInputProps> = ({
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (disabled) return;
+    // If input is focused, let normal click/place-cursor work
+    if (focused && e.target === inputRef.current) return;
     e.preventDefault();
+    inputRef.current?.blur();
     document.body.style.cursor = 'ew-resize';
     isScrubbing.current = true;
     scrubStart.current = { x: e.clientX, val: value };
     const handleMouseMove = (ev: MouseEvent) => {
       if (!isScrubbing.current) return;
       const delta = ev.clientX - scrubStart.current.x;
-      const newVal = scrubStart.current.val + delta * step * 0.5;
+      // Shift = fine control (1/10th), normal = full step per pixel
+      const multiplier = ev.shiftKey ? 0.05 : 0.5;
+      const newVal = scrubStart.current.val + delta * step * multiplier;
       commitValue(newVal);
     };
     const handleMouseUp = () => {
@@ -62,7 +69,21 @@ export const NumberInput: React.FC<NumberInputProps> = ({
     };
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
-  }, [value, step, commitValue, disabled]);
+  }, [value, step, commitValue, disabled, focused]);
+
+  // Non-passive wheel listener via useEffect to allow preventDefault()
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el || disabled) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? step : -step;
+      const multiplier = e.shiftKey ? 10 : 1;
+      commitValue(valueRef.current + delta * multiplier);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [step, commitValue, disabled]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') { inputRef.current?.blur(); return; }
@@ -107,6 +128,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
           else setLocalValue(String(roundTo(value, precision)));
         }}
         onKeyDown={handleKeyDown}
+        onMouseDown={handleMouseDown}
         disabled={disabled}
         className="w-full text-right outline-none"
         style={{
@@ -118,6 +140,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
           borderRadius: 'var(--radius-sm)',
           color: 'var(--color-text-primary)',
           fontVariantNumeric: 'tabular-nums',
+          cursor: focused ? 'text' : 'ew-resize',
           transition: 'border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out)',
           boxShadow: focused ? '0 0 0 3px var(--color-accent-muted)' : 'none',
           opacity: disabled ? 0.4 : 1,
