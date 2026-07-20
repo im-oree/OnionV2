@@ -9,6 +9,9 @@ import { useKeyboardManager, registerAllShortcuts } from './input/KeyboardManage
 import { useCompositionStore } from './state/compositionStore';
 import { useNavigationStore } from './state/navigationStore';
 import { useRecentProjectsStore } from './state/recentProjectsStore';
+import { useEffectsStore } from './state/effectsStore';
+import { useMaskStore } from './state/maskStore';
+import { useMarkerStore } from './state/markerStore';
 import { StorageManager } from './storage/StorageManager';
 import { autoSave } from './storage/AutoSave';
 import { crashRecovery, type PendingRecovery } from './storage/CrashRecovery';
@@ -129,6 +132,9 @@ const App: React.FC = () => {
     import('./state/keyframeStore').then(({ useKeyframeStore }) => {
       (window as any).__keyframeStore = useKeyframeStore;
     });
+    (window as any).__effectsStore = useEffectsStore;
+    (window as any).__maskStore = useMaskStore;
+    (window as any).__markerStore = useMarkerStore;
   }, []);
 
   // Save the last project handle to localStorage when dirty status changes

@@ -44,6 +44,8 @@ export interface EffectRenderContext {
   /** Layer's pixel bounds. */
   width: number;
   height: number;
+  /** Current composition time in seconds — for animated effects (ripple, noise, etc.) */
+  currentTime: number;
   /**
    * Get (or create + cache) a ShaderMaterial keyed by (effect instance id + subKey).
    * subKey lets an effect cache multiple materials, e.g. horizontal + vertical
@@ -83,6 +85,8 @@ export interface EffectModule {
    * single-pass path uses `fragmentShader`.
    */
   customRender?: (ctx: EffectRenderContext) => void;
+  /** If true, the registerAllEffects helper adds uTime param automatically. */
+  usesTime?: boolean;
 }
 
 /**
@@ -104,6 +108,16 @@ export function param(overrides: Partial<EffectParameter> & { id: string; name: 
 /**
  * Helper to build an EffectDefinition. Reduces boilerplate.
  */
+/**
+ * Return the standard time-control param used by animated effects.
+ * Imported dynamically in registerAllEffects to avoid circular deps.
+ */
+export function timeControlParams(): EffectParameter[] {
+  return [
+    param({ id: 'uTime', name: 'Time', value: 0, uniform: 'uTime' }),
+  ];
+}
+
 export function def(
   type: EffectType,
   displayName: string,

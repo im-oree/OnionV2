@@ -163,21 +163,21 @@ export const ShapeSection: React.FC<Props> = ({ layer, compId }) => {
         {showLib && <InlineShapeLibrary currentId={currentPresetId} onSelect={applyPreset}/>}
 
         {data.type === 'rectangle' && !presetDef?.params.length && <>
-          <PropRow label="Width"><NumberInput value={data.width} onChange={v=>upd({width:v})} min={1} step={1} precision={0}/></PropRow>
-          <PropRow label="Height"><NumberInput value={data.height} onChange={v=>upd({height:v})} min={1} step={1} precision={0}/></PropRow>
-          <PropRow label="Corner"><NumberInput value={data.borderRadius} onChange={v=>upd({borderRadius:v})} min={0} step={1} precision={0}/></PropRow>
+          <PropRow label="Width" animatable="data.width" layer={layer} compId={compId}><NumberInput value={data.width} onChange={v=>upd({width:v})} step={1} precision={0}/></PropRow>
+          <PropRow label="Height" animatable="data.height" layer={layer} compId={compId}><NumberInput value={data.height} onChange={v=>upd({height:v})} step={1} precision={0}/></PropRow>
+          <PropRow label="Corner" animatable="data.borderRadius" layer={layer} compId={compId}><NumberInput value={data.borderRadius} onChange={v=>upd({borderRadius:v})} step={1} precision={0}/></PropRow>
         </>}
         {data.type === 'rectangle' && presetDef?.params.length && <>
-          <PropRow label="Width"><NumberInput value={data.width} onChange={v=>upd({width:v})} min={1} step={1} precision={0}/></PropRow>
-          <PropRow label="Height"><NumberInput value={data.height} onChange={v=>upd({height:v})} min={1} step={1} precision={0}/></PropRow>
+          <PropRow label="Width" animatable="data.width" layer={layer} compId={compId}><NumberInput value={data.width} onChange={v=>upd({width:v})} step={1} precision={0}/></PropRow>
+          <PropRow label="Height" animatable="data.height" layer={layer} compId={compId}><NumberInput value={data.height} onChange={v=>upd({height:v})} step={1} precision={0}/></PropRow>
         </>}
         {data.type === 'ellipse' && <>
-          <PropRow label="Radius X"><NumberInput value={data.radiusX} onChange={v=>upd({radiusX:v})} min={1} step={1} precision={0}/></PropRow>
-          <PropRow label="Radius Y"><NumberInput value={data.radiusY} onChange={v=>upd({radiusY:v})} min={1} step={1} precision={0}/></PropRow>
+          <PropRow label="Radius X" animatable="data.radiusX" layer={layer} compId={compId}><NumberInput value={data.radiusX} onChange={v=>upd({radiusX:v})} step={1} precision={0}/></PropRow>
+          <PropRow label="Radius Y" animatable="data.radiusY" layer={layer} compId={compId}><NumberInput value={data.radiusY} onChange={v=>upd({radiusY:v})} step={1} precision={0}/></PropRow>
         </>}
 
         {presetDef && presetDef.params.map(p => (
-          <PropRow key={p.id} label={p.label}>
+          <PropRow key={p.id} label={p.label} animatable={`data.presetParams.${p.id}`} layer={layer} compId={compId}>
             <NumberInput
               value={presetParams[p.id] ?? p.default}
               onChange={v => upd({ presetParams: { ...presetParams, [p.id]: v } })}
@@ -200,7 +200,7 @@ export const ShapeSection: React.FC<Props> = ({ layer, compId }) => {
       <Section label="Fill">
         <PropRow label="Type"><SelectInput value={fill.type} onChange={setFillType} options={FILL_TYPE_OPTS}/></PropRow>
         {fill.type === 'solid' && (
-          <PropRow label="Color"><ColorInput value={fill.color} onChange={c => updFill({ color: c })}/></PropRow>
+          <PropRow label="Color" animatable="data.fill.color" layer={layer} compId={compId}><ColorInput value={fill.color} onChange={c => updFill({ color: c })}/></PropRow>
         )}
         {fill.type !== 'solid' && fill.gradient && (
           <div style={{padding:'4px 0'}}>
@@ -217,17 +217,17 @@ export const ShapeSection: React.FC<Props> = ({ layer, compId }) => {
           <PropRow label="Cy"><NumberInput value={(fill.gradient as any).centerY ?? 0.5} onChange={v => updFill({ gradient: { ...(fill.gradient as any), centerY: v } })} min={0} max={1} step={0.05} precision={2}/></PropRow>
           <PropRow label="Radius"><NumberInput value={(fill.gradient as any).radius ?? 0.5} onChange={v => updFill({ gradient: { ...(fill.gradient as any), radius: v } })} min={0.05} max={2} step={0.05} precision={2}/></PropRow>
         </>}
-        <PropRow label="Opacity">
-          <NumberInput value={fill.opacity} onChange={v => updFill({ opacity: v })} min={0} max={100} step={1} precision={0} label="%"/>
+        <PropRow label="Opacity" animatable="data.fill.opacity" layer={layer} compId={compId}>
+          <NumberInput value={fill.opacity} onChange={v => updFill({ opacity: v })} step={1} precision={0} label="%"/>
         </PropRow>
       </Section>
 
       <Section label="Stroke" defaultOpen={stroke.enabled}>
         <PropRow label="Enabled"><CheckboxInput value={stroke.enabled} onChange={v => updStroke({ enabled: v })}/></PropRow>
         {stroke.enabled && <>
-          <PropRow label="Color"><ColorInput value={stroke.color} onChange={c => updStroke({ color: c })}/></PropRow>
-          <PropRow label="Width"><NumberInput value={stroke.width} onChange={v => updStroke({ width: v })} min={0} step={0.5} precision={1} label="px"/></PropRow>
-          <PropRow label="Opacity"><NumberInput value={stroke.opacity} onChange={v => updStroke({ opacity: v })} min={0} max={100} step={1} precision={0} label="%"/></PropRow>
+          <PropRow label="Color" animatable="data.stroke.color" layer={layer} compId={compId}><ColorInput value={stroke.color} onChange={c => updStroke({ color: c })}/></PropRow>
+          <PropRow label="Width" animatable="data.stroke.width" layer={layer} compId={compId}><NumberInput value={stroke.width} onChange={v => updStroke({ width: v })} step={0.5} precision={1} label="px"/></PropRow>
+          <PropRow label="Opacity" animatable="data.stroke.opacity" layer={layer} compId={compId}><NumberInput value={stroke.opacity} onChange={v => updStroke({ opacity: v })} step={1} precision={0} label="%"/></PropRow>
           <PropRow label="Cap"><SelectInput value={stroke.cap ?? 'butt'} onChange={v => updStroke({ cap: v as any })} options={CAP_OPTS}/></PropRow>
           <PropRow label="Join"><SelectInput value={stroke.join ?? 'miter'} onChange={v => updStroke({ join: v as any })} options={JOIN_OPTS}/></PropRow>
         </>}

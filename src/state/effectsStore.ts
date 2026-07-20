@@ -6,7 +6,7 @@
 import { create } from 'zustand';
 import type { EffectInstance, EffectType } from '../types/effect';
 import { effectRegistry } from '../renderer/effects/EffectRegistry';
-import { captureSnapshot, useHistoryStore } from './historyStore';
+import { captureSnapshot, debouncedCapture, flushDebouncedSnapshot, useHistoryStore } from './historyStore';
 
 function genId(): string {
   return `efx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -37,6 +37,7 @@ export interface EffectsState {
   reorderEffect: (layerId: string, effectId: string, newIndex: number) => void;
   updateParameter: (layerId: string, effectId: string, paramId: string, value: any) => void;
   toggleEffect: (layerId: string, effectId: string) => void;
+  setEffectSpace: (layerId: string, effectId: string, space: 'local' | 'screen') => void;
   duplicateEffect: (layerId: string, effectId: string) => void;
   copyEffects: (layerId: string) => void;
   pasteEffects: (layerId: string) => void;
@@ -64,6 +65,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       enabled: true,
       collapsed: false,
       parameters: def.createDefaultParameters(),
+      space: 'local',
     };
     set((s) => ({
       effectsByLayer: { ...s.effectsByLayer, [layerId]: [...existing, newEffect] },
@@ -97,7 +99,9 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
   },
 
   updateParameter: (layerId, effectId, paramId, value) => {
-    const snapshot = captureSnapshot();
+    // Use debounced capture for high-frequency slider drags to avoid
+    // serializing the entire effects tree on every pixel.
+    debouncedCapture('Adjust Effect Parameter');
     set((s) => {
       const list = (s.effectsByLayer[layerId] ?? []).map((e) => {
         if (e.id !== effectId) return e;
@@ -110,7 +114,6 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       });
       return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
     });
-    useHistoryStore.getState().pushEntry('Update Effect Parameter', snapshot);
     requestEffectRender();
   },
 
@@ -124,6 +127,18 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
     });
     useHistoryStore.getState().pushEntry('Toggle Effect', snapshot);
     requestEffectRender();
+  },
+
+  setEffectSpace: (layerId, effectId, space) => {
+    const snapshot = captureSnapshot();
+    set((s) => {
+      const list = (s.effectsByLayer[layerId] ?? []).map((e) =>
+        e.id === effectId ? { ...e, space } : e,
+      );
+      return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
+    });
+    requestEffectRender();
+    useHistoryStore.getState().pushEntry('Set Effect Space', snapshot);
   },
 
   duplicateEffect: (layerId, effectId) => {
@@ -188,6 +203,9 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
 
   setParameterValue: (layerId, effectId, paramId, value) => {
     get().updateParameter(layerId, effectId, paramId, value);
+    // Flush the debounced snapshot so keyframe-driven value changes
+    // are recorded immediately (not deferred to the next slider drag).
+    flushDebouncedSnapshot();
     requestEffectRender();
   },
 }));

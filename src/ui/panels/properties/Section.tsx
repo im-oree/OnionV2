@@ -150,10 +150,10 @@ export const PropRow: React.FC<PropRowProps> = ({
             style={{
               width: 14, height: 14,
               color: isAnimated ? 'var(--color-accent)' : 'var(--color-text-disabled)',
-              opacity: isAnimated ? 1 : 0,
+              opacity: isAnimated ? 1 : 0.45,
             }}
             onMouseEnter={(e)=>{ if(!isAnimated)(e.currentTarget as HTMLElement).style.opacity='1'; }}
-            onMouseLeave={(e)=>{ if(!isAnimated)(e.currentTarget as HTMLElement).style.opacity='0'; }}
+            onMouseLeave={(e)=>{ if(!isAnimated)(e.currentTarget as HTMLElement).style.opacity='0.45'; }}
             onClick={handleStopwatch}
             title={isAnimated ? 'Disable animation' : 'Enable animation'}
           >
@@ -202,8 +202,10 @@ export const PropRow: React.FC<PropRowProps> = ({
   );
 };
 
-function getCurrentPropertyValue(path: string, layer: Layer): number | number[] {
+function getCurrentPropertyValue(path: string, layer: Layer): number | number[] | string | boolean {
   if (path === 'opacity') return layer.opacity;
+  if (path === 'blendMode') return (layer as any).blendMode ?? 'normal';
+  if (path === 'visible') return layer.visible;
   if (path.startsWith('transform.')) {
     const field = path.slice('transform.'.length);
     const t = layer.transform;
@@ -218,10 +220,29 @@ function getCurrentPropertyValue(path: string, layer: Layer): number | number[] 
     if (field === 'anchorPoint.x') return t.anchorPoint.x;
     if (field === 'anchorPoint.y') return t.anchorPoint.y;
   }
+  if (path.startsWith('data.')) {
+    const parts = path.slice('data.'.length).split('.');
+    let cur: any = (layer as any).data;
+    for (const p of parts) {
+      if (cur == null) return 0;
+      cur = cur[p];
+    }
+    return cur ?? 0;
+  }
   return 0;
 }
 
-function applyValueToLayer(compId: string, layerId: string, path: string, value: number | number[]): void {
+function deepSetImmutable(obj: any, parts: string[], value: any): any {
+  if (parts.length === 0) return value;
+  const [head, ...rest] = parts;
+  const child = obj?.[head];
+  return {
+    ...(obj ?? {}),
+    [head]: rest.length === 0 ? value : deepSetImmutable(child, rest, value),
+  };
+}
+
+function applyValueToLayer(compId: string, layerId: string, path: string, value: number | number[] | string | boolean): void {
   const cs = useCompositionStore.getState();
   const comp = cs.compositions.find(c => c.id === compId);
   if (!comp) return;
@@ -230,6 +251,14 @@ function applyValueToLayer(compId: string, layerId: string, path: string, value:
 
   if (path === 'opacity' && typeof value === 'number') {
     cs.updateLayer(compId, layerId, { opacity: value });
+    return;
+  }
+  if (path === 'blendMode' && typeof value === 'string') {
+    cs.updateLayer(compId, layerId, { blendMode: value as any });
+    return;
+  }
+  if (path === 'visible' && typeof value === 'boolean') {
+    cs.updateLayer(compId, layerId, { visible: value });
     return;
   }
   if (path.startsWith('transform.')) {
@@ -246,5 +275,12 @@ function applyValueToLayer(compId: string, layerId: string, path: string, value:
     else if (field === 'anchorPoint.x' && typeof value === 'number') t.anchorPoint = { ...t.anchorPoint, x: value };
     else if (field === 'anchorPoint.y' && typeof value === 'number') t.anchorPoint = { ...t.anchorPoint, y: value };
     cs.updateLayer(compId, layerId, { transform: t });
+    return;
+  }
+  if (path.startsWith('data.')) {
+    const parts = path.slice('data.'.length).split('.');
+    const currentData: any = (layer as any).data ?? {};
+    const newData: any = deepSetImmutable(currentData, parts, value);
+    cs.updateLayer(compId, layerId, { data: newData });
   }
 }

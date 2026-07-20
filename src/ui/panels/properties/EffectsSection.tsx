@@ -3,9 +3,8 @@
  * Shows effects list with enable toggle, parameter editors, reordering, preset
  * save/load, and per-parameter keyframe integration (stopwatch + diamond).
  */
-import React, { useState, useCallback } from 'react';
+import React, { useState } from 'react';
 import { useEffectsStore } from '../../../state/effectsStore';
-import { usePresetsStore } from '../../../state/presetsStore';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { effectRegistry } from '../../../renderer/effects/EffectRegistry';
@@ -16,7 +15,7 @@ import { SelectInput } from './inputs/SelectInput';
 import { CheckboxInput } from './inputs/CheckboxInput';
 import { ContextMenu, type ContextMenuItem } from '../../common/ContextMenu';
 import { useContextMenu } from '../../common/useContextMenu';
-import type { EffectInstance, EffectType, EffectCategory, EffectParameter } from '../../../types/effect';
+import type { EffectInstance, EffectParameter } from '../../../types/effect';
 import type { Layer } from '../../../types/layer';
 import { confirm } from '../../common/ConfirmDialog';
 
@@ -24,7 +23,6 @@ interface Props { layer: Layer; compId: string; }
 
 export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
   const effects = useEffectsStore((s) => s.effectsByLayer[layer.id] ?? []);
-  const addEffect = useEffectsStore((s) => s.addEffect);
   const removeEffect = useEffectsStore((s) => s.removeEffect);
   const reorderEffect = useEffectsStore((s) => s.reorderEffect);
   const updateParameter = useEffectsStore((s) => s.updateParameter);
@@ -33,38 +31,38 @@ export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
   const copyEffects = useEffectsStore((s) => s.copyEffects);
   const pasteEffects = useEffectsStore((s) => s.pasteEffects);
   const removeAllEffects = useEffectsStore((s) => s.removeAllEffects);
-  const presets = usePresetsStore((s) => s.presets);
-  const addPreset = usePresetsStore((s) => s.addPreset);
-
-  const [showAddMenu, setShowAddMenu] = useState(false);
   const comp = useCompositionStore((s) => s.activeCompositionId
     ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null : null);
   const currentFrame = comp ? Math.floor(comp.currentTime * comp.fps) : 0;
-  const categories = effectRegistry.listCategories();
-
-  const handleAddEffectWithPreset = useCallback((type: EffectType, presetId?: string) => {
-    addEffect(layer.id, type);
-    if (presetId) {
-      const preset = presets.find(p => p.id === presetId);
-      if (preset) {
-        const effects = useEffectsStore.getState().effectsByLayer[layer.id] ?? [];
-        const added = effects[effects.length - 1];
-        if (added) {
-          for (const [paramId, value] of Object.entries(preset.parameters)) {
-            updateParameter(layer.id, added.id, paramId, value);
-          }
-        }
-      }
-    }
-    setShowAddMenu(false);
-  }, [layer.id, addEffect, updateParameter, presets]);
 
   return (
     <Section label="Effects">
-      <div className="space-y-1">
-        {effects.length === 0 && (
-          <div className="text-ui-xs text-text-disabled py-2 italic">No effects on this layer</div>
-        )}
+      {effects.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-8 gap-2">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: 'var(--color-text-disabled)', opacity: 0.5 }}>
+            <circle cx="12" cy="12" r="10" />
+            <line x1="8" y1="12" x2="16" y2="12" />
+          </svg>
+          <span className="text-ui-xs text-text-disabled">No effects to adjust</span>
+          <span className="text-[10px] text-text-disabled opacity-60">Add effects from the Effect Library tab</span>
+        </div>
+      ) : (
+        <>
+          <div className="flex gap-2 mb-3 px-1">
+            <button
+              onClick={() => effects.forEach(e => resetEffectToDefaults(layer.id, e))}
+              className="flex-1 h-7 text-ui-xs bg-panel-hover border border-border rounded hover:text-text-primary transition-colors"
+            >
+              Reset All
+            </button>
+            <button
+              onClick={() => effects.forEach(e => clearAllKeyframesForEffect(layer.id, e))}
+              className="flex-1 h-7 text-ui-xs bg-panel-hover border border-border rounded hover:text-danger transition-colors"
+            >
+              Clear All Keyframes
+            </button>
+          </div>
+          <div className="space-y-1">
         {effects.map((effect, idx) => (
           <EffectItem key={effect.id} effect={effect} index={idx} total={effects.length}
             currentFrame={currentFrame} layerId={layer.id} compId={compId}
@@ -77,49 +75,25 @@ export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
             onMoveUp={() => reorderEffect(layer.id, effect.id, idx - 1)}
             onMoveDown={() => reorderEffect(layer.id, effect.id, idx + 1)}
             onParamChange={(paramId, value) => updateParameter(layer.id, effect.id, paramId, value)}
-            onSavePreset={(name) => {
-              const efx = useEffectsStore.getState().effectsByLayer[layer.id]?.find(e => e.id === effect.id);
-              if (efx) {
-                const params: Record<string, any> = {};
-                for (const p of efx.parameters) params[p.id] = p.value;
-                addPreset(name, efx.type, params);
-              }
-            }}
+            onSavePreset={() => {}}
           />
         ))}
-        <div className="relative pt-1">
-          <button
-            className="w-full text-left px-2 py-1.5 text-ui-xs text-accent hover:bg-panel-hover border border-dashed border-border rounded-sm cursor-pointer flex items-center gap-1.5 bg-transparent"
-            onClick={() => setShowAddMenu(!showAddMenu)}
-          >
-            <svg width="11" height="11" viewBox="0 0 10 10" fill="currentColor">
-              <line x1="5" y1="1" x2="5" y2="9" stroke="currentColor" strokeWidth="1.5" />
-              <line x1="1" y1="5" x2="9" y2="5" stroke="currentColor" strokeWidth="1.5" />
-            </svg>
-            <span>Add Effect</span>
-          </button>
-          {showAddMenu && (
-            <AddEffectDropdown categories={categories} presets={presets}
-              onSelect={handleAddEffectWithPreset}
-              onClose={() => setShowAddMenu(false)} />
-          )}
-          {effects.length > 0 && (
-            <div className="flex items-center gap-2 px-1 pt-1.5">
-              <button className="text-[10px] text-text-disabled hover:text-text-secondary border-0 bg-transparent cursor-pointer"
-                onClick={() => copyEffects(layer.id)} title="Copy effects">Copy</button>
-              <span className="text-text-disabled text-[10px]">·</span>
-              <button className="text-[10px] text-text-disabled hover:text-text-secondary border-0 bg-transparent cursor-pointer"
-                onClick={() => pasteEffects(layer.id)} title="Paste effects">Paste</button>
-              <span className="text-text-disabled text-[10px]">·</span>
-              <button className="text-[10px] text-text-disabled hover:text-danger border-0 bg-transparent cursor-pointer"
-                onClick={async () => {
-                  const yes = await confirm('Remove all effects from this layer?', 'Clear Effects', { confirmLabel: 'Clear All' });
-                  if (yes) removeAllEffects(layer.id);
-                }} title="Remove all">Clear</button>
-            </div>
-          )}
-        </div>
-      </div>
+          </div>
+          <div className="flex items-center gap-2 px-1 pt-1.5 border-t border-border/30">
+            <button className="text-[10px] text-text-disabled hover:text-text-secondary border-0 bg-transparent cursor-pointer"
+              onClick={() => copyEffects(layer.id)} title="Copy effects">Copy</button>
+            <span className="text-text-disabled text-[10px]">·</span>
+            <button className="text-[10px] text-text-disabled hover:text-text-secondary border-0 bg-transparent cursor-pointer"
+              onClick={() => pasteEffects(layer.id)} title="Paste effects">Paste</button>
+            <span className="text-text-disabled text-[10px]">·</span>
+            <button className="text-[10px] text-text-disabled hover:text-danger border-0 bg-transparent cursor-pointer"
+              onClick={async () => {
+                const yes = await confirm('Remove all effects from this layer?', 'Clear Effects', { confirmLabel: 'Clear All' });
+                if (yes) removeAllEffects(layer.id);
+              }} title="Remove all">Clear</button>
+          </div>
+        </>
+      )}
     </Section>
   );
 };
@@ -625,64 +599,3 @@ function ParamInput({ param, onChange }: { param: EffectParameter; onChange: (va
   }
 }
 
-/** Dropdown for adding effects with preset support */
-const AddEffectDropdown: React.FC<{
-  categories: EffectCategory[];
-  presets: { id: string; name: string; effectType: EffectType }[];
-  onSelect: (type: EffectType, presetId?: string) => void;
-  onClose: () => void;
-}> = ({ categories, presets, onSelect, onClose }) => {
-  const [search, setSearch] = useState('');
-  const [showPresets, setShowPresets] = useState(false);
-  const hasPresets = presets.length > 0;
-
-  return (
-    <div className="absolute top-full left-0 mt-1 min-w-[220px] bg-panel border border-border rounded-md shadow-dropdown z-50 py-1" onMouseLeave={onClose}>
-      <div className="px-2 pb-1">
-        <input type="text" placeholder="Search effects..." value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full text-ui-xs px-2 py-1 outline-none focus:border-accent"
-          style={{
-            height: 22, background: 'var(--color-input-bg)',
-            border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)',
-            color: 'var(--color-text-primary)',
-          }}
-          autoFocus />
-      </div>
-
-      {hasPresets && (
-        <>
-          <div className="px-2 py-0.5 flex items-center gap-1 cursor-pointer text-text-secondary hover:text-text-primary"
-            onClick={() => setShowPresets(!showPresets)}>
-            <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" className={`transition-transform ${showPresets ? 'rotate-90' : ''}`}>
-              <polygon points="2,0 6,4 2,8" />
-            </svg>
-            <span className="text-[9px] uppercase tracking-wider text-text-disabled">Presets</span>
-          </div>
-          {showPresets && (
-            <div className="mb-1">
-              {presets.filter((p) => !search.trim() || p.name.toLowerCase().includes(search.toLowerCase())).map((preset) => (
-                <button key={preset.id}
-                  className="w-full text-left px-3 py-0.5 text-ui-xs text-accent hover:bg-panel-hover border-0 bg-transparent cursor-pointer"
-                  onClick={() => onSelect(preset.effectType, preset.id)}>
-                  {preset.name}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="border-t border-border my-1" />
-        </>
-      )}
-
-      {categories.filter((cat) => !search.trim() || effectRegistry.listByCategory(cat).some((d) => d.displayName.toLowerCase().includes(search.toLowerCase()))).map((cat) => (
-        <div key={cat}>
-          <div className="px-2 py-0.5 text-[9px] text-text-disabled uppercase tracking-wider">{cat}</div>
-          {effectRegistry.listByCategory(cat).filter((d) => !search.trim() || d.displayName.toLowerCase().includes(search.toLowerCase())).map((def) => (
-            <button key={def.type} className="w-full text-left px-3 py-1 text-ui-xs text-text-secondary hover:bg-panel-hover border-0 bg-transparent cursor-pointer"
-              onClick={() => onSelect(def.type)}>{def.displayName}</button>
-          ))}
-        </div>
-      ))}
-    </div>
-  );
-};

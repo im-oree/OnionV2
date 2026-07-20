@@ -14,7 +14,7 @@ interface Props {
 export const LayerSection: React.FC<Props> = ({ layer, compId }) => {
   return (
     <Section label="Layer">
-      <PropRow label="Blend">
+      <PropRow label="Blend" animatable="blendMode" layer={layer} compId={compId}>
         <SelectInput
           value={layer.blendMode}
           onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { blendMode: v as any })}
@@ -27,12 +27,12 @@ export const LayerSection: React.FC<Props> = ({ layer, compId }) => {
         />
       </PropRow>
       <PropRow label="Start">
-        <NumberInput value={layer.startFrame} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { startFrame: v })} min={0} step={1} precision={0} />
+        <NumberInput value={layer.startFrame} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { startFrame: v })} step={1} precision={0} />
       </PropRow>
       <PropRow label="End">
-        <NumberInput value={layer.endFrame} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { endFrame: v })} min={0} step={1} precision={0} />
+        <NumberInput value={layer.endFrame} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { endFrame: v })} step={1} precision={0} />
       </PropRow>
-      <PropRow label="Visible">
+      <PropRow label="Visible" animatable="visible" layer={layer} compId={compId}>
         <CheckboxInput value={layer.visible} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { visible: v })} />
       </PropRow>
       <PropRow label="Locked">

@@ -7,6 +7,7 @@
  */
 import React, { useEffect, useState } from 'react';
 import { useToolStore } from '../../../state/toolStore';
+import { TOOLS } from '../../../config/constants';
 
 interface PickWhipState {
   active: boolean;

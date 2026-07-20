@@ -29,6 +29,6 @@ export const helpMenu: MenuItemDefinition[] = [
   { id: 'help.sep2', label: '', divider: true, onClick: () => {} },
   {
     id: 'help.reportBug', label: 'Report a Bug...',
-    onClick: () => window.open('https://github.com/onion/issues', '_blank'),
+    onClick: () => window.open('https://github.com/im-oree/OnionV2/issues', '_blank'),
   },
 ];

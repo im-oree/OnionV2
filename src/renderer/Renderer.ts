@@ -284,6 +284,7 @@ export class Renderer {
 
       this.layerSync.updateFrameVisibility(frame);
       this._processNestedComps(comp);
+      this.effectsRenderer.setCurrentTime(effectiveTime);
       this._processEffects();
 
       // Adjustment layers: composite everything-below through their effect chains.

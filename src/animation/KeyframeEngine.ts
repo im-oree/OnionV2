@@ -119,7 +119,7 @@ export class KeyframeEngine {
     layerId: string,
     property: string,
     frame: number,
-  ): { value: number | number[]; inKeyframe: boolean } {
+  ): { value: number | number[] | string | boolean; inKeyframe: boolean } {
     const keyframes = this._data.get(layerId)?.get(property);
     if (!keyframes || keyframes.length === 0) {
       return { value: 0, inKeyframe: false };
@@ -181,17 +181,58 @@ export class KeyframeEngine {
 
 // ── Pure helpers ─────────────────────────────────────────
 
-function interpolateValue(a: number | number[], b: number | number[], t: number): number | number[] {
+function interpolateValue(
+  a: number | number[] | string | boolean,
+  b: number | number[] | string | boolean,
+  t: number,
+): number | number[] | string | boolean {
+  // Numbers: linear
   if (typeof a === 'number' && typeof b === 'number') {
     return lerp(a, b, t);
   }
+  // Arrays (vector2, vector3): component-wise linear
   if (Array.isArray(a) && Array.isArray(b)) {
     const maxLen = Math.min(a.length, b.length);
     const result: number[] = [];
     for (let i = 0; i < maxLen; i++) result.push(lerp(a[i], b[i], t));
     return result;
   }
+  // Hex colors: RGB linear interpolation
+  if (typeof a === 'string' && typeof b === 'string' && isHexColor(a) && isHexColor(b)) {
+    return lerpHex(a, b, t);
+  }
+  // Booleans / selects / other strings: step at t=0.5
   return t < 0.5 ? a : b;
+}
+
+function isHexColor(s: string): boolean {
+  return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(s);
+}
+
+function lerpHex(a: string, b: string, t: number): string {
+  const pa = parseHex(a);
+  const pb = parseHex(b);
+  const r = Math.round(pa.r + (pb.r - pa.r) * t);
+  const g = Math.round(pa.g + (pb.g - pa.g) * t);
+  const bl = Math.round(pa.b + (pb.b - pa.b) * t);
+  const alphaOut =
+    pa.a !== undefined || pb.a !== undefined
+      ? Math.round((pa.a ?? 255) + ((pb.a ?? 255) - (pa.a ?? 255)) * t)
+      : undefined;
+  const hex = (n: number) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0');
+  return alphaOut !== undefined
+    ? `#${hex(r)}${hex(g)}${hex(bl)}${hex(alphaOut)}`
+    : `#${hex(r)}${hex(g)}${hex(bl)}`;
+}
+
+function parseHex(hex: string): { r: number; g: number; b: number; a?: number } {
+  let s = hex.slice(1);
+  if (s.length === 3) s = s.split('').map(c => c + c).join('');
+  const r = parseInt(s.slice(0, 2), 16);
+  const g = parseInt(s.slice(2, 4), 16);
+  const b = parseInt(s.slice(4, 6), 16);
+  const a = s.length === 8 ? parseInt(s.slice(6, 8), 16) : undefined;
+  return { r, g, b, a };
 }
 
 /**

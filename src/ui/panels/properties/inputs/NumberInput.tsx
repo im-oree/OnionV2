@@ -9,9 +9,14 @@ interface NumberInputProps {
   precision?: number;
   label?: string;
   disabled?: boolean;
+  /** Hard clamp typed input to [min,max]. Default: false (soft — only
+   *  drag/wheel/arrow-keys respect min/max as hints; keyboard entry is free). */
+  hardClamp?: boolean;
 }
 
-const clamp = (v: number, min?: number, max?: number): number => {
+/** Clamp during interactive change (drag/wheel/arrows). Keyboard entry
+ *  bypasses this so users can type any value including negatives. */
+const softClamp = (v: number, min?: number, max?: number): number => {
   if (min !== undefined && v < min) return min;
   if (max !== undefined && v > max) return max;
   return v;
@@ -23,7 +28,8 @@ const roundTo = (v: number, p: number): number => {
 };
 
 export const NumberInput: React.FC<NumberInputProps> = ({
-  value, onChange, min, max, step = 1, precision = 2, label, disabled = false,
+  value, onChange, min, max, step = 1, precision = 2, label,
+  disabled = false, hardClamp = false,
 }) => {
   const [localValue, setLocalValue] = useState(String(value));
   const [editing, setEditing] = useState(false);
@@ -38,11 +44,22 @@ export const NumberInput: React.FC<NumberInputProps> = ({
     if (!editing) setLocalValue(String(roundTo(value, precision)));
   }, [value, precision, editing]);
 
-  const commitValue = useCallback((v: number) => {
-    const clamped = clamp(v, min, max);
+  /** Commit from interactive input (drag / wheel / arrow keys).
+   *  Applies soft clamp so drag hints don't runaway. */
+  const commitInteractive = useCallback((v: number) => {
+    const clamped = softClamp(v, min, max);
     onChange(clamped);
     setLocalValue(String(roundTo(clamped, precision)));
   }, [onChange, min, max, precision]);
+
+  /** Commit from a typed / pasted value.
+   *  Passes through as-is unless hardClamp is on. Users can type any
+   *  number including negatives and values past min/max. */
+  const commitTyped = useCallback((v: number) => {
+    const finalV = hardClamp ? softClamp(v, min, max) : v;
+    onChange(finalV);
+    setLocalValue(String(roundTo(finalV, precision)));
+  }, [onChange, min, max, precision, hardClamp]);
 
   /**
    * Scrub-to-change with drag detection:
@@ -63,7 +80,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
       const onMove = (ev: MouseEvent) => {
         const delta = ev.clientX - scrubStart.current.x;
         const multiplier = ev.shiftKey ? 0.05 : 0.5;
-        commitValue(scrubStart.current.val + delta * step * multiplier);
+        commitInteractive(scrubStart.current.val + delta * step * multiplier);
       };
       const onUp = () => {
         isScrubbing.current = false;
@@ -92,7 +109,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
       }
       if (!dragging) return;
       const multiplier = ev.shiftKey ? 0.05 : 0.5;
-      commitValue(startVal + delta * step * multiplier);
+      commitInteractive(startVal + delta * step * multiplier);
     };
     const handleMouseUp = () => {
       window.removeEventListener('mousemove', handleMouseMove);
@@ -107,28 +124,30 @@ export const NumberInput: React.FC<NumberInputProps> = ({
     };
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
-  }, [value, step, commitValue, disabled]);
+  }, [value, step, commitInteractive, disabled]);
 
   // Non-passive wheel listener via useEffect to allow preventDefault()
   useEffect(() => {
     const el = inputRef.current;
     if (!el || disabled) return;
     const onWheel = (e: WheelEvent) => {
+      // Only scrub with wheel while focused, so page scrolling isn't hijacked.
+      if (document.activeElement !== el) return;
       e.preventDefault();
       const delta = e.deltaY < 0 ? step : -step;
       const multiplier = e.shiftKey ? 10 : 1;
-      commitValue(valueRef.current + delta * multiplier);
+      commitInteractive(valueRef.current + delta * multiplier);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [step, commitValue, disabled]);
+  }, [step, commitInteractive, disabled]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') { inputRef.current?.blur(); return; }
-    if (e.key === 'ArrowUp')   { e.preventDefault(); commitValue(value + step * (e.shiftKey ? 10 : 1)); }
-    if (e.key === 'ArrowDown') { e.preventDefault(); commitValue(value - step * (e.shiftKey ? 10 : 1)); }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); commitInteractive(value + step * (e.shiftKey ? 10 : 1)); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); commitInteractive(value - step * (e.shiftKey ? 10 : 1)); }
     if (e.key === 'Escape')    { setLocalValue(String(roundTo(value, precision))); inputRef.current?.blur(); }
-  }, [value, step, commitValue, precision]);
+  }, [value, step, commitInteractive, precision]);
 
   return (
     <div className="flex items-center gap-2 min-w-0">
@@ -162,7 +181,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
         onBlur={() => {
           setEditing(false); setFocused(false);
           const parsed = parseFloat(localValue);
-          if (!isNaN(parsed)) commitValue(parsed);
+          if (!isNaN(parsed)) commitTyped(parsed);
           else setLocalValue(String(roundTo(value, precision)));
         }}
         onKeyDown={handleKeyDown}

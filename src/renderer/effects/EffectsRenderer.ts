@@ -23,6 +23,12 @@ export class EffectsRenderer {
   private privateScene: THREE.Scene;
   private layerCam: THREE.OrthographicCamera;
   private enabledEffects = new Set<string>();
+  private _currentTime = 0;
+
+  /** Called by Renderer.beforeRender once per frame before any renderLayer calls. */
+  setCurrentTime(t: number): void {
+    this._currentTime = t;
+  }
 
   constructor(renderer: THREE.WebGLRenderer) {
     this.renderer = renderer;
@@ -73,7 +79,10 @@ export class EffectsRenderer {
     if (!chain) return false;
 
     const effects = useEffectsStore.getState().effectsByLayer[layerId] ?? [];
-    const active = effects.filter((e) => e.enabled);
+    // Only LOCAL-space effects are applied here in the pre-transform pass.
+    // Screen-space effects are applied AFTER the layer is composited to the
+    // scene, by the AdjustmentCompositor's screen-space pass.
+    const active = effects.filter((e) => e.enabled && (e.space ?? 'local') === 'local');
     if (active.length === 0) return false;
 
     const w = Math.max(1, Math.ceil(layerWidth));
@@ -128,7 +137,7 @@ export class EffectsRenderer {
       this.renderer.clearColor();
       this.renderer.render(this.privateScene, this.layerCam);
 
-      chain.setSource(layerFbo.texture, w, h);
+      chain.setSource(layerFbo.texture, w, h, this._currentTime);
       const resultTexture = chain.render(active);
 
       if (!resultTexture) return false;
@@ -219,6 +228,19 @@ export class EffectsRenderer {
 
   hasEffects(layerId: string): boolean {
     return this.enabledEffects.has(layerId);
+  }
+
+  /** Get effects for a layer that should run AFTER the layer is composited (screen space). */
+  getScreenSpaceEffects(layerId: string) {
+    const effects = useEffectsStore.getState().effectsByLayer[layerId] ?? [];
+    return effects.filter((e) => e.enabled && (e.space ?? 'local') === 'screen');
+  }
+
+  /** True if the layer has any active screen-space effects. */
+  hasScreenSpaceEffects(layerId: string): boolean {
+    if (!this.enabledEffects.has(layerId)) return false;
+    const effects = useEffectsStore.getState().effectsByLayer[layerId] ?? [];
+    return effects.some((e) => e.enabled && (e.space ?? 'local') === 'screen');
   }
 
   dispose(): void {

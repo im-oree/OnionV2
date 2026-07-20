@@ -42,6 +42,9 @@ export class EffectChain {
   private _scratchTargets: THREE.WebGLRenderTarget[] = [];
   private _scratchInUse = 0;
 
+  /** Current composition time in seconds — injected via setSource for animated effects */
+  private currentTime = 0;
+
   private fullscreenScene: THREE.Scene | null = null;
   private fullscreenCamera: THREE.OrthographicCamera | null = null;
   private fullscreenQuad: THREE.Mesh | null = null;
@@ -51,10 +54,11 @@ export class EffectChain {
   }
 
   /** Set the source texture to process through the chain */
-  setSource(texture: THREE.Texture, width: number, height: number): void {
+  setSource(texture: THREE.Texture, width: number, height: number, time: number = 0): void {
     this.sourceTexture = texture;
     this.layerWidth = Math.max(1, Math.ceil(width));
     this.layerHeight = Math.max(1, Math.ceil(height));
+    this.currentTime = time;
   }
 
   /** Render the effect stack. Returns a persistent final texture. */
@@ -104,6 +108,7 @@ export class EffectChain {
             writeTarget: write,
             width: w,
             height: h,
+            currentTime: this.currentTime,
             getMaterial: (subKey, fragmentShader, uniforms) =>
               this._getMaterialForKey(
                 `${effect.type}_${effect.id}_${subKey}`,
@@ -132,6 +137,9 @@ export class EffectChain {
           }
           if ((mat.uniforms as any).uResolution?.value?.set) {
             (mat.uniforms as any).uResolution.value.set(w, h);
+          }
+          if ((mat.uniforms as any).uTime) {
+            (mat.uniforms as any).uTime.value = this.currentTime;
           }
           this._renderMaterialToTarget(mat, write, w, h);
         } else {
@@ -321,16 +329,23 @@ export class EffectChain {
       const uniform = (mat.uniforms as any)[param.uniform];
       if (!uniform) continue;
       const val = param.value;
-      // Vector2 params come as [number, number] → set to THREE.Vector2
       if (Array.isArray(val) && uniform.value?.set) {
         uniform.value.set(val[0], val[1]);
       } else if (typeof val === 'string' && param.type === 'color') {
-        // Color strings → set as THREE.Color
-        if (uniform.value?.set) uniform.value.set(val);
-        else uniform.value = val;
+        if (uniform.value instanceof THREE.Color) {
+          uniform.value.set(val);
+        } else {
+          uniform.value = new THREE.Color(val);
+        }
+      } else if (typeof val === 'boolean') {
+        uniform.value = val;
       } else {
         uniform.value = val;
       }
+    }
+    // Always sync uTime so animated effects work.
+    if ((mat.uniforms as any).uTime !== undefined) {
+      (mat.uniforms as any).uTime.value = this.currentTime;
     }
   }
 
@@ -353,6 +368,7 @@ export class EffectChain {
     const uniforms: Record<string, THREE.IUniform> = {
       uTexture: { value: null },
       uResolution: { value: new THREE.Vector2(this.layerWidth, this.layerHeight) },
+      uTime: { value: this.currentTime },
     };
     for (const param of instance.parameters) {
       if (param.type === 'color') {

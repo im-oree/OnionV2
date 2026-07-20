@@ -5,13 +5,29 @@
 
 /** Unique effect type identifier */
 export type EffectType =
-  | 'gaussianBlur' | 'boxBlur' | 'directionalBlur' | 'radialBlur'
-  | 'colorCorrection' | 'levels' | 'hueSaturation' | 'tint' | 'invert' | 'threshold' | 'fill'
-  | 'glow' | 'dropShadow'
-  | 'wave'
-  | 'gradient';
+  // Blur
+  | 'gaussianBlur' | 'boxBlur' | 'directionalBlur' | 'radialBlur' | 'sharpen'
+  | 'motionBlur' | 'lensBlur'
+  // Color
+  | 'colorCorrection' | 'levels' | 'hueSaturation' | 'tint' | 'invert'
+  | 'threshold' | 'fill' | 'chromaKey' | 'tritone' | 'colorBalance'
+  | 'exposure' | 'vibrance' | 'curves' | 'posterize'
+  | 'duotone' | 'sepia' | 'solarize'
+  // Stylize
+  | 'glow' | 'dropShadow' | 'vignette' | 'chromaticAberration' | 'bevelAlpha'
+  | 'cartoon' | 'glitch' | 'edgeDetect' | 'innerGlow' | 'outerGlow' | 'stroke'
+  | 'filmGrain' | 'feedback' | 'scanLines' | 'badTv' | 'timeEcho'
+  | 'crossHatch' | 'halftone' | 'asciiArt' | 'emboss'
+  // Distort
+  | 'wave' | 'bulge' | 'twirl' | 'ripple' | 'turbulentDisplace'
+  | 'lensDistortion' | 'pixelate' | 'mirror' | 'kaleidoscope'
+  | 'ccSphere' | 'displacementMap'
+  // Generate
+  | 'gradient' | 'noise' | 'fractalNoise' | 'motionTile'
+  // Transition
+  | 'radialWipe';
 
-export type EffectCategory = 'blur' | 'color' | 'stylize' | 'distort' | 'generate';
+export type EffectCategory = 'blur' | 'color' | 'stylize' | 'distort' | 'generate' | 'transition';
 
 /** Runtime parameter value for a single effect parameter */
 export interface EffectParameter {
@@ -28,6 +44,8 @@ export interface EffectParameter {
   uniform: string;
 }
 
+export type EffectSpace = 'local' | 'screen';
+
 /** A single effect instance attached to a layer */
 export interface EffectInstance {
   id: string;
@@ -36,6 +54,10 @@ export interface EffectInstance {
   enabled: boolean;
   collapsed: boolean;
   parameters: EffectParameter[];
+  /** Coordinate space the effect operates in. Defaults to 'local'.
+   *  - local:  applied to source pixels BEFORE transform. Blur radius = source pixels.
+   *  - screen: applied to layer's composited output AFTER transform. Blur radius = screen pixels. */
+  space?: EffectSpace;
 }
 
 /** Registered effect metadata */

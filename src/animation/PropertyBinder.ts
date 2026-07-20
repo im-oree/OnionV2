@@ -144,6 +144,19 @@ export class PropertyBinder {
           continue;
         }
 
+        if (path.startsWith('data.')) {
+          const dataParts = path.slice('data.'.length).split('.');
+          const cs = useCompositionStore.getState();
+          const currentData: any = (layer as any).data ?? {};
+          const setDeep = (o: any, p: string[], v: any): any => {
+            if (p.length === 0) return v;
+            const [h, ...r] = p;
+            return { ...(o ?? {}), [h]: r.length === 0 ? v : setDeep(o?.[h], r, v) };
+          };
+          cs.updateLayer(compId, layer.id, { data: setDeep(currentData, dataParts, val) }, true);
+          continue;
+        }
+
         if (path === 'transform.position' && Array.isArray(val)) {
           override.position = { x: val[0], y: val[1] }; touched = true;
         } else if (path === 'transform.position.x') {

@@ -15,14 +15,14 @@ export const SolidSection: React.FC<Props> = ({ layer, compId }) => {
   if (!data) return null;
   return (
     <Section label="Solid">
-      <PropRow label="Color">
+      <PropRow label="Color" animatable="data.color" layer={layer} compId={compId}>
         <ColorInput value={data.color} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, color: v } })} />
       </PropRow>
-      <PropRow label="Width">
-        <NumberInput value={data.width} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, width: v } })} min={1} step={1} precision={0} />
+      <PropRow label="Width" animatable="data.width" layer={layer} compId={compId}>
+        <NumberInput value={data.width} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, width: v } })} step={1} precision={0} />
       </PropRow>
-      <PropRow label="Height">
-        <NumberInput value={data.height} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, height: v } })} min={1} step={1} precision={0} />
+      <PropRow label="Height" animatable="data.height" layer={layer} compId={compId}>
+        <NumberInput value={data.height} onChange={(v) => useCompositionStore.getState().updateLayer(compId, layer.id, { data: { ...data, height: v } })} step={1} precision={0} />
       </PropRow>
     </Section>
   );
