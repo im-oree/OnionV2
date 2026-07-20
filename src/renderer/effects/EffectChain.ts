@@ -86,14 +86,14 @@ export class EffectChain {
       let write = this.targetB;
 
       for (const effect of enabled) {
-        const def = effectRegistry.get(effect.type);
-        if (!def || def.passes === 0) continue;
-
         const module = effectShaderRegistry.get(effect.type);
         if (!module) {
           console.warn(`[EffectChain] No shader module registered for ${effect.type}`);
           continue;
         }
+
+        const def = effectRegistry.get(effect.type);
+        if (!def || def.passes === 0) continue;
 
         if (module.customRender) {
           // Effect provides its own render logic (e.g. separable blur).
