@@ -34,15 +34,24 @@ export class HitTester {
 
     // Collect meshes by iterating layer groups (groups are named by layerId).
     // Iterate in reverse order so topmost (last drawn) is tested first.
+    // When effects are active, the original mesh is hidden and an effect quad
+    // (${id}_effect_result) replaces it visually. We must check for both.
     const meshes: THREE.Mesh[] = [];
     for (let i = layerIds.length - 1; i >= 0; i--) {
       const id = layerIds[i];
       const group = this.sceneManager.layerGroup.getObjectByName(id);
-      if (group) {
-        const mesh = group.getObjectByName(`${id}_mesh`);
-        if (mesh instanceof THREE.Mesh && mesh.visible && mesh.parent?.visible !== false) {
-          meshes.push(mesh);
-        }
+      if (!group) continue;
+
+      // Prefer the visible mesh: either the original or the effect quad
+      const originalMesh = group.getObjectByName(`${id}_mesh`);
+      const effectQuad = group.getObjectByName(`${id}_effect_result`);
+
+      if (effectQuad instanceof THREE.Mesh && effectQuad.visible && effectQuad.parent?.visible !== false) {
+        // Effect is active — use the effect quad for hit-testing
+        meshes.push(effectQuad);
+      } else if (originalMesh instanceof THREE.Mesh && originalMesh.visible && originalMesh.parent?.visible !== false) {
+        // No effects — use the original mesh
+        meshes.push(originalMesh);
       }
     }
 
@@ -54,7 +63,12 @@ export class HitTester {
 
     const hit = intersects[0];
     const name = hit.object.name;
-    const layerId = name.endsWith('_mesh') ? name.slice(0, -5) : name;
+    // Handle both original mesh (${id}_mesh) and effect quad (${id}_effect_result)
+    const layerId = name.endsWith('_effect_result')
+      ? name.slice(0, -('_effect_result'.length))
+      : name.endsWith('_mesh')
+        ? name.slice(0, -('_mesh'.length))
+        : name;
 
     return {
       layerId,

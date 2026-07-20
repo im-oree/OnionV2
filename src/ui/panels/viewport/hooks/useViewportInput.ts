@@ -13,6 +13,8 @@ import type { Layer, CompData } from '../../../../types/layer';
 import { motionSketch } from '../../properties/motionSketch';
 import { usePenToolStore } from '../../../../state/penToolStore';
 import { computePathBounds } from '../../../../types/layer';
+import { setPickWhipState, getPickWhipState, clearPickWhip } from '../PickWhipOverlay';
+import { useNotificationStore } from '../../../../state/notificationStore';
 
 function genId(): string {
   return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -583,6 +585,102 @@ export function useViewportInput({
         boxStart.current = { x: mouseX, y: mouseY };
         isDrawing.current = true;
         drawSvg = createOverlay('22');
+        return;
+      }
+
+      // Pick Whip tool — drag from child to parent
+      if (tool === (TOOLS.PICK_WHIP as ToolId) && cmRef.current) {
+        const cm = cmRef.current;
+        const ht = htRef.current;
+        if (!ht) return;
+
+        const compState = useCompositionStore.getState();
+        const compId = compState.activeCompositionId;
+        if (!compId) return;
+        const comp = compState.compositions.find((c) => c.id === compId);
+        if (!comp) return;
+
+        // Find the layer under cursor to start the whip from
+        const visibleIds = [...comp.layers]
+          .filter((l) => l.visible && !l.locked)
+          .sort((a, b) => b.zIndex - a.zIndex)
+          .map((l) => l.id);
+        const hit = ht.hitTest(mouseX, mouseY, visibleIds);
+        if (!hit) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+        document.body.style.cursor = 'crosshair';
+
+        // Start pick whip from this layer's screen position
+        const childLayer = comp.layers.find((l) => l.id === hit.layerId);
+        if (!childLayer) return;
+        const childScreen = cm.worldToScreen(childLayer.transform.position.x, childLayer.transform.position.y);
+
+        setPickWhipState({
+          active: true,
+          childId: hit.layerId,
+          startX: childScreen.x,
+          startY: childScreen.y,
+          currentX: mouseX,
+          currentY: mouseY,
+          hoveredParentId: null,
+        });
+        requestRender?.();
+
+        const whipMove = (ev: MouseEvent) => {
+          const r = el.getBoundingClientRect();
+          const mx = ev.clientX - r.left;
+          const my = ev.clientY - r.top;
+
+          // Hit-test to find potential parent under cursor
+          let hoveredId: string | null = null;
+          const hit2 = ht.hitTest(mx, my, visibleIds.filter((id) => id !== hit.layerId));
+          if (hit2) hoveredId = hit2.layerId;
+
+          setPickWhipState({ currentX: mx, currentY: my, hoveredParentId: hoveredId });
+          requestRender?.();
+        };
+
+        const whipUp = (ev: MouseEvent) => {
+          document.removeEventListener('mousemove', whipMove);
+          document.removeEventListener('mouseup', whipUp);
+          document.body.style.cursor = '';
+
+          const state = getPickWhipState();
+          if (state.hoveredParentId && state.hoveredParentId !== state.childId) {
+            // Validate: don't allow circular parenting
+            const cs = useCompositionStore.getState();
+            const c = cs.compositions.find((c) => c.id === compId);
+            if (c) {
+              // Check for circular reference
+              let current = state.hoveredParentId;
+              let isCircular = false;
+              while (current) {
+                if (current === state.childId) { isCircular = true; break; }
+                const layer = c.layers.find((l) => l.id === current);
+                current = layer?.parentId ?? null;
+              }
+              if (!isCircular) {
+                cs.updateLayer(compId, state.childId, { parentId: state.hoveredParentId });
+                useNotificationStore.getState().addNotification({
+                  type: 'success', message: `Parented to ${c.layers.find((l) => l.id === state.hoveredParentId)?.name ?? 'layer'}`,
+                  autoDismiss: 2000,
+                });
+              } else {
+                useNotificationStore.getState().addNotification({
+                  type: 'warning', message: 'Cannot parent — circular reference detected',
+                  autoDismiss: 2500,
+                });
+              }
+            }
+          }
+          clearPickWhip();
+          requestRender?.();
+        };
+
+        document.addEventListener('mousemove', whipMove);
+        document.addEventListener('mouseup', whipUp);
         return;
       }
 

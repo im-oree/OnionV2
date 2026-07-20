@@ -138,12 +138,8 @@ export class EffectsRenderer {
       // Use the ORIGINAL mesh's geometry size so the effect quad
       // occupies exactly the same rectangle as the source layer.
       const meshGeo = layerMesh.geometry as THREE.PlaneGeometry;
-      let geoW = w;
-      let geoH = h;
-      if (meshGeo && meshGeo.parameters) {
-        geoW = meshGeo.parameters.width || w;
-        geoH = meshGeo.parameters.height || h;
-      }
+      const geoW = (meshGeo.parameters?.width || w);
+      const geoH = (meshGeo.parameters?.height || h);
 
       if (!quad) {
         const geo = new THREE.PlaneGeometry(geoW, geoH);
@@ -165,8 +161,8 @@ export class EffectsRenderer {
       } else {
         const qgeo = quad.geometry as THREE.PlaneGeometry;
         if (
-          Math.abs(qgeo.parameters.width - geoW) > 0.5 ||
-          Math.abs(qgeo.parameters.height - geoH) > 0.5
+          Math.abs((qgeo.parameters?.width ?? 0) - geoW) > 0.5 ||
+          Math.abs((qgeo.parameters?.height ?? 0) - geoH) > 0.5
         ) {
           quad.geometry.dispose();
           quad.geometry = new THREE.PlaneGeometry(geoW, geoH);

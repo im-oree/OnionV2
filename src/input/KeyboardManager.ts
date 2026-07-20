@@ -68,6 +68,7 @@ export function registerAllShortcuts(): void {
   shortcutRegistry.register({ id: 'tool.ellipse', key: 'e', shift: true, context: 'global', handler: () => useToolStore.getState().setActiveTool('shapeEllipse'), remappable: true });
   shortcutRegistry.register({ id: 'tool.pen', key: 'p', context: 'global', handler: () => useToolStore.getState().setActiveTool('pen'), remappable: true });
   shortcutRegistry.register({ id: 'tool.text', key: 't', context: 'global', handler: () => useToolStore.getState().setActiveTool('text'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.pickWhip', key: 'w', context: 'global', handler: () => useToolStore.getState().setActiveTool('pickWhip'), remappable: true });
 
   // UI
   shortcutRegistry.register({

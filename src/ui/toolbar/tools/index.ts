@@ -25,4 +25,5 @@ export const TOOL_GROUPS: ToolDefinition[][] = [
    { id:TOOLS.TEXT as ToolId, icon:'text', label:'Text', shortcut:'T' },
    { id:TOOLS.GRADIENT as ToolId, icon:'gradient', label:'Gradient', shortcut:'Shift+G' }],
   [{ id:TOOLS.HAND as ToolId, icon:'hand', label:'Hand', shortcut:'H' }],
+  [{ id:TOOLS.PICK_WHIP as ToolId, icon:'link', label:'Pick Whip', shortcut:'W' }],
 ];

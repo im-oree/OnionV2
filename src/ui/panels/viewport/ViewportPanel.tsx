@@ -20,6 +20,7 @@ import { CompBoundsCSS } from './CompBoundsCSS';
 import { OnionSkinOverlay } from './OnionSkinOverlay';
 import { MotionPathOverlay } from './MotionPathOverlay';
 import { PenToolOverlay } from './PenToolOverlay';
+import { PickWhipOverlay } from './PickWhipOverlay';
 import { ShapeDrawOverlay } from './ShapeDrawOverlay';
 import { ShapeContextToolbar } from './ShapeContextToolbar';
 import { assetManager } from '../../../storage/AssetManager';
@@ -223,6 +224,7 @@ export const ViewportPanel: React.FC = () => {
       {comp&&<ShapeDrawOverlay cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
       {comp&&<MotionPathOverlay cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
       {comp&&<OnionSkinOverlay cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
+      {comp&&<PickWhipOverlay/>}
 
       {/* Shape/Text context toolbar — floats above viewport */}
       {comp&&<ShapeContextToolbar/>}
