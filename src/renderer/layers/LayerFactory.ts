@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Layer, SolidData, ShapeData, TextData, ImageData, VideoData, CompData } from '../../types/layer';
+import type { Layer, SolidData, ShapeData, TextData, ImageData, VideoData, AudioData, CompData } from '../../types/layer';
 import type { SceneManager } from '../SceneManager';
 import type { BaseLayerRenderer } from './BaseLayerRenderer';
 import { SolidLayerRenderer } from './SolidLayerRenderer';
@@ -8,6 +8,7 @@ import { TextLayerRenderer } from './TextLayerRenderer';
 import { ImageLayerRenderer } from './ImageLayerRenderer';
 import { VideoLayerRenderer } from './VideoLayerRenderer';
 import { CompLayerRenderer } from './CompLayerRenderer';
+import { AdjustmentLayerRenderer } from './AdjustmentLayerRenderer';
 
 export class LayerFactory {
   private sceneManager: SceneManager;
@@ -43,6 +44,22 @@ export class LayerFactory {
       case 'video': {
         const data = layer.data as VideoData;
         renderer = new VideoLayerRenderer(layer.id, data.assetId, data.naturalWidth, data.naturalHeight);
+        break;
+      }
+      case 'audio': {
+        // Audio layers have no visual representation — return a hidden solid
+        renderer = new SolidLayerRenderer(layer.id, { color: '#000000', width: 1, height: 1 });
+        renderer.setVisible(false);
+        return renderer;
+      }
+      case 'adjustment': {
+        // Adjustment layers are invisible — their effect output is composited
+        // by AdjustmentCompositor onto a fullscreen quad.
+        renderer = new AdjustmentLayerRenderer(
+          layer.id,
+          this.sceneManager.compWidth ?? 1920,
+          this.sceneManager.compHeight ?? 1080,
+        );
         break;
       }
       case 'comp': {

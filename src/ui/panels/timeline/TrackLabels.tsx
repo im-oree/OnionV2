@@ -21,10 +21,37 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
   layers, expandedLayers, onToggleExpand, propertyPaths, currentFrame: _cf, compId,
 }) => {
   const selectedIds = useSelectionStore((s) => s.selected.filter((x) => x.type === 'layer').map((x) => x.id));
+  const selectedPropKeys = useSelectionStore((s) => s.selectedPropertyKeys);
 
   const handleSelect = useCallback((layerId: string) => {
     useSelectionStore.getState().select({ type: 'layer', id: layerId, compositionId: compId });
   }, [compId]);
+
+  // Build ordered list of property keys for range selection — only expanded layers
+  const allPropertyKeys = React.useMemo(() => {
+    const keys: string[] = [];
+    for (const layer of layers) {
+      if (!expandedLayers.has(layer.id)) continue;
+      for (const prop of propertyPaths) {
+        keys.push(`${layer.id}::${prop.path}`);
+      }
+    }
+    return keys;
+  }, [layers, propertyPaths, expandedLayers]);
+
+  const handlePropertySelect = useCallback((layerId: string, propPath: string, e: React.MouseEvent) => {
+    const key = `${layerId}::${propPath}`;
+    const store = useSelectionStore.getState();
+    if (e.shiftKey && store.lastSelectedPropertyKey) {
+      store.selectPropertyRange(store.lastSelectedPropertyKey, key, allPropertyKeys);
+    } else if (e.ctrlKey || e.metaKey) {
+      store.togglePropertyKey(key);
+    } else {
+      store.selectPropertyKey(key);
+    }
+    // Ensure the parent layer is also selected (additive) so the graph editor shows it
+    store.select({ type: 'layer', id: layerId, compositionId: compId }, true);
+  }, [allPropertyKeys, compId]);
 
   return (
     <div className="overflow-hidden">
@@ -96,21 +123,25 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
                 </div>
               </div>
 
-              {isExpanded && propertyPaths.map((prop) => (
+              {isExpanded && propertyPaths.map((prop) => {
+                const propKey = `${layer.id}::${prop.path}`;
+                const propSelected = selectedPropKeys.has(propKey);
+                return (
                 <div
                   key={prop.path}
                   className="flex items-center cursor-pointer transition-colors"
-                  onClick={() => handleSelect(layer.id)}
+                  onClick={(e) => handlePropertySelect(layer.id, prop.path, e)}
                   title={prop.path}
                   style={{
                     height: 22,
                     paddingLeft: 34, paddingRight: 8,
                     fontSize: 'var(--font-size-sm)',
-                    color: 'var(--color-text-tertiary)',
+                    background: propSelected ? 'rgba(74,142,255,0.15)' : 'transparent',
+                    color: propSelected ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
                     borderBottom: '1px solid var(--color-divider)',
                   }}
-                  onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'}
-                  onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+                  onMouseEnter={(e) => { if (!propSelected) (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; }}
+                  onMouseLeave={(e) => { if (!propSelected) (e.currentTarget as HTMLElement).style.background = propSelected ? 'rgba(74,142,255,0.15)' : 'transparent'; }}
                 >
                   <span className="truncate flex-1">{prop.label}</span>
                   <button
@@ -123,7 +154,8 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
                     </svg>
                   </button>
                 </div>
-              ))}
+                );
+              })}
             </div>
           );
         })}

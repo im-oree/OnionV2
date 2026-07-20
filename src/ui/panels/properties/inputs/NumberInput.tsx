@@ -44,32 +44,70 @@ export const NumberInput: React.FC<NumberInputProps> = ({
     setLocalValue(String(roundTo(clamped, precision)));
   }, [onChange, min, max, precision]);
 
+  /**
+   * Scrub-to-change with drag detection:
+   * - Label click → always scrub immediately
+   * - Input click (no drag) → focus input for manual typing
+   * - Input click + drag (>3px) → scrub value
+   */
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (disabled) return;
-    // If input is focused, let normal click/place-cursor work
-    if (focused && e.target === inputRef.current) return;
-    e.preventDefault();
-    inputRef.current?.blur();
-    document.body.style.cursor = 'ew-resize';
-    isScrubbing.current = true;
-    scrubStart.current = { x: e.clientX, val: value };
+    const isLabelClick = e.target !== inputRef.current;
+
+    // Label clicks always start scrub immediately
+    if (isLabelClick) {
+      e.preventDefault();
+      document.body.style.cursor = 'ew-resize';
+      isScrubbing.current = true;
+      scrubStart.current = { x: e.clientX, val: value };
+      const onMove = (ev: MouseEvent) => {
+        const delta = ev.clientX - scrubStart.current.x;
+        const multiplier = ev.shiftKey ? 0.05 : 0.5;
+        commitValue(scrubStart.current.val + delta * step * multiplier);
+      };
+      const onUp = () => {
+        isScrubbing.current = false;
+        document.body.style.cursor = '';
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      return;
+    }
+
+    // Input clicks: drag-detect (click=type, drag=scrub)
+    const startX = e.clientX;
+    const startVal = value;
+    let dragging = false;
+
     const handleMouseMove = (ev: MouseEvent) => {
-      if (!isScrubbing.current) return;
-      const delta = ev.clientX - scrubStart.current.x;
-      // Shift = fine control (1/10th), normal = full step per pixel
+      const delta = ev.clientX - startX;
+      if (!dragging && Math.abs(delta) > 3) {
+        dragging = true;
+        inputRef.current?.blur();
+        document.body.style.cursor = 'ew-resize';
+        isScrubbing.current = true;
+        scrubStart.current = { x: startX, val: startVal };
+      }
+      if (!dragging) return;
       const multiplier = ev.shiftKey ? 0.05 : 0.5;
-      const newVal = scrubStart.current.val + delta * step * multiplier;
-      commitValue(newVal);
+      commitValue(startVal + delta * step * multiplier);
     };
     const handleMouseUp = () => {
-      isScrubbing.current = false;
-      document.body.style.cursor = '';
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      if (dragging) {
+        isScrubbing.current = false;
+        document.body.style.cursor = '';
+      } else {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }
     };
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
-  }, [value, step, commitValue, disabled, focused]);
+  }, [value, step, commitValue, disabled]);
 
   // Non-passive wheel listener via useEffect to allow preventDefault()
   useEffect(() => {

@@ -17,8 +17,8 @@ export class SceneManager {
   public readonly safeZones: SafeZonesOverlay;
   public readonly compBounds: CompBoundsOverlay;
 
-  private compWidth = 1920;
-  private compHeight = 1080;
+  public compWidth = 1920;
+  public compHeight = 1080;
 
   constructor() {
     this.scene = new THREE.Scene();

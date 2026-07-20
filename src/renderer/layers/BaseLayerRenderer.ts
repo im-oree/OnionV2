@@ -19,7 +19,9 @@ export abstract class BaseLayerRenderer {
 
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.name = `${id}_mesh`;
-    this.mesh.renderOrder = 1;
+    // renderOrder is set dynamically by LayerSync._updateZOrder based on
+    // the layer's position in the stack.  The constructor default is 0
+    // (Three.js default) — no hardcoded value needed.
     // Enable frustum culling so objects outside the viewport aren't rendered (saves GPU)
     this.mesh.frustumCulled = true;
     this.group.add(this.mesh);

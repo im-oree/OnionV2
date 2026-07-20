@@ -4,6 +4,10 @@ export interface LayerPalette {
   accent: string;
 }
 
+export const ADJUSTMENT_COLOR: LayerPalette = {
+  from: '#f5e478', to: '#e8b84b', accent: '#f0c94b',
+};
+
 export const LAYER_COLORS: LayerPalette[] = [
   { from: '#5b6aff', to: '#8b5cf6', accent: '#7c6bff' },
   { from: '#ff5c87', to: '#ff8a5c', accent: '#ff7070' },

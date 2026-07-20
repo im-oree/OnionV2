@@ -17,6 +17,7 @@ import { AdaptiveResolution } from './cache/AdaptiveResolution';
 import { RAMPreviewBuilder } from './cache/RAMPreviewBuilder';
 import { FrameDiskCache } from './cache/FrameDiskCache';
 import { GPUTextureCache } from './cache/GPUTextureCache';
+import { VideoFrameCache } from './cache/VideoFrameCache';
 import { RenderScheduler } from './RenderScheduler';
 import { PerfMonitor } from './monitoring/PerfMonitor';
 import { resourceRegistry } from './utils/ResourceRegistry';
@@ -27,7 +28,11 @@ import { useTimelineStore } from '../state/timelineStore';
 import { useToolStore } from '../state/toolStore';
 import { TOOLS } from '../config/constants';
 import type { Composition } from '../types/composition';
-import type { CompData } from '../types/layer';
+import type { CompData, VideoData, AudioData } from '../types/layer';
+import { VideoLayerRenderer } from './layers/VideoLayerRenderer';
+import { AudioLayerRenderer } from './layers/AudioLayerRenderer';
+import { AdjustmentCompositor } from './compositing/AdjustmentCompositor';
+import { AdjustmentLayerRenderer } from './layers/AdjustmentLayerRenderer';
 
 export interface RendererState {
   fps: number;
@@ -61,6 +66,7 @@ export class Renderer {
   public readonly perfMonitor: PerfMonitor;
   public readonly frameDiskCache: FrameDiskCache;
   public readonly gpuTextureCache: GPUTextureCache;
+  public readonly videoFrameCache: VideoFrameCache;
   public readonly propertyBinder: PropertyBinder;
 
   private _state: RendererState = { fps: 0, zoom: 1, frameCount: 0 };
@@ -79,6 +85,8 @@ export class Renderer {
   private _lastCachedCompId = '';
 
   private _nestedRenderers = new Map<string, NestedCompRenderer>();
+  private _audioRenderers = new Map<string, AudioLayerRenderer>();
+  public readonly adjustmentCompositor: AdjustmentCompositor;
 
   private _cachedFrameQuad: THREE.Mesh | null = null;
   private _cachedFrameTex: THREE.CanvasTexture | null = null;
@@ -105,6 +113,12 @@ export class Renderer {
     this.cameraManager = new CameraManager();
     this.snapping = new Snapping();
     this.layerSync = new LayerSync(this.sceneManager);
+    this.adjustmentCompositor = new AdjustmentCompositor(
+      this.renderer,
+      this.sceneManager,
+      this.cameraManager,
+      this.layerSync,
+    );
     this.hitTester = new HitTester(this.sceneManager, this.cameraManager);
     this.selectionOverlay = new SelectionOverlay(container, this.cameraManager);
     this.modalTransform = new ModalTransform(this.cameraManager);
@@ -125,6 +139,7 @@ export class Renderer {
     this.ramPreviewBuilder.setRendererRef(() => this);
     this.frameDiskCache = new FrameDiskCache(this.frameCache);
     this.gpuTextureCache = new GPUTextureCache();
+    this.videoFrameCache = new VideoFrameCache();
     this.propertyBinder = new PropertyBinder(useKeyframeStore.getState().engine);
 
     let _lastKfRevision = useKeyframeStore.getState().revision;
@@ -144,6 +159,12 @@ export class Renderer {
     (window as any).__perfMonitor = this.perfMonitor;
     (window as any).__resourceRegistry = resourceRegistry;
     (window as any).__renderer = this;
+    (window as any).__videoFrameCache = this.videoFrameCache;
+
+    // Share the WebGL renderer with the effect thumbnail generator
+    import('./effects/EffectThumbnailGenerator').then(({ effectThumbnailGenerator }) => {
+      effectThumbnailGenerator.setRenderer(this.renderer);
+    }).catch(() => {});
 
     this.renderLoop = new RenderLoop(
       this.renderer,
@@ -211,6 +232,26 @@ export class Renderer {
 
       const isInCacheBuild = this._cacheRenderTimeOverride !== null;
 
+      // Sync video volume/mute always (even when stopped)
+      if (!isInCacheBuild) {
+        this._syncVideoAudio(comp);
+      }
+
+      // Sync video playback to composition time (skip when stopped)
+      const playbackState = useTimelineStore.getState().playbackState;
+      if (!isInCacheBuild && playbackState !== 'stopped') {
+        this._syncVideoLayers(comp, effectiveTime);
+      }
+
+    // Sync audio layers — ONLY treat "playing" as playing.
+      // Passing paused/stopped as "isPlaying" causes audio to be re-seeked
+      // every frame while HTMLAudioElement is still playing, producing a
+      // stutter-loop, and leaves the element playing if the RAF loop stops
+      // (e.g. tab switch).
+      if (!isInCacheBuild) {
+        this._syncAudioLayers(comp, effectiveTime, playbackState === 'playing');
+      }
+
       // GPU-accelerated cached frame display — use GPU texture (fast path)
       // or fall back to ImageBitmap → CanvasTexture.
       if (!isInCacheBuild && !ModalTransform.activeAnywhere) {
@@ -244,9 +285,32 @@ export class Renderer {
       this.layerSync.updateFrameVisibility(frame);
       this._processNestedComps(comp);
       this._processEffects();
+
+      // Adjustment layers: composite everything-below through their effect chains.
+      this.adjustmentCompositor.prepareFrame(comp.layers, comp.width, comp.height, frame);
+      if (this.adjustmentCompositor.hasActiveAdjustments) {
+        for (const layer of comp.layers) {
+          if (layer.type !== 'adjustment') continue;
+          const r = this.layerSync.getRenderer(layer.id);
+          if (r instanceof AdjustmentLayerRenderer) {
+            r.setCompSize(comp.width, comp.height);
+          }
+        }
+        this.adjustmentCompositor.execute(comp.layers, comp.width, comp.height);
+      }
     };
 
     this.renderLoop.onFrame = (stats: FrameStats) => {
+      // Restore layer visibility that AdjustmentCompositor may have modified
+      const cs2 = useCompositionStore.getState();
+      const activeComp = cs2.activeCompositionId
+        ? cs2.compositions.find((c) => c.id === cs2.activeCompositionId)
+        : null;
+      if (activeComp) {
+        const restoreFrame = Math.floor(activeComp.currentTime * activeComp.fps);
+        this.adjustmentCompositor.restoreVisibility(activeComp.layers, restoreFrame);
+      }
+
       const vp = this.cameraManager.getViewportTransform();
       const budget = this.renderScheduler.getBudget();
       const ramMB = Math.round(this.frameCache.getMemoryUsage() / (1024 * 1024));
@@ -405,6 +469,7 @@ export class Renderer {
         nestedTotalFrames,
       );
       nested.updateFrameVisibility(Math.floor(localFrame), source.layers);
+      nested.applyKeyframes(Math.floor(localFrame));
       nested.render();
       renderedCount++;
 
@@ -427,23 +492,227 @@ export class Renderer {
     }
   }
 
+  // ── Video layer sync ─────────────────────────────────────────
+
+  /** Sync volume/mute from layer data to video elements — always runs. */
+  private _syncVideoAudio(comp: Composition): void {
+    for (const layer of comp.layers) {
+      if (layer.type !== 'video') continue;
+      const r = this.layerSync.getRenderer(layer.id);
+      if (!(r instanceof VideoLayerRenderer)) continue;
+      const video = r.videoElement;
+      if (!video) continue;
+      const vdata = layer.data as VideoData | undefined;
+      if (!vdata) continue;
+      // If PropertyBinder has a volume override for this layer, use it
+      const overrides = this.propertyBinder.overrides.get(layer.id);
+      const targetVol = overrides?.volume != null ? overrides.volume : (vdata.volume ?? 1);
+      const targetMuted = vdata.muted ?? false;
+      if (Math.abs(video.volume - targetVol) > 0.01) video.volume = targetVol;
+      if (video.muted !== targetMuted) video.muted = targetMuted;
+    }
+  }
+
+  /** Sync video layer elements to the current composition time. */
+  private _syncVideoLayers(comp: Composition, currentTime: number): void {
+    const isPlaying = useTimelineStore.getState().playbackState === 'playing';
+    const fps = comp.fps;
+    const timeS = currentTime;
+
+    for (const layer of comp.layers) {
+      if (layer.type !== 'video') continue;
+      const r = this.layerSync.getRenderer(layer.id);
+      if (!(r instanceof VideoLayerRenderer)) continue;
+      const video = r.videoElement;
+      if (!video) continue;
+
+      // Volume/mute handled by _syncVideoAudio (runs always)
+
+      // Compute local time within the layer's visible range
+      const layerStartSec = layer.startFrame / fps;
+      const layerEndSec = layer.endFrame / fps;
+      const inRange = timeS >= layerStartSec && timeS <= layerEndSec;
+
+      if (isPlaying && inRange) {
+        // Restore live VideoTexture if we were showing a cached frame
+        r.restoreLiveTexture();
+
+        // During playback: play video, seek to local time
+        const vdata = layer.data as VideoData | undefined;
+        const videoRate = vdata?.playbackRate ?? 1;
+        if (video.playbackRate !== videoRate) video.playbackRate = videoRate;
+        const localTime = (timeS - layerStartSec) * videoRate;
+        if (Math.abs(video.currentTime - localTime) > 0.1) {
+          video.currentTime = localTime;
+        }
+        if (video.paused) {
+          video.play().catch((err) => {
+            if (err?.name === 'NotAllowedError') {
+              console.warn('[Video] Autoplay blocked — will unmute after first user interaction');
+              video.muted = true;
+              video.play().catch(() => {});
+              this._setupVideoUnmuteOnGesture();
+            } else {
+              console.warn('[Video] Playback error:', err?.message ?? err);
+            }
+          });
+        }
+      } else {
+        // Not playing or out of range: pause and show correct frame
+        if (!video.paused) {
+          video.pause();
+        }
+        if (inRange) {
+          const localTime = timeS - layerStartSec;
+          const compFrame = Math.floor(timeS * fps);
+
+          // Check video frame cache first for instant scrub display
+          const cachedFrame = this.videoFrameCache.get(layer.id, compFrame);
+          if (cachedFrame) {
+            // Cache hit — use the cached bitmap for instant display
+            r.setCachedBitmap(cachedFrame.imageBitmap);
+          } else if (Math.abs(video.currentTime - localTime) > 0.05) {
+            // Cache miss — seek video and capture frame asynchronously
+            video.currentTime = localTime;
+            // Capture frame after seek completes, with deduplication
+            // to prevent stale captures during rapid scrubbing
+            const expectedTime = localTime;
+            const onSeeked = () => {
+              video.removeEventListener('seeked', onSeeked);
+              // Deduplicate: only capture if video is still at the expected time
+              // (prevents stale captures when user scrubs rapidly)
+              if (Math.abs(video.currentTime - expectedTime) < 0.1) {
+                r.captureFrame().then((bitmap) => {
+                  if (bitmap) {
+                    this.videoFrameCache.store(layer.id, compFrame, bitmap);
+                  }
+                }).catch(() => {});
+              }
+              // Force texture update so viewport shows correct frame
+              const tex = (r.material as THREE.MeshBasicMaterial).map;
+              if (tex) tex.needsUpdate = true;
+            };
+            video.addEventListener('seeked', onSeeked, { once: true });
+          }
+        }
+      }
+    }
+  }
+
+  /** Pause all video layers — called on playback pause/stop. */
+  pauseAllVideos(): void {
+    for (const [, r] of this.layerSync.getAllRenderers()) {
+      if (r instanceof VideoLayerRenderer && r.videoElement) {
+        r.videoElement.pause();
+      }
+    }
+  }
+
+  /** Sync audio layer elements to the current composition time. */  private _syncAudioLayers(comp: Composition, currentTime: number, isPlaying: boolean): void {
+    const fps = comp.fps;
+    // Remove orphaned audio renderers
+    for (const [id, r] of this._audioRenderers) {
+      if (!comp.layers.find(l => l.id === id)) {
+        r.dispose();
+        this._audioRenderers.delete(id);
+      }
+    }
+    for (const layer of comp.layers) {
+      if (layer.type !== 'audio') continue;
+      let audioRenderer = this._audioRenderers.get(layer.id);
+      if (!audioRenderer) {
+        audioRenderer = new AudioLayerRenderer(layer.id);
+        this._audioRenderers.set(layer.id, audioRenderer);
+      }
+      // If PropertyBinder has a volume override for this layer, apply it
+      // so volume keyframes actually affect playback volume.
+      const overrides = this.propertyBinder.overrides.get(layer.id);
+      if (overrides?.volume != null) {
+        const origData = layer.data as any;
+        const patchedData = { ...origData, volume: overrides.volume };
+        const patchedLayer = { ...layer, data: patchedData };
+        audioRenderer.sync(patchedLayer, currentTime, fps, isPlaying);
+      } else {
+        audioRenderer.sync(layer, currentTime, fps, isPlaying);
+      }
+    }
+  }
+
+  /** Pause all audio layers — called on playback pause/stop. */
+  pauseAllAudio(): void {
+    for (const [, r] of this._audioRenderers) {
+      r.pause();
+    }
+  }
+
+  /** One-time user gesture handler to unmute videos after browser autoplay block */
+  private _setupVideoUnmuteOnGesture(): void {
+    const handler = () => {
+      for (const [, r] of this.layerSync.getAllRenderers()) {
+        if (r instanceof VideoLayerRenderer && r.videoElement) {
+          r.videoElement.muted = false;
+        }
+      }
+      document.removeEventListener('pointerdown', handler);
+    };
+    document.addEventListener('pointerdown', handler, { once: true });
+  }
+
+  /** Pause all audio on playback stop — called from PlaybackControls. */
+  stopAllAudio(): void {
+    for (const [, r] of this._audioRenderers) r.pause();
+  }
+
   private _processEffects(): void {
     const layerIds: string[] = [];
+    const nameToId = new Map<string, string>();
     for (const child of this.sceneManager.layerGroup.children) {
       const r = this.layerSync.getRenderer(child.name);
       if (r) {
         layerIds.push(r.id);
-        this._toggleOriginalMesh(r, !this.effectsRenderer.hasEffects(r.id));
+        nameToId.set(child.name, r.id);
       }
     }
+
     this.effectsRenderer.prepareFrame(layerIds);
+
+    let effectCount = 0;
     for (const child of this.sceneManager.layerGroup.children) {
+      const id = nameToId.get(child.name);
+      if (!id) continue;
       const r = this.layerSync.getRenderer(child.name);
-      if (r && this.effectsRenderer.hasEffects(r.id)) {
-        const gw = (r as any).geometryWidth?.() ?? 0;
-        const gh = (r as any).geometryHeight?.() ?? 0;
-        this.effectsRenderer.renderLayer(r.id, r.mesh, gw, gh, r.group);
+      if (!r) continue;
+
+      const gw = (r as any).geometryWidth?.() ?? 0;
+      const gh = (r as any).geometryHeight?.() ?? 0;
+
+      if (this.effectsRenderer.hasEffects(id) && gw > 0 && gh > 0) {
+        try {
+          // Try to render with effects — if it succeeds, hide original mesh
+          const success = this.effectsRenderer.renderLayer(id, r.mesh, gw, gh, r.group);
+          if (success) {
+            this._toggleOriginalMesh(r, false);
+            effectCount++;
+          } else {
+            // Never leave the original hidden if effect rendering fails.
+            this.effectsRenderer.removeLayerEffects(id);
+            this._toggleOriginalMesh(r, true);
+          }
+        } catch (err) {
+          console.warn(`[Effects] renderLayer error for ${id}:`, err);
+          this.effectsRenderer.removeLayerEffects(id);
+          this._toggleOriginalMesh(r, true);
+        }
+      } else {
+        // No effects or zero-size geometry — show original mesh
+        this._toggleOriginalMesh(r, true);
+        // Clean up any stale effect quads
+        this.effectsRenderer.removeLayerEffects(id);
       }
+    }
+
+    if (effectCount > 0) {
+      this.renderLoop.requestRender();
     }
   }
 
@@ -594,6 +863,14 @@ export class Renderer {
     this._cachedFrameTex.minFilter = THREE.LinearFilter;
     this._cachedFrameTex.magFilter = THREE.LinearFilter;
     this._cachedFrameTex.premultiplyAlpha = false;
+    // Canvas stores raw framebuffer bytes (sRGB-encoded from readPixels).
+    // SRGBColorSpace tells the hardware to decode sRGB→linear on read,
+    // which is undone by the renderer's linear→sRGB output — correct round-trip.
+    this._cachedFrameTex.colorSpace = THREE.SRGBColorSpace;
+    // Keep default SRGBColorSpace.  The canvas stores raw framebuffer
+    // bytes (sRGB-encoded from readPixels).  SRGBColorSpace tells the
+    // hardware to decode sRGB→linear on read, which is undone by the
+    // renderer's linear→sRGB output — a correct round-trip.
 
     const geo = new THREE.PlaneGeometry(1, 1);
     const mat = new THREE.MeshBasicMaterial({
@@ -740,6 +1017,7 @@ export class Renderer {
     this.cameraManager.dispose();
     this.layerSync.clear();
     this.effectsRenderer.dispose();
+    this.adjustmentCompositor.dispose();
     this.selectionOverlay.dispose();
 
     if (this._interactiveHandler) {
@@ -756,11 +1034,14 @@ export class Renderer {
 
     this.cacheInvalidator.dispose();
     this.gpuTextureCache.dispose();
+    this.videoFrameCache.dispose();
     this.renderScheduler.dispose();
     this.adaptiveResolution.dispose();
     this.perfMonitor.dispose();
     this.frameDiskCache.dispose();
     this.frameCache.dispose();
+    for (const r of this._audioRenderers.values()) r.dispose();
+    this._audioRenderers.clear();
 
     this._captureCanvas = null;
 

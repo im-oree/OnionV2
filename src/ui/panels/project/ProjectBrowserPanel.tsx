@@ -1,5 +1,5 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { Plus, Search, X, Film, Folder, Image, Music, FileCode, Eye } from 'lucide-react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { Plus, Search, X, Film, Folder, Image, Music, FileCode, Eye, Trash2, Edit3, Filter } from 'lucide-react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useProjectStore } from '../../../state/projectStore';
 import { openNewCompositionDialog } from '../../dialogs/DialogManager';
@@ -7,6 +7,11 @@ import { assetManager, type Asset } from '../../../storage/AssetManager';
 import { createLayerInstance } from '../../../utils/createLayerInstance';
 import { useSelectionStore } from '../../../state/selectionStore';
 import { useNotificationStore } from '../../../state/notificationStore';
+import { resolveAsset } from '../../../utils/assetResolver';
+import { confirm } from '../../common/ConfirmDialog';
+import { useContextMenu } from '../../common/useContextMenu';
+import { ContextMenu } from '../../common/ContextMenu';
+import type { ContextMenuItem } from '../../common/ContextMenu';
 
 const DOT_COLORS = ['#ff6b8a', '#ff9a5c', '#f0d060', '#6ad588', '#4dd4d1', '#5b8fff', '#8b6aff'];
 
@@ -29,6 +34,34 @@ export const ProjectBrowserPanel: React.FC = () => {
   const addNotif = useNotificationStore((s) => s.addNotification);
   const [dragOver, setDragOver] = useState(false);
   const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
+  const [highlightedAsset, setHighlightedAsset] = useState<string | null>(null);
+  const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set());
+  const [typeFilter, setTypeFilter] = useState<'all' | 'image' | 'video' | 'audio'>('all');
+  const [showBatchRename, setShowBatchRename] = useState(false);
+  const [batchFind, setBatchFind] = useState('');
+  const [batchReplace, setBatchReplace] = useState('');
+  const lastClickedIdx = useRef<number>(-1);
+  const panelCtx = useContextMenu();
+
+  // Listen for 'reveal asset' events from timeline layer context menu
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const assetId = (e as CustomEvent).detail?.assetId;
+      if (!assetId) return;
+      // Scroll to and highlight the asset
+      setHighlightedAsset(assetId);
+      setTimeout(() => {
+        const el = document.querySelector(`[data-asset-id="${assetId}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          // Auto-clear highlight after 2s
+          setTimeout(() => setHighlightedAsset(null), 2000);
+        }
+      }, 100);
+    };
+    document.addEventListener('project:revealAsset', handler);
+    return () => document.removeEventListener('project:revealAsset', handler);
+  }, []);
 
   // Sync AssetManager assets into projectStore so they appear in the list
   useEffect(() => {
@@ -41,6 +74,7 @@ export const ProjectBrowserPanel: React.FC = () => {
           projStore.addAsset({
             id: a.id, name: a.name, type: a.type, path: a.url,
             size: a.size, originalName: a.name, mimeType: a.mimeType, importedAt: a.importedAt,
+            naturalWidth: a.naturalWidth, naturalHeight: a.naturalHeight, duration: a.duration,
           });
         }
       }
@@ -78,12 +112,14 @@ export const ProjectBrowserPanel: React.FC = () => {
         }
         continue;
       }
-      if (!file.type.startsWith('image/') && !file.type.startsWith('video/') && !file.type.startsWith('audio/')) continue;
       try {
-        await assetManager.importFile(file);
+        const asset = await assetManager.importFile(file);
         // AssetManager fires assets:changed → the useEffect syncs to projectStore
         imported++;
-      } catch { /* skip */ }
+      } catch (err) {
+        console.warn('Import failed:', file.name, err);
+        addNotif({ type: 'error', message: `Failed to import "${file.name}": ${(err as Error)?.message ?? 'Unknown error'}` });
+      }
     }
     if (imported > 0) {
       addNotif({ type: 'success', message: `Imported ${imported} file${imported > 1 ? 's' : ''} to project panel. Double-click or drag to add to timeline.`, autoDismiss: 3000 });
@@ -127,12 +163,14 @@ export const ProjectBrowserPanel: React.FC = () => {
     }
     const comp = state.compositions.find(c => c.id === compId);
     if (!comp) return;
-    const asset = assetManager.getAsset(assetId);
-    if (!asset) return;
-    const type = asset.type === 'video' ? 'video' : 'image';
-    const layer = createLayerInstance(type, comp, {
+    const asset = resolveAsset(assetId);
+    if (!asset) {
+      addNotif({ type: 'warning', message: 'Asset not found.', autoDismiss: 3000 });
+      return;
+    }
+    const layer = createLayerInstance(asset.type, comp, {
       name: asset.name,
-      data: type === 'video'
+      data: asset.type === 'video'
         ? { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
         : { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight },
     });
@@ -149,7 +187,260 @@ export const ProjectBrowserPanel: React.FC = () => {
 
   const activeComp = compositions.find(c => c.id === activeCompId);
   const filteredComps = compositions.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
-  const filteredAssets = project.assets.filter(a => a.name.toLowerCase().includes(search.toLowerCase()));
+  const filteredAssets = project.assets.filter(a => {
+    const matchesSearch = a.name.toLowerCase().includes(search.toLowerCase());
+    const matchesType = typeFilter === 'all' || a.type === typeFilter;
+    return matchesSearch && matchesType;
+  });
+
+  // Check if an asset is referenced by any layer in any composition
+  const isAssetUsed = useCallback((assetId: string): boolean => {
+    for (const comp of useCompositionStore.getState().compositions) {
+      for (const layer of comp.layers) {
+        const data = layer.data as any;
+        if (data?.assetId === assetId) return true;
+      }
+    }
+    return false;
+  }, []);
+
+  // Count unused assets
+  const unusedCount = project.assets.filter(a => !isAssetUsed(a.id)).length;
+
+  // Multi-select handlers
+  const handleAssetClick = useCallback((assetId: string, idx: number, ctrl: boolean, shift: boolean) => {
+    setSelectedAssets(prev => {
+      const next = new Set(prev);
+      if (shift && lastClickedIdx.current >= 0) {
+        // Range select
+        const allIds = filteredAssets.map(a => a.id);
+        const from = Math.max(0, Math.min(lastClickedIdx.current, idx));
+        const to = Math.min(allIds.length - 1, Math.max(lastClickedIdx.current, idx));
+        for (let i = from; i <= to; i++) next.add(allIds[i]);
+      } else if (ctrl) {
+        if (next.has(assetId)) next.delete(assetId); else next.add(assetId);
+      } else {
+        next.clear();
+        next.add(assetId);
+      }
+      lastClickedIdx.current = idx;
+      return next;
+    });
+  }, [filteredAssets]);
+
+  // Delete selected assets
+  const deleteSelected = useCallback(async () => {
+    const count = selectedAssets.size;
+    const yes = await confirm(
+      `Delete ${count} asset${count === 1 ? '' : 's'}?`,
+      'Delete Assets',
+      { confirmLabel: `Delete ${count} asset${count === 1 ? '' : 's'}` },
+    );
+    if (!yes) return;
+    for (const id of selectedAssets) {
+      assetManager.deleteAsset(id);
+      useProjectStore.getState().removeAsset(id);
+    }
+    addNotif({ type: 'success', message: `Deleted ${count} asset${count > 1 ? 's' : ''}`, autoDismiss: 3000 });
+    setSelectedAssets(new Set());
+  }, [selectedAssets, addNotif]);
+
+  // Delete unused assets
+  const deleteUnused = useCallback(async () => {
+    const unused = project.assets.filter(a => !isAssetUsed(a.id));
+    if (unused.length === 0) {
+      addNotif({ type: 'info', message: 'No unused assets found.', autoDismiss: 3000 });
+      return;
+    }
+    const yes = await confirm(
+      `Delete ${unused.length} unused asset${unused.length > 1 ? 's' : ''}?`,
+      'Delete Unused Assets',
+      { confirmLabel: `Delete ${unused.length} unused` },
+    );
+    if (!yes) return;
+    for (const a of unused) {
+      assetManager.deleteAsset(a.id);
+      useProjectStore.getState().removeAsset(a.id);
+    }
+    addNotif({ type: 'success', message: `Deleted ${unused.length} unused asset${unused.length > 1 ? 's' : ''}`, autoDismiss: 3000 });
+  }, [project.assets, isAssetUsed, addNotif]);
+
+  // Import files via file picker
+  const importFiles = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = 'image/*,video/*,audio/*,.svg';
+    input.onchange = async () => {
+      const files = input.files ? Array.from(input.files) : [];
+      if (files.length === 0) return;
+      let imported = 0;
+      for (const file of files) {
+        if (file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg')) {
+          try {
+            const compId = useCompositionStore.getState().activeCompositionId;
+            if (!compId) { addNotif({ type: 'warning', message: 'Create a composition first.', autoDismiss: 3000 }); continue; }
+            const { importSvgFile } = await import('../../../utils/svgImport');
+            const count = await importSvgFile(file, compId);
+            if (count > 0) imported++;
+          } catch { /* skip */ }
+          continue;
+        }
+        try { await assetManager.importFile(file); imported++; } catch { /* skip */ }
+      }
+      if (imported > 0) addNotif({ type: 'success', message: `Imported ${imported} file${imported > 1 ? 's' : ''}`, autoDismiss: 3000 });
+    };
+    input.click();
+  }, [addNotif]);
+
+  // Refresh assets from AssetManager
+  const refreshAssets = useCallback(() => {
+    const allAssets = assetManager.getAllAssets();
+    const projStore = useProjectStore.getState();
+    for (const a of allAssets) {
+      const exists = projStore.project.assets.some(pa => pa.id === a.id);
+      if (!exists) {
+        projStore.addAsset({
+          id: a.id, name: a.name, type: a.type, path: a.url,
+          size: a.size, originalName: a.name, mimeType: a.mimeType, importedAt: a.importedAt,
+          naturalWidth: a.naturalWidth, naturalHeight: a.naturalHeight, duration: a.duration,
+        });
+      }
+    }
+    addNotif({ type: 'info', message: 'Project panel refreshed', autoDismiss: 2000 });
+  }, [addNotif]);
+
+  // Delete single asset by id (with confirm)
+  const deleteAssetById = useCallback(async (assetId: string) => {
+    const asset = project.assets.find(a => a.id === assetId);
+    if (!asset) return;
+    const yes = await confirm(`Delete asset "${asset.name}"?`, 'Delete Asset', { confirmLabel: 'Delete' });
+    if (!yes) return;
+    assetManager.deleteAsset(assetId);
+    useProjectStore.getState().removeAsset(assetId);
+    setSelectedAssets(prev => { const next = new Set(prev); next.delete(assetId); return next; });
+    addNotif({ type: 'success', message: `Deleted "${asset.name}"`, autoDismiss: 3000 });
+  }, [project.assets, addNotif]);
+
+  // Rename asset by id
+  const renameAssetById = useCallback((assetId: string) => {
+    const asset = project.assets.find(a => a.id === assetId);
+    if (!asset) return;
+    const newName = prompt('Rename asset:', asset.name);
+    if (newName && newName.trim() && newName !== asset.name) {
+      useProjectStore.getState().renameAsset(assetId, newName.trim());
+    }
+  }, [project.assets]);
+
+  // Copy text to clipboard
+  const copyToClipboard = useCallback((text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      addNotif({ type: 'info', message: 'Copied to clipboard', autoDismiss: 1500 });
+    }).catch(() => {});
+  }, [addNotif]);
+
+  // Context menu: right-click on empty space
+  const handlePanelContextMenu = useCallback((e: React.MouseEvent) => {
+    const t = e.target as HTMLElement;
+    // Only show empty-space menu if not clicking on an asset or composition item
+    if (t.closest('[data-asset-id]') || t.closest('[data-comp-id]')) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const items: ContextMenuItem[] = [
+      { id: 'pm.import', label: 'Import Files...', shortcut: 'Ctrl+I', onClick: importFiles },
+      { id: 'pm.importSvg', label: 'Import SVG...', onClick: importSvgClick },
+      { id: 'pm.d1', divider: true },
+      { id: 'pm.addComp', label: 'New Composition', onClick: openNewCompositionDialog },
+      { id: 'pm.d2', divider: true },
+      { id: 'pm.selectAll', label: 'Select All', shortcut: 'Ctrl+A', onClick: () => {
+        setSelectedAssets(new Set(filteredAssets.map(a => a.id)));
+      }},
+      { id: 'pm.d3', divider: true },
+      { id: 'pm.refresh', label: 'Refresh', onClick: refreshAssets },
+    ];
+    panelCtx.open(e, items);
+  }, [importFiles, importSvgClick, refreshAssets, filteredAssets, panelCtx]);
+
+  // Context menu: right-click on an asset
+  const handleAssetContextMenu = useCallback((e: React.MouseEvent, assetId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const asset = project.assets.find(a => a.id === assetId);
+    if (!asset) return;
+
+    // If right-clicked asset isn't in selection, select only it
+    if (!selectedAssets.has(assetId)) {
+      setSelectedAssets(new Set([assetId]));
+    }
+
+    const isUsed = isAssetUsed(assetId);
+    const items: ContextMenuItem[] = [
+      { id: 'ac.preview', label: 'Preview', onClick: () => {
+        const full = assetManager.getAsset(assetId);
+        if (full) setPreviewAsset(full);
+      }},
+      { id: 'ac.addToTimeline', label: 'Add to Timeline', shortcut: 'Enter', onClick: () => handleAssetDoubleClick(assetId) },
+      { id: 'ac.d1', divider: true },
+      { id: 'ac.rename', label: 'Rename', shortcut: 'F2', onClick: () => renameAssetById(assetId) },
+      { id: 'ac.copyId', label: 'Copy Asset ID', onClick: () => copyToClipboard(assetId) },
+      { id: 'ac.copyPath', label: 'Copy Name', onClick: () => copyToClipboard(asset.name) },
+      { id: 'ac.d2', divider: true },
+      ...(selectedAssets.size > 1 ? [
+        { id: 'ac.delSel', label: `Delete ${selectedAssets.size} Selected`, shortcut: 'Del', onClick: deleteSelected },
+      ] : [
+        { id: 'ac.delete', label: 'Delete', shortcut: 'Del', onClick: () => deleteAssetById(assetId) },
+      ]),
+    ];
+    panelCtx.open(e, items);
+  }, [project.assets, selectedAssets, isAssetUsed, handleAssetDoubleClick, renameAssetById, copyToClipboard, deleteAssetById, deleteSelected, panelCtx]);
+
+  // Context menu: right-click on a composition
+  const handleCompContextMenu = useCallback((e: React.MouseEvent, compId: string, compName: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const items: ContextMenuItem[] = [
+      { id: 'cc.preview', label: 'Preview', onClick: () => setActive(compId) },
+      { id: 'cc.addLayer', label: 'Add as Layer in Active Comp', disabled: !activeCompId || activeCompId === compId, onClick: () => {
+        if (!activeCompId || activeCompId === compId) return;
+        const r = useCompositionStore.getState().addCompLayer(activeCompId, compId);
+        if (!r.ok) addNotif({ type: 'error', message: r.reason ?? 'Could not add', autoDismiss: 3000 });
+      }},
+      { id: 'cc.d1', divider: true },
+      { id: 'cc.rename', label: 'Rename', shortcut: 'F2', onClick: () => {
+        const newName = prompt('Rename composition:', compName);
+        if (newName && newName.trim() && newName !== compName) {
+          useCompositionStore.getState().renameComposition(compId, newName.trim());
+        }
+      }},
+      { id: 'cc.d2', divider: true },
+      { id: 'cc.delete', label: 'Delete', shortcut: 'Del', onClick: async () => {
+        const yes = await confirm(`Delete composition "${compName}"?`, 'Delete Composition', { confirmLabel: 'Delete' });
+        if (yes) { const r = removeComp(compId); if (!r.ok) alert(r.reason ?? 'Cannot delete'); }
+      }},
+    ];
+    panelCtx.open(e, items);
+  }, [activeCompId, setActive, removeComp, addNotif, panelCtx]);
+
+  // Batch rename
+  const batchRename = useCallback(() => {
+    if (!batchFind.trim()) return;
+    let count = 0;
+    const idsToRename = selectedAssets.size > 0 ? [...selectedAssets] : filteredAssets.map(a => a.id);
+    for (const id of idsToRename) {
+      const asset = project.assets.find(a => a.id === id);
+      if (!asset) continue;
+      const newName = asset.name.replaceAll(batchFind, batchReplace);
+      if (newName !== asset.name) {
+        useProjectStore.getState().renameAsset(id, newName);
+        count++;
+      }
+    }
+    addNotif({ type: 'success', message: `Renamed ${count} asset${count > 1 ? 's' : ''}`, autoDismiss: 3000 });
+    setShowBatchRename(false);
+    setBatchFind('');
+    setBatchReplace('');
+  }, [selectedAssets, filteredAssets, batchFind, batchReplace, project.assets, addNotif]);
 
   return (
     <div
@@ -195,7 +486,56 @@ export const ProjectBrowserPanel: React.FC = () => {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto py-2 min-h-0">
+      {/* Type filter bar */}
+      <div className="flex items-center gap-1 px-3 py-1.5 shrink-0" style={{ borderBottom: '1px solid var(--color-border)' }}>
+        <Filter size={12} strokeWidth={1.75} style={{ color: 'var(--color-text-disabled)', flexShrink: 0 }} />
+        {([['all', 'All'], ['image', 'Images'], ['video', 'Videos'], ['audio', 'Audio']] as const).map(([key, label]) => (
+          <button key={key} onClick={() => setTypeFilter(key)}
+            className="border-0 bg-transparent cursor-pointer transition-colors"
+            style={{
+              height: 22, padding: '0 8px', borderRadius: 'var(--radius-sm)',
+              fontSize: 'var(--font-size-xs)', fontWeight: typeFilter === key ? 600 : 400,
+              color: typeFilter === key ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+              background: typeFilter === key ? 'var(--color-accent-muted)' : 'transparent',
+            }}
+          >{label}</button>
+        ))}
+        {unusedCount > 0 && (
+          <button onClick={deleteUnused} title="Delete all unused assets"
+            className="border-0 bg-transparent cursor-pointer transition-colors ml-auto"
+            style={{ height: 22, padding: '0 8px', borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-xs)', color: 'var(--color-danger)' }}
+            onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='rgba(255,80,80,0.1)'}
+            onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+          >Delete {unusedCount} unused</button>
+        )}
+      </div>
+
+      {/* Bulk action bar — appears when assets are selected */}
+      {selectedAssets.size > 0 && (
+        <div className="flex items-center gap-2 px-3 py-1.5 shrink-0" style={{ borderBottom: '1px solid var(--color-border)', background: 'var(--color-accent-muted)' }}>
+          <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600, color: 'var(--color-accent)' }}>
+            {selectedAssets.size} selected
+          </span>
+          <button onClick={() => setShowBatchRename(true)}
+            className="flex items-center gap-1 border-0 bg-transparent cursor-pointer transition-colors"
+            style={{ height: 22, padding: '0 6px', borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)' }}
+            onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'}
+            onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+          ><Edit3 size={11} /> Rename</button>
+          <button onClick={deleteSelected}
+            className="flex items-center gap-1 border-0 bg-transparent cursor-pointer transition-colors"
+            style={{ height: 22, padding: '0 6px', borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-xs)', color: 'var(--color-danger)' }}
+            onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='rgba(255,80,80,0.1)'}
+            onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+          ><Trash2 size={11} /> Delete</button>
+          <button onClick={() => setSelectedAssets(new Set())}
+            className="border-0 bg-transparent cursor-pointer"
+            style={{ height: 22, padding: '0 4px', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-disabled)' }}
+          >Clear</button>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto py-2 min-h-0" onContextMenu={handlePanelContextMenu}>
         {filteredComps.map((comp, i) => (
           <ProjectItem
             key={comp.id}
@@ -212,11 +552,20 @@ export const ProjectBrowserPanel: React.FC = () => {
                 if (!r.ok) alert(r.reason ?? 'Could not add');
               }
             }}
-            onDelete={() => {
-              const r = removeComp(comp.id);
-              if (!r.ok) alert(r.reason ?? 'Cannot delete');
+            onDelete={async () => {
+              const yes = await confirm(
+                `Delete composition "${comp.name}"?`,
+                'Delete Composition',
+                { confirmLabel: 'Delete' },
+              );
+              if (yes) {
+                const r = removeComp(comp.id);
+                if (!r.ok) alert(r.reason ?? 'Cannot delete');
+              }
             }}
+            onContextMenu={(e) => handleCompContextMenu(e, comp.id, comp.name)}
             draggable
+            data-comp-id={comp.id}
             onDragStart={(e) => { e.dataTransfer.setData('text/plain', 'comp:' + comp.id); e.dataTransfer.effectAllowed = 'copy'; }}
           />
         ))}
@@ -233,11 +582,26 @@ export const ProjectBrowserPanel: React.FC = () => {
                 asset={a}
                 index={i}
                 dotColor={DOT_COLORS[(filteredComps.length + i) % DOT_COLORS.length]}
+                isSelected={selectedAssets.has(a.id)}
+                onClick={(e: React.MouseEvent) => handleAssetClick(a.id, i, e.ctrlKey || e.metaKey, e.shiftKey)}
                 onDoubleClick={() => handleAssetDoubleClick(a.id)}
                 onDragStart={(e) => handleAssetDragStart(e, a.id)}
+                onContextMenu={(e: React.MouseEvent) => handleAssetContextMenu(e, a.id)}
+                isHighlighted={highlightedAsset === a.id}
                 onPreview={() => {
+                  // Try assetManager first, fall back to projectStore
                   const fullAsset = assetManager.getAsset(a.id);
-                  if (fullAsset) setPreviewAsset(fullAsset);
+                  if (fullAsset) {
+                    setPreviewAsset(fullAsset);
+                  } else {
+                    setPreviewAsset({
+                      id: a.id, name: a.name, type: a.type as any,
+                      url: a.path, size: a.size, mimeType: a.mimeType,
+                      importedAt: a.importedAt, missing: false,
+                      naturalWidth: a.naturalWidth ?? 100, naturalHeight: a.naturalHeight ?? 100,
+                      duration: a.duration,
+                    } as any);
+                  }
                 }}
               />
             ))}
@@ -266,6 +630,43 @@ export const ProjectBrowserPanel: React.FC = () => {
           setPreviewAsset(null);
         }} />
       )}
+
+      {/* Batch rename modal */}
+      {showBatchRename && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setShowBatchRename(false)}>
+          <div style={{ background: 'var(--color-panel)', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)', padding: 20, minWidth: 360 }}
+            onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 'var(--font-size-md)', fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 12 }}>
+              Batch Rename ({selectedAssets.size > 0 ? `${selectedAssets.size} selected` : 'all filtered'})
+            </div>
+            <div className="flex flex-col gap-3">
+              <div>
+                <label style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', display: 'block', marginBottom: 4 }}>Find</label>
+                <input type="text" value={batchFind} onChange={(e) => setBatchFind(e.target.value)} autoFocus
+                  placeholder="Text to find..."
+                  style={{ width: '100%', height: 32, padding: '0 10px', background: 'var(--color-input-bg)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', color: 'var(--color-text-primary)', fontSize: 'var(--font-size-sm)', outline: 'none' }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') batchRename(); }} />
+              </div>
+              <div>
+                <label style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', display: 'block', marginBottom: 4 }}>Replace with</label>
+                <input type="text" value={batchReplace} onChange={(e) => setBatchReplace(e.target.value)}
+                  placeholder="Replacement text..."
+                  style={{ width: '100%', height: 32, padding: '0 10px', background: 'var(--color-input-bg)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', color: 'var(--color-text-primary)', fontSize: 'var(--font-size-sm)', outline: 'none' }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') batchRename(); }} />
+              </div>
+              <div className="flex justify-end gap-2 mt-2">
+                <button onClick={() => setShowBatchRename(false)}
+                  style={{ height: 30, padding: '0 14px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-secondary)', fontSize: 'var(--font-size-sm)', cursor: 'pointer' }}>Cancel</button>
+                <button onClick={batchRename} disabled={!batchFind.trim()}
+                  style={{ height: 30, padding: '0 14px', borderRadius: 'var(--radius-sm)', border: 'none', background: batchFind.trim() ? 'var(--color-accent)' : 'var(--color-text-disabled)', color: '#fff', fontSize: 'var(--font-size-sm)', cursor: batchFind.trim() ? 'pointer' : 'not-allowed', opacity: batchFind.trim() ? 1 : 0.5 }}>Rename</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {panelCtx.menu && <ContextMenu items={panelCtx.menu.items} position={panelCtx.menu.position} onClose={panelCtx.close} />}
     </div>
   );
 };
@@ -275,20 +676,59 @@ const AssetItem: React.FC<{
   asset: { id: string; name: string; type: string; path?: string };
   index: number;
   dotColor: string;
+  isSelected?: boolean;
+  onClick?: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
   onDragStart: (e: React.DragEvent) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
   onPreview: () => void;
-}> = ({ asset, index, dotColor, onDoubleClick, onDragStart, onPreview }) => {
+  isHighlighted?: boolean;
+}> = ({ asset, index, dotColor, isSelected, onClick, onDoubleClick, onDragStart, onContextMenu, onPreview, isHighlighted }) => {
   const [thumb, setThumb] = useState<string | null>(null);
 
   useEffect(() => {
     const full = assetManager.getAsset(asset.id);
-    if (full?.thumbnail) {
+    if (!full?.url) return;
+    let cancelled = false;
+
+    if (full.thumbnail) {
       setThumb(full.thumbnail);
-    } else if (full?.url && asset.type === 'image') {
+    } else if (asset.type === 'video') {
+      // Generate video thumbnail on the fly
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.muted = true;
+      video.playsInline = true;
+      video.onloadeddata = () => {
+        if (cancelled) return;
+        video.currentTime = Math.min(0.5, (video.duration || 1) * 0.1);
+      };
+      video.onseeked = () => {
+        if (cancelled) return;
+        try {
+          const canvas = document.createElement('canvas');
+          const maxDim = 64;
+          const vw = video.videoWidth || 64;
+          const vh = video.videoHeight || 64;
+          const scale = Math.min(maxDim / vw, maxDim / vh);
+          canvas.width = Math.round(vw * scale);
+          canvas.height = Math.round(vh * scale);
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            if (!cancelled) setThumb(canvas.toDataURL('image/jpeg', 0.6));
+          }
+        } catch { /* skip */ }
+        video.src = '';
+      };
+      video.onerror = () => { if (!cancelled) video.src = ''; };
+      video.src = full.url;
+      return () => { cancelled = true; video.onloadeddata = null; video.onseeked = null; video.onerror = null; video.src = ''; };
+    } else if (asset.type === 'image') {
       // Generate thumbnail on the fly for images without one
       const img = new window.Image();
       img.onload = () => {
+        if (cancelled) return;
         try {
           const canvas = document.createElement('canvas');
           const maxDim = 64;
@@ -298,12 +738,14 @@ const AssetItem: React.FC<{
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            setThumb(canvas.toDataURL('image/jpeg', 0.6));
+            if (!cancelled) setThumb(canvas.toDataURL('image/jpeg', 0.6));
           }
         } catch { /* skip */ }
       };
       img.src = full.url;
+      return () => { cancelled = true; img.onload = null; };
     }
+    return () => { cancelled = true; };
   }, [asset.id, asset.type]);
 
   const icon = asset.type === 'image' ? <Image size={18} strokeWidth={1.5} />
@@ -316,13 +758,18 @@ const AssetItem: React.FC<{
       draggable
       onDragStart={onDragStart}
       onDoubleClick={onDoubleClick}
+      data-asset-id={asset.id}
       className="group flex items-center gap-3 cursor-pointer transition-colors mx-2 px-3"
       style={{
         height: 48, borderRadius: 'var(--radius-sm)',
-        background: 'transparent',
+        background: isSelected ? 'var(--color-accent-muted)' : 'transparent',
+        boxShadow: isHighlighted ? 'inset 0 0 0 2px rgba(88, 101, 255, 0.5)' : 'none',
+        transition: 'box-shadow 300ms ease-out, background 150ms ease-out',
       }}
-      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; }}
-      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+      onClick={onClick}
+      onContextMenu={onContextMenu}
+      onMouseEnter={(e) => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; }}
+      onMouseLeave={(e) => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
     >
       <div style={{
         width: 36, height: 36, borderRadius: 'var(--radius-sm)',
@@ -402,18 +849,21 @@ interface ProjectItemProps {
   onClick?: () => void;
   onDoubleClick?: () => void;
   onDelete?: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
   draggable?: boolean;
   onDragStart?: (e: React.DragEvent) => void;
 }
 
 const ProjectItem: React.FC<ProjectItemProps> = ({
-  icon, iconBg, name, info, dotColor, isActive, onClick, onDoubleClick, onDelete, draggable, onDragStart,
+  icon, iconBg, name, info, dotColor, isActive, onClick, onDoubleClick, onDelete, onContextMenu, draggable, onDragStart,
 }) => (
   <div
     draggable={draggable}
     onDragStart={onDragStart}
     onClick={onClick}
     onDoubleClick={onDoubleClick}
+    onContextMenu={onContextMenu}
+    data-comp-id="1"
     className="group flex items-center gap-3 cursor-pointer transition-colors mx-2 px-3"
     style={{
       height: 48, borderRadius: 'var(--radius-sm)',

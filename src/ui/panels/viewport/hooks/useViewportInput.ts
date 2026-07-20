@@ -47,9 +47,11 @@ function finalizePenPath(commands: import('../../../../types/layer').PathCommand
   const centeredBounds = computePathBounds(centered);
 
   const base = createDefaultLayer('shape', `Path ${comp.layers.length + 1}`);
+  const compEndFrame = Math.floor(comp.duration * comp.fps);
   const layer: Layer = {
     ...base, id: genId(),
     zIndex: comp.layers.length + 1,
+    endFrame: compEndFrame,
     transform: {
       position: { x: cx, y: cy },
       scale: { x: 100, y: 100 }, rotation: 0,
@@ -555,10 +557,12 @@ export function useViewportInput({
         if (!comp) return;
         const count = comp.layers.filter((l) => l.type === 'text').length + 1;
         const base = createDefaultLayer('text', `Text ${count}`);
+        const compEndFrame = Math.floor(comp.duration * comp.fps);
         const layer: Layer = {
           ...base, id: genId(), zIndex: comp.layers.length + 1,
+          endFrame: compEndFrame,
           transform: { position: { x: world.x, y: world.y }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
-          data: { text: 'Text', fontFamily: 'Inter', fontSize: 48, fontWeight: 400, color: '#ffffff', lineHeight: 1.2, letterSpacing: 0, alignment: 'center' as const },
+          data: { text: 'Text', fontFamily: 'Inter', fontSize: 48, fontWeight: 400, color: '#000000', lineHeight: 1.2, letterSpacing: 0, alignment: 'center' as const },
         };
         useCompositionStore.getState().addLayer(compId, layer);
         useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
@@ -839,9 +843,11 @@ export function useViewportInput({
         baseData.stroke = defaultShapeStroke();
 
         const base = createDefaultLayer('shape', `${preset?.label ?? 'Shape'} ${count}`);
+        const compEndFrame = Math.floor(comp.duration * comp.fps);
         const layer: Layer = {
           ...base, id: genId(),
           zIndex: comp.layers.length + 1,
+          endFrame: compEndFrame,
           transform: { position: centerWorld, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
           data: baseData,
         };

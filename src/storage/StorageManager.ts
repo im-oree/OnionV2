@@ -173,6 +173,9 @@ export class StorageManager {
     } else if (handle.adapterType === 'filesystem' && this.adapter?.type !== 'filesystem') {
       const { FileSystemAPIAdapter } = await import('./FileSystemAPIAdapter');
       this.adapter = new FileSystemAPIAdapter();
+    } else if (handle.adapterType === 'download' && this.adapter?.type !== 'download') {
+      const { DownloadAdapter } = await import('./DownloadAdapter');
+      this.adapter = new DownloadAdapter();
     }
     if (!this.adapter) await this.detectBestAdapter();
     if (!this.adapter) throw new Error('No storage adapter available');
@@ -184,8 +187,12 @@ export class StorageManager {
       if (!validation.valid) {
         throw new Error(validation.error);
       }
-      ProjectSerializer.deserialize(project);
+      // Set project handle first so restoreAssets() can list adapter assets
       this._currentProjectHandle = handle;
+      // Restore assets FIRST — before deserialize() triggers layer sync,
+      // which creates ImageLayerRenderers that call assetManager.getAsset()
+      await ProjectSerializer.restoreAssets(project);
+      ProjectSerializer.deserialize(project);
       this._lastSaveTime = Date.now();
       this.markClean();
       this._emit('load:complete', { handle, project });

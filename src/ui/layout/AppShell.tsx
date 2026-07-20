@@ -9,12 +9,13 @@ import { useCompositionStore } from '../../state/compositionStore';
 import { WelcomeScreen } from '../WelcomeScreen';
 // Right panel — direct imports (no lazy/Suspense — panels are small, lazy causes stuck "Loading...")
 import { PropertiesPanel as RightPropertiesPanel } from '../panels/properties/PropertiesPanel';
-import EffectsPanelWrapper from '../panels/properties/EffectsPanelWrapper';
 import AlignPanel from '../panels/align/AlignPanel';
 import InfoPanel from '../panels/info/InfoPanel';
 import RenderPanel from '../panels/render/RenderPanel';
 import CharacterPanel from '../panels/character/CharacterPanel';
 import PerformancePanel from '../panels/performance/PerformancePanel';
+import EffectsPanelWrapper from '../panels/properties/EffectsPanelWrapper';
+import EffectLibraryPanel from '../panels/effects/EffectLibraryPanel';
 
 const ProjectBrowserPanel = React.lazy(() => import('../panels/project/ProjectBrowserPanel'));
 const ViewportPanel = React.lazy(() => import('../panels/viewport/ViewportPanel'));
@@ -173,6 +174,7 @@ const RightPanelContent: React.FC = () => {
     <>
       {tab === 'properties' && <RightPropertiesPanel />}
       {tab === 'effects' && <EffectsPanelWrapper />}
+      {tab === 'effectLibrary' && <EffectLibraryPanel />}
       {tab === 'align' && <AlignPanel />}
       {tab === 'info' && <InfoPanel />}
       {tab === 'render' && <RenderPanel />}

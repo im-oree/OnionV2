@@ -2,6 +2,7 @@ import React from 'react';
 import { AppShell } from './ui/layout/AppShell';
 import { DialogManager } from './ui/dialogs/DialogManager';
 import { ToastContainer } from './ui/common/Toast';
+import { ConfirmDialogContainer } from './ui/common/ConfirmDialog';
 import { CommandPalette } from './ui/common/CommandPalette';
 import { AlertModal } from './ui/common/AlertModal';
 import { useKeyboardManager, registerAllShortcuts } from './input/KeyboardManager';
@@ -182,6 +183,7 @@ const App: React.FC = () => {
       <AppShell />
       <DialogManager />
       <ToastContainer />
+      <ConfirmDialogContainer />
       <AlertModal />
       {pendingRecoveries.length > 0 && (
         <div

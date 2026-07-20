@@ -9,6 +9,70 @@ import { useRecentProjectsStore } from '../../../state/recentProjectsStore';
 import { useNotificationStore } from '../../../state/notificationStore';
 import { createLayerInstance } from '../../../utils/createLayerInstance';
 
+/**
+ * Shared Save As logic — used by both the Save (Ctrl+S) handler
+ * when no project handle exists, and the Save As (Ctrl+Shift+S) handler.
+ *
+ * For File System API adapters: opens a native directory picker so the
+ * user can pick where to save.  Creates a project subfolder and stores
+ * the handle so subsequent Ctrl+S auto-saves to the same location.
+ *
+ * For IndexedDB / Download adapters: falls back to the adapter's built-in
+ * save flow (IndexedDB stores in-browser; Download triggers a file download).
+ */
+async function _doSaveAs(): Promise<void> {
+  const sm = StorageManager.getInstance();
+  const name = useProjectStore.getState().project.name;
+
+  // Ensure the adapter is initialised
+  if (!sm.getAdapter()) await sm.detectBestAdapter();
+  const adapter = sm.getAdapter();
+  if (!adapter) {
+    useNotificationStore.getState().addNotification({
+      type: 'error',
+      message: 'No storage adapter available — cannot save.',
+    });
+    return;
+  }
+
+  if (adapter.type === 'filesystem') {
+    // ── File System Access API: native directory picker ──
+    const fsAdapter = adapter as any; // FileSystemAPIAdapter
+    await fsAdapter.ensureWorkspace();
+    const startIn = fsAdapter.workspaceHandle ?? undefined;
+
+    // Show the OS directory picker so the user chooses where to save
+    const dirHandle = await (window as any).showDirectoryPicker({
+      mode: 'readwrite',
+      startIn,
+    });
+
+    // Create a project subfolder inside the chosen directory
+    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const projectDir = await dirHandle.getDirectoryHandle(safeName, { create: true });
+
+    const handle = {
+      id: `fs_${projectDir.name}_${Date.now()}`,
+      name: projectDir.name,
+      adapterType: 'filesystem' as const,
+      internal: projectDir,
+    };
+
+    await sm.saveAs(name, handle as any);
+  } else {
+    // ── Non-FS adapters (IndexedDB, Download) ──
+    // createProject generates a handle (ID for IDB, download ID for Download)
+    const handle = await adapter.createProject(name);
+    await sm.saveAs(name, handle);
+  }
+
+  useNotificationStore.getState().addNotification({
+    type: 'success',
+    message: `Saved "${name}"`,
+    autoDismiss: 3000,
+  });
+}
+
 export const fileMenu: MenuItemDefinition[] = [
   {
     id: 'file.newProject',
@@ -35,17 +99,56 @@ export const fileMenu: MenuItemDefinition[] = [
         input.onchange = async () => {
           const file = input.files?.[0];
           if (!file) return;
+          // Read the file directly and deserialize — bypasses storage adapter
+          // mismatch issues (the file may have been saved with any adapter).
+          const text = await file.text();
+          let project: any;
+          try {
+            project = JSON.parse(text);
+          } catch {
+            useNotificationStore.getState().addNotification({
+              type: 'error',
+              message: 'Invalid project file — could not parse JSON.',
+            });
+            return;
+          }
+          // Validate
+          const { ProjectSerializer } = await import('../../../storage/ProjectSerializer');
+          const validation = ProjectSerializer.validate(project);
+          if (!validation.valid) {
+            useNotificationStore.getState().addNotification({
+              type: 'error',
+              message: `Invalid project: ${validation.error}`,
+            });
+            return;
+          }
+          // Deserialize into stores
+          ProjectSerializer.deserialize(project);
+          // Set up storage manager with a download-type handle for future saves
           const sm = StorageManager.getInstance();
-          const handle = {
-            id: `file_${Date.now()}`,
-            name: file.name.replace(/\.(onion|json)$/, ''),
-            adapterType: 'download' as const,
-            internal: { file },
-          };
-          await sm.load(handle as any);
+          const projectName = project.name || file.name.replace(/\.(onion|json)$/, '');
+          if (!sm.getAdapter()) await sm.detectBestAdapter();
+          sm.closeProject();
+          // Create a handle that will persist for Save operations
+          const adapter = sm.getAdapter();
+          if (adapter) {
+            try {
+              const handle = await adapter.createProject(projectName);
+              // For download adapter, cache the project so Save can re-download
+              if (adapter.type === 'download') {
+                const dlAdapter = adapter as any;
+                if (dlAdapter._projectCache) {
+                  dlAdapter._projectCache.set(handle.id, project);
+                }
+              }
+              // Store handle via internal setter (exposed for this use case)
+              (sm as any)._currentProjectHandle = handle;
+              sm.markClean();
+            } catch { /* best effort */ }
+          }
           useNotificationStore.getState().addNotification({
             type: 'success',
-            message: `Opened "${file.name}"`,
+            message: `Opened "${projectName}"`,
             autoDismiss: 3000,
           });
         };
@@ -91,10 +194,19 @@ export const fileMenu: MenuItemDefinition[] = [
       try {
         const sm = StorageManager.getInstance();
         const name = useProjectStore.getState().project.name;
+
+        // If no project handle exists yet, redirect to Save As flow
+        // so the user picks where to save.
+        if (!sm.currentProjectHandle) {
+          await _doSaveAs();
+          return;
+        }
+
         await sm.save(name);
-      } catch {
+      } catch (err: any) {
         useNotificationStore.getState().addNotification({
-          type: 'error', message: 'Save failed — project may need a Save As first.',
+          type: 'error',
+          message: `Save failed: ${err?.message ?? 'Unknown error'}`,
         });
       }
     },
@@ -105,21 +217,12 @@ export const fileMenu: MenuItemDefinition[] = [
     shortcut: 'Ctrl+Shift+S',
     onClick: async () => {
       try {
-        const name = useProjectStore.getState().project.name;
-        const project = await import('../../../storage/ProjectSerializer').then(m => m.ProjectSerializer.serialize(name));
-        const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.onion`;
-        a.click();
-        URL.revokeObjectURL(url);
-        useNotificationStore.getState().addNotification({
-          type: 'success', message: `Exported "${name}.onion"`, autoDismiss: 3000,
-        });
+        await _doSaveAs();
       } catch (err: any) {
+        if (err?.name === 'AbortError' || err?.name === 'SecurityError') return; // User cancelled
         useNotificationStore.getState().addNotification({
-          type: 'error', message: `Save As failed: ${err?.message ?? 'Unknown error'}`,
+          type: 'error',
+          message: `Save As failed: ${err?.message ?? 'Unknown error'}`,
         });
       }
     },
@@ -132,20 +235,9 @@ export const fileMenu: MenuItemDefinition[] = [
     onClick: async () => {
       const assets = await assetManager.importFromFilePicker();
       if (assets.length === 0) return;
-      // Add to project assets panel (NOT directly to timeline)
-      const projStore = useProjectStore.getState();
-      for (const asset of assets) {
-        projStore.addAsset({
-          id: asset.id,
-          name: asset.name,
-          type: asset.type,
-          path: asset.url,
-          size: asset.size,
-          originalName: asset.name,
-          mimeType: asset.mimeType,
-          importedAt: asset.importedAt,
-        });
-      }
+      // Assets are already synced to projectStore by ProjectBrowserPanel's
+      // useEffect listener on assetManager.events['assets:changed'].
+      // No manual projectStore.addAsset needed here.
       useNotificationStore.getState().addNotification({
         type: 'success',
         message: `Imported ${assets.length} file${assets.length > 1 ? 's' : ''} to project. Drag to viewport or timeline to add.`,
@@ -169,7 +261,7 @@ export const fileMenu: MenuItemDefinition[] = [
           if (!comp) return;
           let imported = 0;
           for (const file of files) {
-            if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) continue;
+            if (!file.type.startsWith('image/') && !file.type.startsWith('video/') && !file.type.startsWith('audio/')) continue;
             try {
               const asset = await assetManager.importFile(file);
               const type = asset.type === 'video' ? 'video' : 'image';

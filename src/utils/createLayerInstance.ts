@@ -57,8 +57,13 @@ export function createLayerInstance(
       case 'video':
         (layer as any).data = { assetId:'', naturalWidth:100, naturalHeight:100, duration:10, muted:false, volume:1, playbackRate:1 };
         break;
+      case 'audio':
+        (layer as any).data = { assetId:'', duration:10, volume:1, muted:false, playbackRate:1 };
+        break;
       case 'adjustment':
         (layer as any).data = {};
+        // Adjustment layers default to full-composition duration
+        layer.endFrame = Math.max(layer.endFrame, Math.floor(comp.duration * comp.fps));
         break;
     }
   }

@@ -183,6 +183,17 @@ export const LayerRow: React.FC<LayerRowProps> = ({
         <div className="fixed z-[9999] min-w-[180px] py-1.5"
           style={{ left: contextMenu.x, top: contextMenu.y, background: 'var(--color-panel-raised)', borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-dropdown)' }}
         >
+          {(layer.type === 'image' || layer.type === 'video') && (layer.data as any)?.assetId && (
+            <button onClick={() => contextAction(() => document.dispatchEvent(new CustomEvent('project:revealAsset', { detail: { assetId: (layer.data as any).assetId } })))}
+              className="w-full text-left border-0 bg-transparent cursor-pointer transition-colors"
+              style={{ height: 30, padding: '0 14px', fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}
+              onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'}
+              onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+            >Reveal in Project Panel</button>
+          )}
+          {(layer.type === 'image' || layer.type === 'video') && (layer.data as any)?.assetId && (
+            <div className="h-px my-1.5 mx-2" style={{ background: 'var(--color-divider)' }} />
+          )}
           {[
             { label: 'Rename', onClick: () => setEditing(true) },
             { label: 'Duplicate', onClick: () => onDuplicate?.(layer.id) },

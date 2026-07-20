@@ -7,19 +7,22 @@ import { useNavigationStore } from '../../../state/navigationStore';
 import { createDefaultLayer } from '../../../config/defaults';
 import type { Layer, CompData } from '../../../types/layer';
 import { capitalize } from '../../../utils/string';
+import { confirm } from '../../common/ConfirmDialog';
 
 function genId(): string { return `layer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`; }
 
-function createNewLayer(_compId: string, type: Layer['type'], compWidth: number, compHeight: number, layerCount: number): Layer {
+function createNewLayer(_compId: string, type: Layer['type'], compWidth: number, compHeight: number, layerCount: number, compDuration: number, compFps: number): Layer {
   const base = createDefaultLayer(type, `${capitalize(type)} ${layerCount + 1}`);
+  const compEndFrame = Math.floor(compDuration * compFps);
   const layer: Layer = {
     ...base, id: genId(), zIndex: layerCount + 1,
+    endFrame: compEndFrame,
     transform: { position: { x: 0, y: 0 }, scale: { x: 100, y: 100 }, rotation: 0, anchorPoint: { x: 0, y: 0 } },
   };
   switch (type) {
     case 'solid': layer.data = { color: '#4772b3', width: compWidth, height: compHeight }; break;
     case 'shape': layer.data = { type: 'rectangle', width: 200, height: 150, borderRadius: 0 }; break;
-    case 'text':  layer.data = { text: 'Text', fontFamily: 'Inter', fontSize: 48, fontWeight: 400, color: '#ffffff', lineHeight: 1.2, letterSpacing: 0, alignment: 'center' }; break;
+    case 'text':  layer.data = { text: 'Text', fontFamily: 'Inter', fontSize: 48, fontWeight: 400, color: '#000000', lineHeight: 1.2, letterSpacing: 0, alignment: 'center' }; break;
     case 'image': layer.data = { assetId: '', naturalWidth: 100, naturalHeight: 100 }; break;
     case 'video': layer.data = { assetId: '', naturalWidth: 100, naturalHeight: 100, duration: 10, muted: false, volume: 1, playbackRate: 1 }; break;
   }
@@ -101,12 +104,23 @@ export const OutlinerPanel: React.FC = () => {
     });
   }, [comp, select]);
 
-  const handleDeleteLayer = useCallback((id: string) => {
-    if (!comp) return; removeLayer(comp.id, id); useSelectionStore.getState().deselect(id);
+  const handleDeleteLayer = useCallback(async (id: string) => {
+    if (!comp) return;
+    const layer = comp.layers.find(l => l.id === id);
+    const name = layer?.name ?? 'this layer';
+    const yes = await confirm(`Delete layer "${name}"?`, 'Delete Layer');
+    if (yes) { removeLayer(comp.id, id); useSelectionStore.getState().deselect(id); }
   }, [comp, removeLayer]);
 
-  const handleDeleteSelected = useCallback(() => {
-    if (!comp) return; for (const id of selectedIds) removeLayer(comp.id, id); clearSelection();
+  const handleDeleteSelected = useCallback(async () => {
+    if (!comp) return;
+    const count = selectedIds.length;
+    const yes = await confirm(
+      `Delete ${count} layer${count === 1 ? '' : 's'}?`,
+      'Delete Layers',
+      { confirmLabel: `Delete ${count} layer${count === 1 ? '' : 's'}` },
+    );
+    if (yes) { for (const id of selectedIds) removeLayer(comp.id, id); clearSelection(); }
   }, [comp, selectedIds, removeLayer, clearSelection]);
 
   const handleDoubleClick = useCallback((layerId: string) => {
@@ -122,7 +136,7 @@ export const OutlinerPanel: React.FC = () => {
 
   const handleAddLayer = useCallback((type: Layer['type']) => {
     if (!comp) return;
-    const layer = createNewLayer(comp.id, type, comp.width, comp.height, comp.layers.length);
+    const layer = createNewLayer(comp.id, type, comp.width, comp.height, comp.layers.length, comp.duration, comp.fps);
     addLayer(comp.id, layer);
     select({ type: 'layer', id: layer.id, compositionId: comp.id });
     setShowAddMenu(false);

@@ -62,6 +62,15 @@ export class DownloadAdapter implements StorageAdapter {
     const cached = this._projectCache.get(handle.id);
     if (cached) return cached;
 
+    // If the handle contains a File object (from Open Project), read it directly
+    const internal = handle.internal as any;
+    if (internal?.file && typeof internal.file.text === 'function') {
+      const text = await internal.file.text();
+      const project = JSON.parse(text) as SerializedProject;
+      this._projectCache.set(handle.id, project);
+      return project;
+    }
+
     // Otherwise prompt user to upload a file
     return new Promise((resolve, reject) => {
       const input = document.createElement('input');

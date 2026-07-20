@@ -11,6 +11,7 @@ export interface RuntimeTransformOverride {
   rotation?: number;
   anchorPoint?: { x: number; y: number };
   opacity?: number;
+  volume?: number;
 }
 
 export type RuntimeOverrides = Map<string, RuntimeTransformOverride>;
@@ -98,8 +99,12 @@ export class PropertyBinder {
       let touched = false;
       const effectUpdates: Array<{ effectId: string; paramId: string; value: any }> = [];
 
+      // Evaluate keyframes relative to layer's start frame (local frame)
+      // This ensures staggered/duplicated layers animate at different times
+      const localFrame = Math.max(0, frame - layer.startFrame);
+
       for (const path of paths) {
-        const result = this.engine.evaluate(layer.id, path, frame);
+        const result = this.engine.evaluate(layer.id, path, localFrame);
         let val = result.value;
 
         let evalFrame = frame;
@@ -161,6 +166,8 @@ export class PropertyBinder {
           override.anchorPoint = { x: override.anchorPoint!.x, y: val as number }; touched = true;
         } else if (path === 'opacity') {
           override.opacity = val as number; touched = true;
+        } else if (path === 'volume' && (layer.type === 'audio' || layer.type === 'video')) {
+          override.volume = val as number; touched = true;
         }
       }
 

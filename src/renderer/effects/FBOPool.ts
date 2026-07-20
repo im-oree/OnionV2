@@ -1,7 +1,6 @@
 /**
- * FBOPool — manages a reusable pool of THREE.WebGLRenderTarget instances.
- * Keyed by (width, height) and configured for half-float HDR rendering.
- * Acquired FBOs must be released back when done.
+ * FBOPool — manages reusable THREE.WebGLRenderTarget instances.
+ * Effects use normal unsigned-byte RGBA targets for broad compatibility.
  */
 import * as THREE from 'three';
 
@@ -14,43 +13,46 @@ class FBOPoolClass {
   private pool = new Map<string, THREE.WebGLRenderTarget[]>();
   private activeCount = 0;
 
-  /** Acquire an FBO. Returns existing one from pool or creates new. */
   acquire(width: number, height: number): THREE.WebGLRenderTarget {
-    const key = this._key({ w: Math.ceil(width), h: Math.ceil(height) });
+    const w = Math.max(1, Math.ceil(width));
+    const h = Math.max(1, Math.ceil(height));
+    const key = this._key({ w, h });
+
     const available = this.pool.get(key);
     if (available && available.length > 0) {
       this.activeCount++;
       return available.pop()!;
     }
 
-    const fbo = new THREE.WebGLRenderTarget(Math.ceil(width), Math.ceil(height), {
+    const fbo = new THREE.WebGLRenderTarget(w, h, {
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
       format: THREE.RGBAFormat,
-      type: THREE.HalfFloatType,
+      type: THREE.UnsignedByteType,
       depthBuffer: false,
       stencilBuffer: false,
     });
+
+    fbo.texture.name = `effect-fbo-${w}x${h}`;
+    fbo.texture.colorSpace = THREE.SRGBColorSpace;
+
     this.activeCount++;
     return fbo;
   }
 
-  /** Release an FBO back to the pool */
   release(fbo: THREE.WebGLRenderTarget): void {
     const key = this._key({ w: fbo.width, h: fbo.height });
     const available = this.pool.get(key) || [];
     available.push(fbo);
     this.pool.set(key, available);
-    this.activeCount--;
+    this.activeCount = Math.max(0, this.activeCount - 1);
 
-    // Auto-shrink: if pool has more than 4 per size, dispose extras
     if (available.length > 4) {
       const extra = available.splice(0, available.length - 4);
       extra.forEach((t) => t.dispose());
     }
   }
 
-  /** Dispose all FBOs */
   dispose(): void {
     for (const targets of this.pool.values()) {
       targets.forEach((t) => t.dispose());
@@ -59,7 +61,9 @@ class FBOPoolClass {
     this.activeCount = 0;
   }
 
-  get active(): number { return this.activeCount; }
+  get active(): number {
+    return this.activeCount;
+  }
 
   private _key(k: PoolKey): string {
     return `${k.w}x${k.h}`;

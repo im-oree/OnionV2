@@ -12,34 +12,8 @@
  * Operations entirely on GPU — no CPU roundtrips.
  */
 import * as THREE from 'three';
-import { fboPool } from './FBOPool';
 import type { EffectInstance, EffectDefinition } from '../../types/effect';
 import { effectRegistry } from './EffectRegistry';
-
-/** Global quad mesh shared by all effects — material is swapped per-pass */
-let effectQuad: THREE.Mesh | null = null;
-function getEffectQuad(): THREE.Mesh {
-  if (!effectQuad) {
-    const geo = new THREE.PlaneGeometry(2, 2);
-    const mat = new THREE.MeshBasicMaterial({ depthWrite: false, depthTest: false });
-    effectQuad = new THREE.Mesh(geo, mat);
-    effectQuad.frustumCulled = false;
-  }
-  return effectQuad;
-}
-
-/** Dedicated fullscreen quad + material for blit operations — avoids type conflict with ShaderMaterial */
-let blitQuad: THREE.Mesh | null = null;
-function getBlitQuad(texture: THREE.Texture): THREE.Mesh {
-  if (!blitQuad) {
-    const geo = new THREE.PlaneGeometry(2, 2);
-    const mat = new THREE.MeshBasicMaterial({ depthWrite: false, depthTest: false });
-    blitQuad = new THREE.Mesh(geo, mat);
-    blitQuad.frustumCulled = false;
-  }
-  (blitQuad.material as THREE.MeshBasicMaterial).map = texture;
-  return blitQuad;
-}
 
 export class EffectChain {
   private renderer: THREE.WebGLRenderer;
@@ -47,9 +21,20 @@ export class EffectChain {
   private materialCache = new Map<string, THREE.ShaderMaterial>();
   /** Source texture (the layer's rendered content) */
   private sourceTexture: THREE.Texture | null = null;
+
   /** Layer bounds for FBO sizing */
   private layerWidth = 0;
   private layerHeight = 0;
+
+  /** Persistent ping-pong targets. These are NOT returned to FBOPool each frame. */
+  private targetA: THREE.WebGLRenderTarget | null = null;
+  private targetB: THREE.WebGLRenderTarget | null = null;
+  private targetW = 0;
+  private targetH = 0;
+
+  private fullscreenScene: THREE.Scene | null = null;
+  private fullscreenCamera: THREE.OrthographicCamera | null = null;
+  private fullscreenQuad: THREE.Mesh | null = null;
 
   constructor(renderer: THREE.WebGLRenderer) {
     this.renderer = renderer;
@@ -62,75 +47,215 @@ export class EffectChain {
     this.layerHeight = Math.max(1, Math.ceil(height));
   }
 
-  /** Render the effect stack. Returns the final FBO's texture. */
+  /** Render the effect stack. Returns a persistent final texture. */
   render(effects: EffectInstance[]): THREE.Texture | null {
     if (!this.sourceTexture) return null;
+
     const enabled = effects.filter((e) => e.enabled);
     if (enabled.length === 0) return this.sourceTexture;
 
-    // Release previous result FBO before starting new render
-    this.releaseResult();
+    const w = Math.max(1, Math.ceil(this.layerWidth));
+    const h = Math.max(1, Math.ceil(this.layerHeight));
+    this._ensureTargets(w, h);
 
-    const { renderer, layerWidth: w, layerHeight: h } = this;
+    if (!this.targetA || !this.targetB) return null;
 
-    // Acquire ping-pong FBOs
-    const fboA = fboPool.acquire(w, h);
-    const fboB = fboPool.acquire(w, h);
+    const oldTarget = this.renderer.getRenderTarget();
+    const oldViewport = new THREE.Vector4();
+    const oldScissor = new THREE.Vector4();
 
-    // Render source into FBO A
-    const quad = getEffectQuad();
-    this._blit(renderer, this.sourceTexture, fboA);
+    this.renderer.getViewport(oldViewport);
+    this.renderer.getScissor(oldScissor);
+    const oldScissorTest = this.renderer.getScissorTest();
 
-    let readFbo = fboA;
-    let writeFbo = fboB;
+    try {
+      // Copy source texture into targetA first.
+      this._renderTextureToTarget(this.sourceTexture, this.targetA, w, h);
 
-    for (let pass = 0; pass < enabled.length; pass++) {
-      const effect = enabled[pass];
-      const def = effectRegistry.get(effect.type);
-      if (!def) continue;
+      let read = this.targetA;
+      let write = this.targetB;
 
-      const mat = this._getMaterial(def, effect);
-      if (!mat) continue;
+      for (const effect of enabled) {
+        const def = effectRegistry.get(effect.type);
+        if (!def || def.passes === 0) continue;
 
-      // Sync uniforms from current effect instance parameters
-      this._syncUniforms(mat, effect);
+        // Blurs run as two separable 1D passes for a smooth result.
+        if (effect.type === 'gaussianBlur' || effect.type === 'boxBlur') {
+          const passH = this._getBlurMaterial(effect, 'h');
+          const passV = this._getBlurMaterial(effect, 'v');
+          if (!passH || !passV) continue;
 
-      // Set source texture for this pass (property, not function)
-      (mat.uniforms as any).uTexture.value = readFbo.texture;
-      // Update resolution uniform
-      (mat.uniforms as any).uResolution?.value?.set?.(w, h);
+          this._syncUniforms(passH, effect);
+          this._syncUniforms(passV, effect);
 
-      // Render the quad with the effect material into writeFbo
-      renderer.setRenderTarget(writeFbo);
-      renderer.clear();
-      if ((quad.material as THREE.Material) !== mat) {
-        quad.material = mat;
+          (passH.uniforms as any).uTexture.value = read.texture;
+          (passH.uniforms as any).uResolution.value.set(w, h);
+          this._renderMaterialToTarget(passH, write, w, h);
+          [read, write] = [write, read];
+
+          (passV.uniforms as any).uTexture.value = read.texture;
+          (passV.uniforms as any).uResolution.value.set(w, h);
+          this._renderMaterialToTarget(passV, write, w, h);
+          [read, write] = [write, read];
+          continue;
+        }
+
+        const mat = this._getMaterial(def, effect);
+        if (!mat) continue;
+
+        this._syncUniforms(mat, effect);
+
+        if ((mat.uniforms as any).uTexture) {
+          (mat.uniforms as any).uTexture.value = read.texture;
+        }
+
+        if ((mat.uniforms as any).uResolution?.value?.set) {
+          (mat.uniforms as any).uResolution.value.set(w, h);
+        }
+
+        this._renderMaterialToTarget(mat, write, w, h);
+        [read, write] = [write, read];
       }
-      renderer.render(quad, this._identityCamera());
 
-      // Ping-pong: swap FBOs
-      [readFbo, writeFbo] = [writeFbo, readFbo];
+      return read.texture;
+    } finally {
+      this.renderer.setRenderTarget(oldTarget);
+      this.renderer.setViewport(oldViewport);
+      this.renderer.setScissor(oldScissor);
+      this.renderer.setScissorTest(oldScissorTest);
     }
-
-    // Release the final write FBO (it was swapped, so writeFbo is the unused one)
-    fboPool.release(writeFbo);
-
-    // readFbo now holds the final result
-    this._lastResult = readFbo;
-    return readFbo.texture;
   }
 
-  private _lastResult: THREE.WebGLRenderTarget | null = null;
-
-  /** Release the last result FBO */
+  /** Kept for compatibility. Persistent targets are released only on resize/dispose. */
   releaseResult(): void {
-    if (this._lastResult) {
-      fboPool.release(this._lastResult);
-      this._lastResult = null;
-    }
+    // no-op
   }
 
-    /** Sync ShaderMaterial uniforms from current effect instance parameters */
+  private _ensureTargets(w: number, h: number): void {
+    if (this.targetA && this.targetB && this.targetW === w && this.targetH === h) {
+      return;
+    }
+
+    this._disposeTargets();
+
+    this.targetA = this._createTarget(w, h, 'effect-chain-A');
+    this.targetB = this._createTarget(w, h, 'effect-chain-B');
+    this.targetW = w;
+    this.targetH = h;
+  }
+
+  private _createTarget(w: number, h: number, name: string): THREE.WebGLRenderTarget {
+    const rt = new THREE.WebGLRenderTarget(w, h, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType,
+      depthBuffer: false,
+      stencilBuffer: false,
+    });
+
+    rt.texture.name = `${name}-${w}x${h}`;
+    rt.texture.colorSpace = THREE.SRGBColorSpace;
+
+    return rt;
+  }
+
+  private _disposeTargets(): void {
+    if (this.targetA) {
+      this.targetA.dispose();
+      this.targetA = null;
+    }
+    if (this.targetB) {
+      this.targetB.dispose();
+      this.targetB = null;
+    }
+    this.targetW = 0;
+    this.targetH = 0;
+  }
+
+  private _getFullscreenObjects(): {
+    scene: THREE.Scene;
+    camera: THREE.OrthographicCamera;
+    quad: THREE.Mesh;
+  } {
+    if (!this.fullscreenScene) {
+      this.fullscreenScene = new THREE.Scene();
+    }
+
+    if (!this.fullscreenCamera) {
+      this.fullscreenCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      this.fullscreenCamera.position.z = 0;
+    }
+
+    if (!this.fullscreenQuad) {
+      const geo = new THREE.PlaneGeometry(2, 2);
+      const mat = new THREE.MeshBasicMaterial({
+        depthWrite: false,
+        depthTest: false,
+        transparent: true,
+      });
+
+      this.fullscreenQuad = new THREE.Mesh(geo, mat);
+      this.fullscreenQuad.frustumCulled = false;
+      this.fullscreenScene.add(this.fullscreenQuad);
+    }
+
+    return {
+      scene: this.fullscreenScene,
+      camera: this.fullscreenCamera,
+      quad: this.fullscreenQuad,
+    };
+  }
+
+  private _renderTextureToTarget(
+    texture: THREE.Texture,
+    target: THREE.WebGLRenderTarget,
+    w: number,
+    h: number,
+  ): void {
+    const { scene, camera, quad } = this._getFullscreenObjects();
+
+    let mat = quad.material as THREE.MeshBasicMaterial;
+    if (!(mat instanceof THREE.MeshBasicMaterial)) {
+      mat = new THREE.MeshBasicMaterial({
+        depthWrite: false,
+        depthTest: false,
+        transparent: true,
+      });
+      quad.material = mat;
+    }
+
+    mat.map = texture;
+    mat.color.set(0xffffff);
+    mat.needsUpdate = true;
+
+    this.renderer.setRenderTarget(target);
+    this.renderer.setViewport(0, 0, w, h);
+    this.renderer.setScissor(0, 0, w, h);
+    this.renderer.setScissorTest(false);
+    this.renderer.clear();
+    this.renderer.render(scene, camera);
+  }
+
+  private _renderMaterialToTarget(
+    material: THREE.ShaderMaterial,
+    target: THREE.WebGLRenderTarget,
+    w: number,
+    h: number,
+  ): void {
+    const { scene, camera, quad } = this._getFullscreenObjects();
+
+    quad.material = material;
+
+    this.renderer.setRenderTarget(target);
+    this.renderer.setViewport(0, 0, w, h);
+    this.renderer.setScissor(0, 0, w, h);
+    this.renderer.setScissorTest(false);
+    this.renderer.clear();
+    this.renderer.render(scene, camera);
+  }
+
+  /** Sync ShaderMaterial uniforms from current effect instance parameters */
   private _syncUniforms(mat: THREE.ShaderMaterial, effect: EffectInstance): void {
     for (const param of effect.parameters) {
       const uniform = (mat.uniforms as any)[param.uniform];
@@ -149,12 +274,43 @@ export class EffectChain {
     }
   }
 
-  /** Blit a texture to an FBO using a dedicated MeshBasicMaterial quad */
-  private _blit(renderer: THREE.WebGLRenderer, texture: THREE.Texture, target: THREE.WebGLRenderTarget): void {
-    const quad = getBlitQuad(texture);
-    renderer.setRenderTarget(target);
-    renderer.clear();
-    renderer.render(quad, this._identityCamera());
+  /** Get or create a separable blur material (h or v pass). */
+  private _getBlurMaterial(instance: EffectInstance, dir: 'h' | 'v'): THREE.ShaderMaterial | null {
+    const key = `blur_${dir}_${instance.id}`;
+    if (this.materialCache.has(key)) return this.materialCache.get(key)!;
+
+    const uniforms: Record<string, THREE.IUniform> = {
+      uTexture: { value: null },
+      uResolution: { value: new THREE.Vector2(this.layerWidth, this.layerHeight) },
+    };
+    for (const param of instance.parameters) {
+      if (param.type === 'color') {
+        uniforms[param.uniform] = { value: new THREE.Color(param.value as string) };
+      } else if (param.type === 'vector2' && Array.isArray(param.value)) {
+        uniforms[param.uniform] = { value: new THREE.Vector2(param.value[0], param.value[1]) };
+      } else {
+        uniforms[param.uniform] = { value: param.value };
+      }
+    }
+
+    const vs = `varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`;
+    const fs = dir === 'h' ? this._blurShaderH() : this._blurShaderV();
+
+    const mat = new THREE.ShaderMaterial({
+      vertexShader: vs,
+      fragmentShader: fs,
+      uniforms,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+    });
+
+    this.materialCache.set(key, mat);
+    return mat;
   }
 
   /** Get or create a ShaderMaterial for an effect */
@@ -202,9 +358,11 @@ export class EffectChain {
   /** Fallback built-in shaders when GLSL files aren't available yet */
   private _getFallbackShader(type: string): string {
     switch (type) {
+      // gaussianBlur / boxBlur handled specially in render() via separable passes
       case 'gaussianBlur':
       case 'boxBlur':
-        return this._blurShader();
+        return `uniform sampler2D uTexture; varying vec2 vUv;
+          void main() { gl_FragColor = texture2D(uTexture, vUv); }`;
       case 'glow':
         return this._glowShader();
       case 'colorCorrection':
@@ -233,19 +391,39 @@ export class EffectChain {
     }
   }
 
-  private _blurShader(): string {
+  private _blurShaderH(): string {
     return `uniform sampler2D uTexture; uniform float uRadius; uniform vec2 uResolution;
       varying vec2 vUv;
       void main() {
-        vec2 off = vec2(1.0 / uResolution.x, 1.0 / uResolution.y) * uRadius;
+        float sigma = max(uRadius, 0.5);
+        float texelX = 1.0 / uResolution.x;
         vec4 col = vec4(0.0);
         float total = 0.0;
-        for (int x = -3; x <= 3; x++) {
-          for (int y = -3; y <= 3; y++) {
-            float w = exp(-float(x*x + y*y) / (2.0 * max(uRadius, 1.0)));
-            col += texture2D(uTexture, vUv + vec2(float(x)*off.x, float(y)*off.y)) * w;
-            total += w;
-          }
+        for (int i = -6; i <= 6; i++) {
+          float fi = float(i);
+          float w = exp(-(fi * fi) / (2.0 * sigma * sigma));
+          vec2 off = vec2(fi * texelX * (sigma / 3.0), 0.0);
+          col += texture2D(uTexture, vUv + off) * w;
+          total += w;
+        }
+        gl_FragColor = col / total;
+      }`;
+  }
+
+  private _blurShaderV(): string {
+    return `uniform sampler2D uTexture; uniform float uRadius; uniform vec2 uResolution;
+      varying vec2 vUv;
+      void main() {
+        float sigma = max(uRadius, 0.5);
+        float texelY = 1.0 / uResolution.y;
+        vec4 col = vec4(0.0);
+        float total = 0.0;
+        for (int i = -6; i <= 6; i++) {
+          float fi = float(i);
+          float w = exp(-(fi * fi) / (2.0 * sigma * sigma));
+          vec2 off = vec2(0.0, fi * texelY * (sigma / 3.0));
+          col += texture2D(uTexture, vUv + off) * w;
+          total += w;
         }
         gl_FragColor = col / total;
       }`;
@@ -414,19 +592,21 @@ export class EffectChain {
       }`;
   }
 
-  private _identCam: THREE.OrthographicCamera | null = null;
-
-  private _identityCamera(): THREE.OrthographicCamera {
-    if (!this._identCam) {
-      this._identCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-      this._identCam.position.z = 0;
-    }
-    return this._identCam;
-  }
-
   dispose(): void {
     for (const mat of this.materialCache.values()) mat.dispose();
     this.materialCache.clear();
-    this.releaseResult();
+
+    this._disposeTargets();
+
+    if (this.fullscreenQuad) {
+      this.fullscreenQuad.geometry.dispose();
+      if (this.fullscreenQuad.material instanceof THREE.Material) {
+        this.fullscreenQuad.material.dispose();
+      }
+      this.fullscreenQuad = null;
+    }
+
+    this.fullscreenScene = null;
+    this.fullscreenCamera = null;
   }
 }

@@ -2,10 +2,11 @@ import type { CameraManager } from '../CameraManager';
 import { useCompositionStore } from '../../state/compositionStore';
 import { useSelectionStore } from '../../state/selectionStore';
 import { useViewportStore } from '../../state/viewportStore';
-import { registerModalActiveCheck } from '../../input/ShortcutRegistry';
+import { registerModalActiveCheck, registerForceCancelModal } from '../../input/ShortcutRegistry';
 import { Snapping, type SnapTargets } from '../utils/Snapping';
 import type { Layer } from '../../types/layer';
 import { useTimelineStore } from '../../state/timelineStore';
+import { useKeyframeStore } from '../../state/keyframeStore';
 import { autoKeyTransform } from './KeyframeHelpers';
 
 export type TransformMode = 'grab' | 'rotate' | 'scale';
@@ -78,6 +79,10 @@ export class ModalTransform {
       }
       return ModalTransform.activeAnywhere;
     });
+
+    // Escape hatch: when shortcuts are frozen because activeAnywhere is stuck
+    // and the docKeydown listener wasn't attached, this forcibly cleans up.
+    registerForceCancelModal(() => this.cancel());
     document.addEventListener('mousemove', (e) => { document._lastMouseEvent = e; }, { passive: true });
   }
 
@@ -85,7 +90,10 @@ export class ModalTransform {
     if (this._active) this.cancel();
 
     const layerIds = useSelectionStore.getState().getSelectedIds();
-    if (layerIds.length === 0) return;
+    if (layerIds.length === 0) {
+      // No layers to transform — don't set active flags
+      return;
+    }
 
     const compState = useCompositionStore.getState();
     const compId = compState.activeCompositionId;
@@ -201,9 +209,13 @@ export class ModalTransform {
     }
   }
 
-  /** When auto-key is enabled, insert keyframes for any transform values that changed */
+  /** Insert keyframes for any transform values that changed after a drag.
+   *  - If autoKey is ON: always keyframe changed properties.
+   *  - If autoKey is OFF but the layer already has keyframes on a property:
+   *    insert/update a keyframe at the current frame so the keyframe engine
+   *    doesn't override the user's new position with stale interpolated values.
+   */
   private _autoKeyChangedTransforms(): void {
-    if (!useTimelineStore.getState().autoKey) return;
     const compId = this._compId;
     if (!compId) return;
 
@@ -212,11 +224,39 @@ export class ModalTransform {
     if (!comp) return;
 
     const currentFrame = Math.round(comp.currentTime * comp.fps);
+    const autoKey = useTimelineStore.getState().autoKey;
+    const engine = useKeyframeStore.getState().engine;
 
     for (const [layerId, start] of this._startTransforms) {
       const layer = comp.layers.find(l => l.id === layerId);
       if (!layer) continue;
-      autoKeyTransform(layerId, layer.transform, start, currentFrame);
+
+      // Determine which properties actually changed
+      const t = layer.transform;
+      const changedProps: Array<{ prop: string; value: number | number[] }> = [];
+
+      if (t.position.x !== start.pos.x || t.position.y !== start.pos.y) {
+        changedProps.push({ prop: 'transform.position', value: [t.position.x, t.position.y] });
+      }
+      if (t.scale.x !== start.scale.x || t.scale.y !== start.scale.y) {
+        changedProps.push({ prop: 'transform.scale', value: [t.scale.x, t.scale.y] });
+      }
+      if (t.rotation !== start.rotation) {
+        changedProps.push({ prop: 'transform.rotation', value: t.rotation });
+      }
+
+      if (changedProps.length === 0) continue;
+
+      // For each changed property, decide whether to insert a keyframe:
+      //   - autoKey ON: always insert
+      //   - autoKey OFF but property already has keyframes: insert (prevent override)
+      for (const { prop, value } of changedProps) {
+        const hasKeyframes = engine.getKeyframesForProperty(layerId, prop).length > 0;
+        if (!autoKey && !hasKeyframes) continue;
+
+        autoKeyTransform(layerId, layer.transform, start, currentFrame);
+        break; // autoKeyTransform handles all changed props for this layer
+      }
     }
   }
 

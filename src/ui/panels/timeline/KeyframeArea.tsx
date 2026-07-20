@@ -3,13 +3,15 @@ import type { Layer } from '../../../types/layer';
 import type { Keyframe } from '../../../types/keyframe';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { useCompositionStore } from '../../../state/compositionStore';
-import { useLayerBarDrag } from './useLayerBarDrag';
+import { useLayerBarDrag, type DragMode } from './useLayerBarDrag';
 import { useKeyframeDrag } from './useKeyframeDrag';
 import { useTimelineExpanded } from './useTimelineExpanded';
 import { useContextMenu } from '../../common/useContextMenu';
 import { ContextMenu } from '../../common/ContextMenu';
 import { buildKeyframeContextMenu } from './keyframeContextMenu';
 import { LAYER_COLORS } from './layerColors';
+import { AudioWaveform } from './AudioWaveform';
+import { VolumeAutomationTrack } from './VolumeAutomationTrack';
 
 interface Props {
   layers: Layer[];
@@ -35,8 +37,9 @@ export const KeyframeArea: React.FC<Props> = ({ layers, zoom, totalFrames, compI
   const boxSelectState = useRef<{ startX: number; startY: number } | null>(null);
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0) return; // skip right-clicks (handled by onContextMenu)
     const t = e.target as HTMLElement;
+    if (t.closest('[data-ctx-menu]')) return; // don't interfere with context menu clicks
     if (t.closest('[data-kf-diamond]') || t.closest('[data-layer-bar]')) return;
     if (!e.shiftKey && !e.ctrlKey && !e.metaKey) useKeyframeStore.getState().clearKeyframeSelection();
     const rect = boxRef.current?.getBoundingClientRect();
@@ -116,11 +119,22 @@ export const KeyframeArea: React.FC<Props> = ({ layers, zoom, totalFrames, compI
         const expanded = expandedSet.has(layer.id);
         const allKfs = engine.getAllKeyframesForLayer(layer.id);
         const props = engine.getAllAnimatedProperties(layer.id);
+        const isAudio = layer.type === 'audio';
+        // For audio layers, always show volume track when expanded (even if no keyframes yet)
+        const volumeKeyframes = isAudio ? allKfs.filter(k => k.property === 'volume') : [];
         return (
           <div key={layer.id}>
             <LayerTrackBar layer={layer} zoom={zoom} compId={compId}
               totalFrames={totalFrames} summaryKfs={allKfs} colorIdx={li} />
-            {expanded && props.map(propPath => {
+            {expanded && isAudio && (
+              <VolumeAutomationTrack
+                layerId={layer.id}
+                keyframes={volumeKeyframes}
+                zoom={zoom}
+                colorIdx={li}
+              />
+            )}
+            {expanded && props.filter(p => p !== 'volume').map(propPath => {
               const propKfs = allKfs.filter(k => k.property === propPath);
               return <PropertyKeyframeTrack key={propPath} keyframes={propKfs}
                 zoom={zoom} onKfDown={kfDrag.onDown} />;
@@ -142,6 +156,25 @@ const LayerTrackBar: React.FC<{
   const width = Math.max(8, (layer.endFrame - layer.startFrame) * zoom);
   const uniqueFrames = Array.from(new Set(summaryKfs.map(k => k.time))).sort((a, b) => a - b);
   const palette = LAYER_COLORS[colorIdx % LAYER_COLORS.length];
+  const duration = layer.endFrame - layer.startFrame;
+
+  // Modifier-aware trim handlers: Ctrl=ripple, Shift=roll, Alt=slip
+  const handleTrimStart = useCallback((e: React.MouseEvent) => {
+    if (e.altKey) return onMouseDown('slip')(e);
+    if (e.shiftKey) return onMouseDown('roll')(e);
+    if (e.ctrlKey || e.metaKey) return onMouseDown('rippleStart')(e);
+    return onMouseDown('trimStart')(e);
+  }, [onMouseDown]);
+  const handleTrimEnd = useCallback((e: React.MouseEvent) => {
+    if (e.altKey) return onMouseDown('slip')(e);
+    if (e.shiftKey) return onMouseDown('roll')(e);
+    if (e.ctrlKey || e.metaKey) return onMouseDown('rippleEnd')(e);
+    return onMouseDown('trimEnd')(e);
+  }, [onMouseDown]);
+  const handleMove = useCallback((e: React.MouseEvent) => {
+    if (e.altKey) return onMouseDown('slip')(e);
+    return onMouseDown('move')(e);
+  }, [onMouseDown]);
 
   return (
     <div className="relative" style={{ height: LAYER_ROW_H, borderBottom: '1px solid var(--color-divider)' }}>
@@ -155,13 +188,21 @@ const LayerTrackBar: React.FC<{
           background: `linear-gradient(135deg, ${palette.from}, ${palette.to})`,
           boxShadow: `0 1px 3px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.12)`,
         }}
-        onMouseDown={onMouseDown('move')}
-        title={`${layer.name}: ${layer.startFrame}–${layer.endFrame}`}
+        onMouseDown={handleMove}
+        title={`${layer.name}: ${layer.startFrame}–${layer.endFrame} (${duration}f)\nDrag: move | Alt+drag: slip | Ctrl+drag: ripple | Shift+drag: roll`}
       >
         <div className="absolute left-0 top-0 bottom-0 w-[8px] rounded-l-full"
-          style={{ cursor: 'ew-resize' }} onMouseDown={onMouseDown('trimStart')} />
+          style={{ cursor: 'ew-resize' }} onMouseDown={handleTrimStart} />
         <div className="absolute right-0 top-0 bottom-0 w-[8px] rounded-r-full"
-          style={{ cursor: 'ew-resize' }} onMouseDown={onMouseDown('trimEnd')} />
+          style={{ cursor: 'ew-resize' }} onMouseDown={handleTrimEnd} />
+        {layer.type === 'audio' && (layer.data as any)?.assetId && (
+          <AudioWaveform
+            assetId={(layer.data as any).assetId}
+            width={width}
+            height={22}
+            color={palette.accent}
+          />
+        )}
         <div className="absolute inset-0 flex items-center px-3 pointer-events-none overflow-hidden">
           <span className="truncate select-none"
             style={{ fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.92)', letterSpacing: '0.02em', textShadow: '0 1px 2px rgba(0,0,0,0.4)' }}>

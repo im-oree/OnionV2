@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { keyframeClipboard } from './keyframeClipboard';
 import { animationClock } from './PlaybackControls';
+import { confirm } from '../../common/ConfirmDialog';
 
 function getSelectedKeyframes(): any[] {
   const store = useKeyframeStore.getState();
@@ -22,36 +23,37 @@ export function useKeyframeShortcuts(): void {
       const store = useKeyframeStore.getState();
       const hasSel = store.selectedKeyframeIds.size > 0;
 
-      // Delete / X — delete selected keyframes
+      // Delete / X — delete selected keyframes (always, regardless of mouse position)
       if ((e.key === 'Delete' || e.key === 'x' || e.key === 'X') && !e.ctrlKey && !e.metaKey) {
         if (!hasSel) return;
-        // Only fire if last mouse was in timeline
-        if (!(document as any)._lastMouseInTimeline) return;
         e.preventDefault();
-        store.deleteSelectedKeyframes();
+        const count = store.selectedKeyframeIds.size;
+        confirm(`Delete ${count} keyframe${count === 1 ? '' : 's'}?`, 'Delete Keyframes', { confirmLabel: `Delete ${count}` }).then(yes => {
+          if (yes) useKeyframeStore.getState().deleteSelectedKeyframes();
+        });
         return;
       }
 
-      // Ctrl+C copy
+      // Ctrl+C copy — always works when keyframes are selected
       if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
-        if (!hasSel || !(document as any)._lastMouseInTimeline) return;
+        if (!hasSel) return;
         e.preventDefault();
         keyframeClipboard.copy(getSelectedKeyframes());
         return;
       }
 
-      // Ctrl+X cut
+      // Ctrl+X cut — no confirm (data preserved in clipboard, reversible via paste)
       if ((e.ctrlKey || e.metaKey) && (e.key === 'x' || e.key === 'X')) {
-        if (!hasSel || !(document as any)._lastMouseInTimeline) return;
+        if (!hasSel) return;
         e.preventDefault();
         keyframeClipboard.copy(getSelectedKeyframes());
         store.deleteSelectedKeyframes();
         return;
       }
 
-      // Ctrl+V paste
+      // Ctrl+V paste — always works when clipboard has data
       if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
-        if (!keyframeClipboard.hasData() || !(document as any)._lastMouseInTimeline) return;
+        if (!keyframeClipboard.hasData()) return;
         e.preventDefault();
         const at = Math.round(animationClock.currentFrame);
         const items = keyframeClipboard.paste(at);
@@ -61,9 +63,8 @@ export function useKeyframeShortcuts(): void {
         return;
       }
 
-      // A / Alt+A — select/deselect all keyframes in timeline
+      // A / Alt+A — select/deselect all keyframes
       if ((e.key === 'a' || e.key === 'A') && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        if (!(document as any)._lastMouseInTimeline) return;
         e.preventDefault();
         if (e.altKey) {
           store.clearKeyframeSelection();
@@ -75,6 +76,19 @@ export function useKeyframeShortcuts(): void {
           }
           useKeyframeStore.setState({ selectedKeyframeIds: all });
         }
+      }
+
+      // Alt+Left/Right — nudge selected keyframes by 1 frame
+      // Shift+Alt+Left/Right — nudge by 10 frames
+      if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        if (!hasSel) return;
+        e.preventDefault();
+        const finalDelta = e.shiftKey ? (e.key === 'ArrowLeft' ? -10 : 10) : (e.key === 'ArrowLeft' ? -1 : 1);
+        for (const kf of getSelectedKeyframes()) {
+          const newTime = Math.max(0, Math.round(kf.time + finalDelta));
+          store.moveKeyframe(kf.id, newTime);
+        }
+        return;
       }
     };
 

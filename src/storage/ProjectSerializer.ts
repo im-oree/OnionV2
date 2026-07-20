@@ -11,6 +11,7 @@ import { useViewportStore } from '../state/viewportStore';
 import { useTimelineStore } from '../state/timelineStore';
 
 import { runMigrations, validateProjectData, CURRENT_VERSION } from './migrations';
+import { assetManager } from './AssetManager';
 
 const APP_VERSION = '0.1.0';
 
@@ -87,7 +88,7 @@ export class ProjectSerializer {
       keyframes,
       effects,
       masks,
-      assets: [], // populated by AssetManager
+      assets: this._collectAssetRefs(),
       ui: {
         workspaceLayout: (window as any).__workspaceLayout ?? null,
         viewportState: {
@@ -192,5 +193,53 @@ export class ProjectSerializer {
   /** Validate loaded project data before deserializing */
   static validate(data: any): { valid: true } | { valid: false; error: string } {
     return validateProjectData(data);
+  }
+
+  /** Collect AssetRef objects from all in-memory assets that have a storageRef */
+  private static _collectAssetRefs(): import('./StorageAdapter').AssetRef[] {
+    try {
+      return assetManager.getAllAssets()
+        .filter(a => a.storageRef)
+        .map(a => ({
+          ...a.storageRef!,
+          originalId: a.id,  // Preserve original in-memory ID for layer references
+        }));
+    } catch {
+      return [];
+    }
+  }
+
+  /** Restore assets from serialized project into the AssetManager */
+  static async restoreAssets(data: SerializedProject): Promise<void> {
+    if (!data.assets || data.assets.length === 0) return;
+    // Also try listing assets from the storage adapter directly
+    // (covers old projects that saved assets but didn't serialize the refs)
+    try {
+      const { StorageManager } = await import('./StorageManager');
+      const sm = StorageManager.getInstance();
+      const adapter = sm.getAdapter();
+      const handle = sm.currentProjectHandle;
+      if (adapter && handle) {
+        const adapterAssets = await adapter.listAssets(handle);
+        // Merge: adapter assets + serialized refs (dedup by filename)
+        const seen = new Set(data.assets.map(a => a.filename));
+        for (const aa of adapterAssets) {
+          if (!seen.has(aa.filename)) {
+            data.assets.push(aa);
+            seen.add(aa.filename);
+          }
+        }
+      }
+    } catch {
+      // Best effort — use whatever refs we have
+    }
+
+    for (const ref of data.assets) {
+      try {
+        await assetManager.addFromStorageRef(ref);
+      } catch {
+        // Individual asset failed — continue with others
+      }
+    }
   }
 }

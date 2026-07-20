@@ -31,6 +31,8 @@ export class SelectionOverlay {
   private _gizmoMode: GizmoMode = null;
   /** L4: Hide bounding box handles during modal transform */
   private _hideHandles = false;
+  /** Last-selected layer ID for brighter outline when multi-selecting */
+  private _lastSelectedId: string | null = null;
 
   constructor(container: HTMLElement, cameraManager: CameraManager) {
     this.container = container;
@@ -43,6 +45,10 @@ export class SelectionOverlay {
   /** L4: Toggle handle visibility (hidden during modal transform) */
   set hideHandles(v: boolean) { this._hideHandles = v; }
   get hideHandles(): boolean { return this._hideHandles; }
+
+  /** Set the last-selected layer ID for brighter outline in multi-select */
+  set lastSelectedId(id: string | null) { this._lastSelectedId = id; }
+  get lastSelectedId(): string | null { return this._lastSelectedId; }
 
   mount(): void {
     if (this.svg) return;
@@ -80,20 +86,34 @@ export class SelectionOverlay {
       if (corners.length < 4) continue;
 
       // N2: Selection polygon — double outline for visibility on any background
+      // Last-selected gets brighter/thicker outline when multi-selecting
+      const isLastSelected = renderers.length > 1 && this._lastSelectedId && r.id === this._lastSelectedId;
+      const isMulti = renderers.length > 1;
       const pts = corners.map((c) => `${c.x},${c.y}`).join(' ');
       // Black shadow outline underneath
       const shadow = document.createElementNS(NS, 'polygon');
       shadow.setAttribute('points', pts);
       shadow.setAttribute('fill', 'none');
       shadow.setAttribute('stroke', '#000000');
-      shadow.setAttribute('stroke-width', '3');
+      shadow.setAttribute('stroke-width', isLastSelected ? '4' : '3');
       this.svg.appendChild(shadow);
-      // Main accent outline on top
+      // Main outline on top — brighter and thicker for last-selected
       const poly = document.createElementNS(NS, 'polygon');
       poly.setAttribute('points', pts);
       poly.setAttribute('fill', 'none');
-      poly.setAttribute('stroke', renderers.length > 1 ? 'rgba(71,114,179,0.8)' : accent);
-      poly.setAttribute('stroke-width', '1.5');
+      if (isLastSelected) {
+        // Last-selected: bright white accent
+        poly.setAttribute('stroke', '#ffffff');
+        poly.setAttribute('stroke-width', '2.5');
+      } else if (isMulti) {
+        // Other selected: dimmer accent
+        poly.setAttribute('stroke', 'rgba(71,114,179,0.8)');
+        poly.setAttribute('stroke-width', '1.5');
+      } else {
+        // Single selection: accent color
+        poly.setAttribute('stroke', accent);
+        poly.setAttribute('stroke-width', '1.5');
+      }
       this.svg.appendChild(poly);
 
       allCorners = allCorners.concat(corners);

@@ -18,6 +18,18 @@ export function registerModalActiveCheck(fn: () => boolean): void {
   _getModalActive = fn;
 }
 
+/** Escape hatch: when the modal transform is stuck (activeAnywhere=true but
+ *  the docKeydown listener that handles Escape is missing or the transform
+ *  failed mid-start), this callback forces cancellation so shortcuts unblock. */
+let _forceCancelModal: (() => void) | null = null;
+export function registerForceCancelModal(fn: () => void): void {
+  _forceCancelModal = fn;
+}
+
+function forceCancelModal(): void {
+  _forceCancelModal?.();
+}
+
 export interface ShortcutBinding {
   id: string;
   key: string;
@@ -74,9 +86,16 @@ class ShortcutRegistryClass {
       return false;
     }
 
-    // K1: Skip ALL global shortcuts while a modal transform is active
-    // The modal transform's own docKeydown handler in useViewportInput handles X/Y/Esc/Enter/numbers
+    // K1: Skip ALL global shortcuts while a modal transform is active.
+    // The modal transform's own docKeydown handler in useViewportInput
+    // handles X/Y/Esc/Enter/numbers — BUT if that handler was never
+    // attached or was cleaned up, the user would be trapped with no way
+    // to cancel.  Escape is the universal "get me out" key: if the modal
+    // is stuck, force-cancel it directly.
     if (getModalActive()) {
+      if (e.key === 'Escape') {
+        forceCancelModal();
+      }
       return false;
     }
 

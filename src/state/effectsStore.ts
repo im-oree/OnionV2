@@ -12,6 +12,19 @@ function genId(): string {
   return `efx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function requestEffectRender(): void {
+  try {
+    const renderer = (window as any).__renderer;
+    renderer?.frameCache?.clear?.();
+    renderer?.gpuTextureCache?.invalidateAll?.(
+      renderer?.composition?.id ?? '',
+    );
+    renderer?.renderLoop?.requestRender?.();
+  } catch {
+    // ignore
+  }
+}
+
 export interface EffectsState {
   /** Map<layerId, EffectInstance[]> */
   effectsByLayer: Record<string, EffectInstance[]>;
@@ -56,6 +69,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       effectsByLayer: { ...s.effectsByLayer, [layerId]: [...existing, newEffect] },
     }));
     useHistoryStore.getState().pushEntry('Add Effect', snapshot);
+    requestEffectRender();
   },
 
   removeEffect: (layerId, effectId) => {
@@ -65,6 +79,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
     });
     useHistoryStore.getState().pushEntry('Remove Effect', snapshot);
+    requestEffectRender();
   },
 
   reorderEffect: (layerId, effectId, newIndex) => {
@@ -78,6 +93,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
     });
     useHistoryStore.getState().pushEntry('Reorder Effect', snapshot);
+    requestEffectRender();
   },
 
   updateParameter: (layerId, effectId, paramId, value) => {
@@ -95,6 +111,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
     });
     useHistoryStore.getState().pushEntry('Update Effect Parameter', snapshot);
+    requestEffectRender();
   },
 
   toggleEffect: (layerId, effectId) => {
@@ -106,6 +123,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
     });
     useHistoryStore.getState().pushEntry('Toggle Effect', snapshot);
+    requestEffectRender();
   },
 
   duplicateEffect: (layerId, effectId) => {
@@ -123,6 +141,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
     newList.splice(idx + 1, 0, dup);
     set((s) => ({ effectsByLayer: { ...s.effectsByLayer, [layerId]: newList } }));
     useHistoryStore.getState().pushEntry('Duplicate Effect', snapshot);
+    requestEffectRender();
   },
 
   copyEffects: (layerId) => {
@@ -145,6 +164,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       },
     }));
     useHistoryStore.getState().pushEntry('Paste Effects', snapshot);
+    requestEffectRender();
   },
 
   removeAllEffects: (layerId) => {
@@ -154,6 +174,7 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
       return { effectsByLayer: rest };
     });
     useHistoryStore.getState().pushEntry('Remove All Effects', snapshot);
+    requestEffectRender();
   },
 
   getEffectsForLayer: (layerId) => get().effectsByLayer[layerId] ?? [],
@@ -167,5 +188,6 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
 
   setParameterValue: (layerId, effectId, paramId, value) => {
     get().updateParameter(layerId, effectId, paramId, value);
+    requestEffectRender();
   },
 }));

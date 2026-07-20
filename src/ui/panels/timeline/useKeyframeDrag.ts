@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { useTimelineStore } from '../../../state/timelineStore';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { debouncedCapture, flushDebouncedSnapshot } from '../../../state/historyStore';
 import { snapFrame, buildSnapTargets } from './snapping';
 import { animationClock } from './PlaybackControls';
 
@@ -34,6 +35,10 @@ export function useKeyframeDrag(zoom: number, totalFrames: number) {
       }
     }
     state.current = { startX: e.clientX, dragSet };
+
+    // Capture "before" state for undo — debounced so only one snapshot is created per drag
+    debouncedCapture('Move Keyframes');
+
     // If it was just a click (no drag), keep going but only mutate on move
 
     const compState = useCompositionStore.getState();
@@ -78,6 +83,7 @@ export function useKeyframeDrag(zoom: number, totalFrames: number) {
       state.current = null;
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      if (moved) flushDebouncedSnapshot();
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);

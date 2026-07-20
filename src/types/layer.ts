@@ -1,7 +1,7 @@
 import type { EffectInstance } from './effect';
 
 export type LayerType =
-  | 'solid' | 'shape' | 'text' | 'image' | 'video' | 'null' | 'adjustment' | 'comp'
+  | 'solid' | 'shape' | 'text' | 'image' | 'video' | 'audio' | 'null' | 'adjustment' | 'comp'
   | 'camera' | 'light';
 
 export type BlendMode =
@@ -196,6 +196,14 @@ export interface VideoData {
   duration: number; muted: boolean; volume: number; playbackRate: number;
 }
 
+export interface AudioData {
+  assetId: string;
+  duration: number;
+  volume: number;
+  muted: boolean;
+  playbackRate: number;
+}
+
 export type TextAlignment = 'left'|'center'|'right'|'justify';
 export type TextVerticalAlign = 'top'|'middle'|'bottom';
 
@@ -255,7 +263,7 @@ export interface CompData {
   sourceCompId: string; loop: boolean; timeScale: number; timeOffset: number;
 }
 
-export type LayerPayload = SolidData | ShapeData | ImageData | VideoData | TextData | CompData | Record<string,never>;
+export type LayerPayload = SolidData | ShapeData | ImageData | VideoData | AudioData | TextData | CompData | Record<string,never>;
 
 export interface Mask {
   id: string; points: Array<{x:number;y:number}>; inverted: boolean;

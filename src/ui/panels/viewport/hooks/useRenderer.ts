@@ -152,6 +152,9 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
       return;
     }
     r.selectionOverlay.show();
+    // Last-selected layer gets brighter outline
+    const lastId = selectedIds[selectedIds.length - 1];
+    r.selectionOverlay.lastSelectedId = lastId;
     const renderers = selectedIds
       .map((id) => r.layerSync.getRenderer(id))
       .filter(Boolean) as any[];

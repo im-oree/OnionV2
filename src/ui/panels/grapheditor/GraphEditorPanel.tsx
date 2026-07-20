@@ -9,6 +9,9 @@ import { GraphGrid } from './GraphGrid';
 import { GraphRuler } from './GraphRuler';
 import { useGraphInteraction, type ViewState } from './useGraphInteraction';
 import { useGraphModalTransform } from './useGraphModalTransform';
+import { useContextMenu } from '../../common/useContextMenu';
+import { ContextMenu } from '../../common/ContextMenu';
+import { buildGraphContextMenu } from './graphContextMenu';
 
 function curveColor(prop: string, dim: number, totalDims: number): string {
   if (totalDims > 1) {
@@ -51,6 +54,7 @@ export const GraphEditorPanel: React.FC = () => {
   const selectedKfIds = useKeyframeStore((s) => s.selectedKeyframeIds);
   const currentFrame = comp ? Math.round(comp.currentTime * comp.fps) : 0;
 
+  const selectedPropertyKeys = useSelectionStore((s) => s.selectedPropertyKeys);
   const [viewBox, setViewBox] = useState<ViewState>({ x: -5, y: -20, w: 100, h: 200 });
   const [propFilter, setPropFilter] = useState<Set<string>>(new Set());
   const [snapToFrame, setSnapToFrame] = useState(true);
@@ -71,6 +75,7 @@ export const GraphEditorPanel: React.FC = () => {
   const layers = comp.layers.filter((l) =>
     selectedLayerIds.includes(l.id) || selectedLayerIds.length === 0);
   const animatedLayers = layers.filter((l) => engine.getAllAnimatedProperties(l.id).length > 0);
+  const hasPropertySelection = selectedPropertyKeys.size > 0;
 
   const curves = useMemo<FlatCurve[]>(() => {
     const result: FlatCurve[] = [];
@@ -82,7 +87,12 @@ export const GraphEditorPanel: React.FC = () => {
         const first = kfs[0].value;
         const dims = Array.isArray(first) ? first.length : 1;
         const propKey = `${layer.id}::${prop}`;
+
+        // Filter: if properties are selected, only show those
+        if (hasPropertySelection && !selectedPropertyKeys.has(propKey)) continue;
+        // Also respect the toolbar filter
         if (propFilter.size > 0 && !propFilter.has(propKey)) continue;
+
         const processKfs = graphMode === 'speed'
           ? computeVelocityKfs(kfs, comp.fps) : kfs;
         const suffixes = ['X', 'Y', 'Z', 'W'];
@@ -104,7 +114,7 @@ export const GraphEditorPanel: React.FC = () => {
       }
     }
     return result;
-  }, [animatedLayers, engine, propFilter, revision, graphMode, comp.fps]);
+  }, [animatedLayers, engine, propFilter, selectedPropertyKeys, hasPropertySelection, revision, graphMode, comp.fps]);
 
   const propOptions = useMemo(() => {
     const opts: { key: string; label: string }[] = [];
@@ -123,6 +133,20 @@ export const GraphEditorPanel: React.FC = () => {
     svgRef, viewBox, setViewBox, engine, curves, totalFrames, snapToFrame,
     svgWidth: width, svgHeight: height,
   });
+  const ctx = useContextMenu();
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    const target = e.target as SVGElement;
+    const kfEl = target.closest?.('[data-kf-id]') as SVGElement | null;
+    const kfId = kfEl?.getAttribute('data-kf-id');
+    // If right-clicked on a keyframe that isn't selected, select it first
+    if (kfId && !useKeyframeStore.getState().selectedKeyframeIds.has(kfId)) {
+      useKeyframeStore.getState().selectKeyframe(kfId, false);
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    ctx.open(e, buildGraphContextMenu());
+  }, [ctx]);
 
   const frameAll = useCallback(() => {
     let minV = Infinity, maxV = -Infinity;
@@ -231,11 +255,14 @@ export const GraphEditorPanel: React.FC = () => {
         {curves.length === 0 ? (
           <div className="flex h-full items-center justify-center"
             style={{ fontSize: 'var(--font-size-sm)', color: 'rgba(160,180,210,0.4)' }}>
-            Select a layer with keyframes to view curves
+            {hasPropertySelection
+              ? 'Selected properties have no keyframes'
+              : 'Select a layer with keyframes to view curves'}
           </div>
         ) : (
           <svg ref={svgRef} width={width} height={height}
             onWheel={handleWheel} onMouseDown={handleMouseDown}
+            onContextMenu={handleContextMenu}
             style={{ cursor, display: 'block', shapeRendering: 'geometricPrecision' }}>
             <GraphGrid viewBox={viewBox} width={width} height={height} fps={comp.fps} />
             {width > 0 && (
@@ -259,6 +286,7 @@ export const GraphEditorPanel: React.FC = () => {
           </svg>
         )}
       </div>
+      {ctx.menu && <ContextMenu items={ctx.menu.items} position={ctx.menu.position} onClose={ctx.close} />}
     </div>
   );
 };

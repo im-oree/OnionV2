@@ -41,7 +41,7 @@ export function createDefaultLayer(type: Layer['type'], name: string): Omit<Laye
     opacity: 100,
     transform: defaultTransform(),
     startFrame: 0,
-    endFrame: COMPOSITION.DEFAULT_DURATION,
+    endFrame: 300,
     zIndex: 0,
     effects: [],
     masks: [],

@@ -1,12 +1,15 @@
 /**
- * EffectsRenderer — bridges the effect system into the rendering pipeline.
- * For each layer with active effects, replaces direct scene rendering with
- * FBO-based effect processing:
- *   1. Render only the layer mesh to a private FBO
- *   2. Process the FBO through EffectChain
- *   3. Composite the result as a textured quad at the layer's transform
+ * EffectsRenderer — applies GPU effects to individual layer renderers.
  *
- * Layers without effects render normally (bypass).
+ * Stable per-layer pipeline:
+ *   1. Render the layer mesh in LOCAL space into a temporary FBO.
+ *   2. Process that texture through a persistent EffectChain.
+ *   3. Display the persistent result on a quad inside the layer group.
+ *
+ * Important:
+ * - The displayed texture is owned by EffectChain, not the temporary layer FBO.
+ * - We restore render target / viewport / scissor after offscreen rendering.
+ * - The effect quad copies the original mesh local transform so anchor/scale work.
  */
 import * as THREE from 'three';
 import { EffectChain } from './EffectChain';
@@ -18,174 +21,245 @@ export class EffectsRenderer {
   private effectChains = new Map<string, EffectChain>();
   private effectQuads = new Map<string, THREE.Mesh>();
   private privateScene: THREE.Scene;
-  private _enabledEffects = new Set<string>();
+  private layerCam: THREE.OrthographicCamera;
+  private enabledEffects = new Set<string>();
 
   constructor(renderer: THREE.WebGLRenderer) {
     this.renderer = renderer;
     this.privateScene = new THREE.Scene();
+    this.layerCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -100, 100);
+    this.layerCam.position.z = 10;
   }
 
-  /** Prepare effects for a frame: check which layers have active effects */
   prepareFrame(layerIds: string[]): void {
     const store = useEffectsStore.getState();
-    this._enabledEffects.clear();
+    this.enabledEffects.clear();
 
     for (const id of layerIds) {
       const effects = store.effectsByLayer[id] ?? [];
       const active = effects.filter((e) => e.enabled);
+
       if (active.length > 0) {
-        this._enabledEffects.add(id);
-        // Ensure EffectChain exists for this layer
+        this.enabledEffects.add(id);
         if (!this.effectChains.has(id)) {
           this.effectChains.set(id, new EffectChain(this.renderer));
         }
       } else {
-        // Remove effect quad if it exists (layer no longer has effects)
-        this._removeEffectQuad(id);
-        this.effectChains.get(id)?.dispose();
-        this.effectChains.delete(id);
+        this.removeLayerEffects(id);
       }
     }
 
-    // Clean up chains for layers no longer in the scene
-    const layerSet = new Set(layerIds);
-    for (const [id] of this.effectChains) {
-      if (!layerSet.has(id)) {
-        this.effectChains.get(id)?.dispose();
+    const live = new Set(layerIds);
+    for (const [id, chain] of this.effectChains) {
+      if (!live.has(id)) {
+        chain.dispose();
         this.effectChains.delete(id);
         this._removeEffectQuad(id);
+        this.enabledEffects.delete(id);
       }
     }
   }
 
-  /** Render a layer with effects to its FBO, process, and composite */
   renderLayer(
     layerId: string,
     layerMesh: THREE.Mesh,
     layerWidth: number,
     layerHeight: number,
     parentGroup: THREE.Group,
-  ): void {
-    if (!this._enabledEffects.has(layerId)) return;
+  ): boolean {
+    if (!this.enabledEffects.has(layerId)) return false;
 
     const chain = this.effectChains.get(layerId);
-    if (!chain) return;
+    if (!chain) return false;
 
     const effects = useEffectsStore.getState().effectsByLayer[layerId] ?? [];
     const active = effects.filter((e) => e.enabled);
-    if (active.length === 0) return;
+    if (active.length === 0) return false;
 
-    const w = Math.max(1, layerWidth);
-    const h = Math.max(1, layerHeight);
+    const w = Math.max(1, Math.ceil(layerWidth));
+    const h = Math.max(1, Math.ceil(layerHeight));
 
-    // Acquire FBO for initial layer render
+    const oldTarget = this.renderer.getRenderTarget();
+    const oldViewport = new THREE.Vector4();
+    const oldScissor = new THREE.Vector4();
+    this.renderer.getViewport(oldViewport);
+    this.renderer.getScissor(oldScissor);
+    const oldScissorTest = this.renderer.getScissorTest();
+
     const layerFbo = fboPool.acquire(w, h);
 
-    // Remove previous clone from private scene without disposing shared resources
-    while (this.privateScene.children.length > 0) {
-      this.privateScene.remove(this.privateScene.children[0]);
-    }
-    // Clone the layer mesh into the private scene for isolated rendering
-    const meshClone = layerMesh.clone() as THREE.Mesh;
-    // Share geometry and material references (not deep cloned)
-    meshClone.geometry = layerMesh.geometry;
-    meshClone.material = layerMesh.material;
-    meshClone.position.copy(layerMesh.position);
-    meshClone.scale.copy(layerMesh.scale);
-    meshClone.rotation.copy(layerMesh.rotation);
-    this.privateScene.add(meshClone);
+    try {
+      this._clearPrivateScene();
 
-    const cam = this._identityCamera();
-    this.renderer.setRenderTarget(layerFbo);
-    this.renderer.clear();
-    this.renderer.render(this.privateScene, cam);
+      /**
+       * Render source layer in LOCAL coordinates.
+       *
+       * We do NOT use the layer group's world transform here.
+       * Effects should process the raw layer pixels first, then the final
+       * textured quad receives the same local transform as the original mesh.
+       */
+      const meshClone = new THREE.Mesh(layerMesh.geometry, layerMesh.material);
+      meshClone.name = `${layerId}_effect_source`;
+      meshClone.frustumCulled = false;
+      meshClone.visible = true;
 
-    // Process through EffectChain
-    chain.setSource(layerFbo.texture, w, h);
-    const resultTexture = chain.render(active);
+      // Render the raw geometry centered in the local FBO.
+      meshClone.position.set(0, 0, 0);
+      meshClone.rotation.set(0, 0, 0);
+      meshClone.scale.set(1, 1, 1);
+      meshClone.renderOrder = 0;
 
-    if (!resultTexture) {
+      this.privateScene.add(meshClone);
+
+      this.layerCam.left = -w / 2;
+      this.layerCam.right = w / 2;
+      this.layerCam.top = h / 2;
+      this.layerCam.bottom = -h / 2;
+      this.layerCam.near = -100;
+      this.layerCam.far = 100;
+      this.layerCam.position.set(0, 0, 10);
+      this.layerCam.lookAt(0, 0, 0);
+      this.layerCam.updateProjectionMatrix();
+
+      this.renderer.setRenderTarget(layerFbo);
+      this.renderer.setViewport(0, 0, w, h);
+      this.renderer.setScissor(0, 0, w, h);
+      this.renderer.setScissorTest(false);
+      this.renderer.clearColor();
+      this.renderer.render(this.privateScene, this.layerCam);
+
+      chain.setSource(layerFbo.texture, w, h);
+      const resultTexture = chain.render(active);
+
+      if (!resultTexture) return false;
+
+      let quad = this.effectQuads.get(layerId);
+
+      // Use the ORIGINAL mesh's geometry size so the effect quad
+      // occupies exactly the same rectangle as the source layer.
+      const meshGeo = layerMesh.geometry as THREE.PlaneGeometry;
+      let geoW = w;
+      let geoH = h;
+      if (meshGeo && meshGeo.parameters) {
+        geoW = meshGeo.parameters.width || w;
+        geoH = meshGeo.parameters.height || h;
+      }
+
+      if (!quad) {
+        const geo = new THREE.PlaneGeometry(geoW, geoH);
+        const mat = new THREE.MeshBasicMaterial({
+          map: resultTexture,
+          transparent: true,
+          depthWrite: false,
+          depthTest: false,
+          premultipliedAlpha: false,
+        });
+
+        quad = new THREE.Mesh(geo, mat);
+        quad.name = `${layerId}_effect_result`;
+        quad.frustumCulled = false;
+        quad.renderOrder = layerMesh.renderOrder + 0.01;
+
+        this.effectQuads.set(layerId, quad);
+        parentGroup.add(quad);
+      } else {
+        const qgeo = quad.geometry as THREE.PlaneGeometry;
+        if (
+          Math.abs(qgeo.parameters.width - geoW) > 0.5 ||
+          Math.abs(qgeo.parameters.height - geoH) > 0.5
+        ) {
+          quad.geometry.dispose();
+          quad.geometry = new THREE.PlaneGeometry(geoW, geoH);
+        }
+
+        const mat = quad.material as THREE.MeshBasicMaterial;
+        mat.map = resultTexture;
+        mat.needsUpdate = true;
+      }
+
+      /**
+       * Match the original mesh's local transform.
+       *
+       * BaseLayerRenderer stores:
+       * - group.position/group.rotation = layer position/rotation
+       * - mesh.position = anchor offset
+       * - mesh.scale = layer scale
+       *
+       * So the effect quad must copy mesh local position/scale/rotation.
+       */
+      quad.position.copy(layerMesh.position);
+      quad.rotation.copy(layerMesh.rotation);
+      quad.scale.copy(layerMesh.scale);
+      quad.visible = true;
+      quad.renderOrder = layerMesh.renderOrder + 0.01;
+
+      return true;
+    } catch (err) {
+      console.warn(`[EffectsRenderer] renderLayer failed for ${layerId}:`, err);
+      return false;
+    } finally {
       fboPool.release(layerFbo);
-      return;
+
+      this.renderer.setRenderTarget(oldTarget);
+      this.renderer.setViewport(oldViewport);
+      this.renderer.setScissor(oldScissor);
+      this.renderer.setScissorTest(oldScissorTest);
+
+      this._clearPrivateScene();
     }
-
-    // Release initial FBO (chain now owns the result)
-    fboPool.release(layerFbo);
-
-    // Create or update a textured quad in the parent group at the layer's transform
-    let quad = this.effectQuads.get(layerId);
-    if (!quad) {
-      const geo = new THREE.PlaneGeometry(
-        layerWidth || w,
-        layerHeight || h,
-      );
-      const mat = new THREE.MeshBasicMaterial({
-        map: resultTexture,
-        transparent: true,
-        depthWrite: false,
-        depthTest: false,
-      });
-      quad = new THREE.Mesh(geo, mat);
-      quad.name = `${layerId}_effect`;
-      quad.frustumCulled = false;
-      quad.renderOrder = 1;
-      this.effectQuads.set(layerId, quad);
-      parentGroup.add(quad);
-    } else {
-      // Update existing quad geometry size and texture
-      const geo = new THREE.PlaneGeometry(
-        layerWidth || w,
-        layerHeight || h,
-      );
-      quad.geometry.dispose();
-      quad.geometry = geo;
-      (quad.material as THREE.MeshBasicMaterial).map = resultTexture;
-      (quad.material as THREE.MeshBasicMaterial).needsUpdate = true;
-    }
-
-    // Reset quad position/rotation within the group (group handles transform).
-    // Only copy the mesh's scale so the effect quad matches the visual size.
-    quad.position.set(0, 0, 0);
-    quad.rotation.set(0, 0, 0);
-    // Scale from mesh (which is percentage/100) — already applied via the parent group's
-    // children, so don't double-apply. The quad geometry is already at layerWidth/layerHeight.
-    quad.scale.set(1, 1, 1);
   }
 
-  /** Hide/remove the effect quad, revealing the original mesh */
   removeLayerEffects(layerId: string): void {
     this._removeEffectQuad(layerId);
-    this.effectChains.get(layerId)?.dispose();
-    this.effectChains.delete(layerId);
-    this._enabledEffects.delete(layerId);
+
+    const chain = this.effectChains.get(layerId);
+    if (chain) {
+      chain.dispose();
+      this.effectChains.delete(layerId);
+    }
+
+    this.enabledEffects.delete(layerId);
   }
 
-  /** Remove all effect resources */
+  hasEffects(layerId: string): boolean {
+    return this.enabledEffects.has(layerId);
+  }
+
   dispose(): void {
-    for (const [id] of this.effectChains) {
+    for (const id of Array.from(this.effectQuads.keys())) {
       this._removeEffectQuad(id);
     }
-    for (const chain of this.effectChains.values()) chain.dispose();
-    this.effectChains.clear();
-    this._enabledEffects.clear();
-  }
 
-  /** Check if a layer has active effects */
-  hasEffects(layerId: string): boolean {
-    return this._enabledEffects.has(layerId);
+    for (const chain of this.effectChains.values()) {
+      chain.dispose();
+    }
+
+    this.effectChains.clear();
+    this.enabledEffects.clear();
+    this._clearPrivateScene();
   }
 
   private _removeEffectQuad(layerId: string): void {
     const quad = this.effectQuads.get(layerId);
-    if (quad) {
-      quad.parent?.remove(quad);
-      quad.geometry.dispose();
-      if (quad.material instanceof THREE.Material) quad.material.dispose();
-      this.effectQuads.delete(layerId);
+    if (!quad) return;
+
+    quad.parent?.remove(quad);
+    quad.geometry.dispose();
+
+    if (quad.material instanceof THREE.Material) {
+      /**
+       * Do NOT dispose mat.map here.
+       * The texture belongs to EffectChain's persistent render target.
+       */
+      quad.material.dispose();
     }
+
+    this.effectQuads.delete(layerId);
   }
 
-  private _identityCamera(): THREE.OrthographicCamera {
-    return new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  private _clearPrivateScene(): void {
+    for (let i = this.privateScene.children.length - 1; i >= 0; i--) {
+      this.privateScene.remove(this.privateScene.children[i]);
+    }
   }
 }

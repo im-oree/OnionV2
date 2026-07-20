@@ -8,6 +8,7 @@ import { ShapeSection } from './ShapeSection';
 import { TextSection } from './TextSection';
 import { CompSection } from './CompSection';
 import { EffectsSection } from './EffectsSection';
+import { VideoSection } from './VideoSection';
 
 type TabId = 'transform' | 'object' | 'modifiers';
 
@@ -263,6 +264,7 @@ export const PropertiesPanel: React.FC = () => {
               {single.type === 'solid' && <SolidSection layer={single} compId={comp.id} />}
               {single.type === 'shape' && <ShapeSection layer={single} compId={comp.id} />}
               {single.type === 'text' && <TextSection layer={single} compId={comp.id} />}
+              {single.type === 'video' && <VideoSection layer={single} compId={comp.id} />}
             </>
           )}
 

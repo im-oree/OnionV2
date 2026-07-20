@@ -34,6 +34,17 @@ export class GPUTextureCache {
     // No mipmaps — cached frames are displayed 1:1
     tex.generateMipmaps = false;
 
+    // CRITICAL: keep the default SRGBColorSpace.
+    // copyFramebufferToTexture → gl.copyTexSubImage2D stores the
+    // framebuffer's sRGB-encoded bytes.  The hardware sRGB→linear
+    // decode on sampling correctly undoes any intermediate encoding,
+    // and the renderer's outputColorSpace applies the final sRGB
+    // encode for display.
+    //
+    // Setting LinearSRGBColorSpace would skip the decode on read,
+    // causing over-bright linear values → double-bright output.
+    tex.colorSpace = THREE.SRGBColorSpace;
+
     // Allocate the WebGL texture object in Three.js's internal bookkeeping
     tex.needsUpdate = true;
 
@@ -81,6 +92,16 @@ export class GPUTextureCache {
     }
     this._cache.clear();
   }
+
+  /** Number of GPU textures currently cached */
+  get size(): number {
+    let count = 0;
+    for (const [, compCache] of this._cache) count += compCache.size;
+    return count;
+  }
+
+  /** Number of compositions with any cached GPU textures */
+  get compCount(): number { return this._cache.size; }
 
   dispose(): void { this.clear(); }
 }

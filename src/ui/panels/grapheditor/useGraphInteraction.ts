@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useKeyframeStore } from '../../../state/keyframeStore';
+import { debouncedCapture, flushDebouncedSnapshot } from '../../../state/historyStore';
 import type { Keyframe } from '../../../types/keyframe';
 import type { FlatCurve } from './GraphCurves';
 
@@ -69,13 +70,20 @@ export function useGraphInteraction({
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return;
     const target = e.target as SVGElement;
-    const kfId = target.getAttribute('data-kf-id');
-    const handleType = target.getAttribute('data-handle');
+    // Don't interfere with context menu clicks
+    if (target.closest?.('[data-ctx-menu]')) return;
+    // Use closest() to find data-kf-id and data-handle on parent <g> elements
+    // because e.target is often the inner <circle>/<polygon>, not the <g>
+    const kfEl = target.closest?.('[data-kf-id]') as SVGElement | null;
+    const kfId = kfEl?.getAttribute('data-kf-id') ?? null;
+    const handleType = kfEl?.getAttribute('data-handle') ?? target.getAttribute('data-handle');
 
     if (kfId && (handleType === 'in' || handleType === 'out')) {
       e.stopPropagation();
+      useKeyframeStore.getState().selectKeyframe(kfId, false);
       const kf = findKf(engine, kfId); if (!kf) return;
       const orig = handleType === 'in' ? kf.inTangent : kf.outTangent;
+      debouncedCapture('Edit Bezier Handle');
       dragRef.current = {
         type: handleType === 'in' ? 'handleIn' : 'handleOut',
         startMouse: { x: e.clientX, y: e.clientY },
@@ -92,6 +100,7 @@ export function useGraphInteraction({
       if (e.shiftKey || e.ctrlKey || e.metaKey) store.toggleKeyframeSelection(kfId);
       else if (!store.selectedKeyframeIds.has(kfId)) store.selectKeyframe(kfId, false);
       const kf = findKf(engine, kfId); if (!kf) return;
+      debouncedCapture('Move Keyframes');
       const snap = new Map<string, { time: number; value: number | number[] }>();
       const sel = useKeyframeStore.getState().selectedKeyframeIds;
       const data: Map<string, Map<string, Keyframe[]>> = engine._data;
@@ -166,10 +175,14 @@ export function useGraphInteraction({
         const dxNorm = (dxPx / rect.width) * 0.4;
         const dyNorm = (dyPx / rect.height) * 1.2;
         const signX = d.type === 'handleOut' ? 1 : -1;
-        const signY = d.type === 'handleOut' ? -1 : 1;
-        const newHandle = {
+        // Both in and out handles move UP when mouse goes UP (negative dyPx).
+        // signY is always -1 so that drag-up (dyNorm<0) → tangent.y increases.
+        const signY = -1;
+        // Shift key: snap handle Y to 0 (horizontal) — prevents rotation, only allows stretch
+      const handleY = e.shiftKey ? 0 : Math.max(-3, Math.min(3, d.origHandle.y + signY * dyNorm));
+      const newHandle = {
           x: Math.max(0, Math.min(1, d.origHandle.x + signX * dxNorm)),
-          y: Math.max(-3, Math.min(3, d.origHandle.y + signY * dyNorm)),
+          y: handleY,
         };
         const patch: any = d.type === 'handleIn'
           ? { inTangent: newHandle, interpolation: 'bezier' }
@@ -188,6 +201,10 @@ export function useGraphInteraction({
 
     const onUp = () => {
       const d = dragRef.current;
+      // Flush undo snapshot for graph edits that modified keyframes
+      if (d?.type === 'keyframe' || d?.type === 'handleIn' || d?.type === 'handleOut') {
+        flushDebouncedSnapshot();
+      }
       if (d?.type === 'box-select' && boxSelectRect && svgWidth > 0 && svgHeight > 0) {
         const box = boxSelectRect;
         const minF = (box.x / svgWidth) * viewBox.w + viewBox.x;

@@ -1,5 +1,5 @@
 import React, { useRef, useCallback, useEffect, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, Eye, EyeOff } from 'lucide-react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useTimelineStore } from '../../../state/timelineStore';
 import { useSelectionStore } from '../../../state/selectionStore';
@@ -14,9 +14,11 @@ import { useContextMenu } from '../../common/useContextMenu';
 import { buildTimelineContextMenu } from './timelineContextMenus';
 import { useKeyframeModal } from './useKeyframeModal';
 import { useKeyframeShortcuts } from './useKeyframeShortcuts';
+import { useSplitLayer, useTrimToPlayhead, useRippleDelete } from './useSplitLayer';
 import { CacheIndicator } from './CacheIndicator';
 import { assetManager } from '../../../storage/AssetManager';
 import { createLayerInstance } from '../../../utils/createLayerInstance';
+import { useProjectStore } from '../../../state/projectStore';
 
 export const TimelinePanel: React.FC = () => {
   const comp = useCompositionStore(s =>
@@ -59,6 +61,42 @@ export const TimelinePanel: React.FC = () => {
 
   useKeyframeModal(zoom, totalFrames);
   useKeyframeShortcuts();
+  const splitLayer = useSplitLayer();
+  const trimToPlayhead = useTrimToPlayhead();
+  const rippleDelete = useRippleDelete();
+
+  // Timeline-specific keyboard shortcuts: split, trim, ripple
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Ignore if user is typing in an input/textarea
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const isCtrl = e.ctrlKey || e.metaKey;
+      const isShift = e.shiftKey;
+
+      // Ctrl+Shift+D: Split at playhead
+      if (isCtrl && isShift && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault(); splitLayer(); return;
+      }
+      // Ctrl+[: Trim in (set layer start to playhead)
+      if (isCtrl && e.key === '[') {
+        e.preventDefault(); trimToPlayhead('in'); return;
+      }
+      // Ctrl+]: Trim out (set layer end to playhead)
+      if (isCtrl && e.key === ']') {
+        e.preventDefault(); trimToPlayhead('out'); return;
+      }
+      // Alt+[: Ripple trim in (shift all layers left)
+      if (e.altKey && e.key === '[') {
+        e.preventDefault(); trimToPlayhead('in'); return;
+      }
+      // Alt+]: Ripple trim out (shift all layers right)
+      if (e.altKey && e.key === ']') {
+        e.preventDefault(); trimToPlayhead('out'); return;
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [splitLayer, trimToPlayhead, rippleDelete]);
 
   useEffect(() => {
     const el = rootRef.current;
@@ -155,28 +193,60 @@ export const TimelinePanel: React.FC = () => {
     ctxMenu.open(e, buildTimelineContextMenu(frame, fps, comp.id));
   }, [comp, scrollX, zoom, fps, ctxMenu]);
 
-  // Handle asset drop from project panel onto timeline
+  // Handle asset or effect drop from project panel onto timeline
   const handleTimelineDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setTimelineDrop(false);
-    const assetId = e.dataTransfer.getData('application/onion-asset');
-    if (!assetId || !comp) return;
-    const asset = assetManager.getAsset(assetId);
-    if (!asset) return;
-    if (asset.type === 'audio') {
-      useNotificationStore.getState().addNotification({ type: 'warning', message: 'Audio files cannot be placed as layers.', autoDismiss: 3000 });
+    if (!comp) return;
+
+    // 1. Effect dropped onto empty timeline — create an adjustment layer
+    const effectType = e.dataTransfer.getData('application/onion-effect');
+    if (effectType) {
+      const cs = useCompositionStore.getState();
+      const adjLayer = createLayerInstance('adjustment', comp, {
+        name: `Adjustment: ${effectType}`,
+        zIndex: comp.layers.length + 1,
+      });
+      cs.addLayer(comp.id, adjLayer);
+      import('../../../state/effectsStore').then(({ useEffectsStore }) => {
+        useEffectsStore.getState().addEffect(adjLayer.id, effectType as any);
+      });
+      useSelectionStore.getState().select({ type: 'layer', id: adjLayer.id, compositionId: comp.id });
+      useNotificationStore.getState().addNotification({
+        type: 'success', message: 'Adjustment layer created — affects layers below', autoDismiss: 2500,
+      });
+      try { (window as any).__renderer?.renderLoop?.requestRender?.(); } catch { /* ok */ }
       return;
     }
-    const type = asset.type === 'video' ? 'video' : 'image';
+
+    // 2. Asset dropped — create image/video/audio layer
+    const assetId = e.dataTransfer.getData('application/onion-asset');
+    if (!assetId) return;
+    // Try assetManager first, fall back to projectStore
+    let asset = assetManager.getAsset(assetId);
+    if (!asset) {
+      const pa = useProjectStore.getState().project.assets.find(a => a.id === assetId);
+      if (pa) {
+        asset = { id: pa.id, name: pa.name, type: pa.type as any, url: pa.path, size: pa.size, mimeType: pa.mimeType, importedAt: pa.importedAt, missing: false, naturalWidth: pa.naturalWidth ?? 100, naturalHeight: pa.naturalHeight ?? 100, duration: pa.duration } as any;
+      }
+    }
+    if (!asset) {
+      useNotificationStore.getState().addNotification({ type: 'warning', message: 'Asset not found — try re-importing.', autoDismiss: 3000 });
+      return;
+    }
+    const type = asset.type === 'video' ? 'video' : asset.type === 'audio' ? 'audio' : 'image';
     const layer = createLayerInstance(type, comp, {
       name: asset.name,
       zIndex: comp.layers.length + 1,
       data: type === 'video'
-        ? { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
-        : { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight },
+        ? { assetId: asset.id, naturalWidth: asset.naturalWidth ?? 100, naturalHeight: asset.naturalHeight ?? 100, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
+        : type === 'audio'
+          ? { assetId: asset.id, duration: asset.duration ?? 10, volume: 1, muted: false, playbackRate: 1 }
+          : { assetId: asset.id, naturalWidth: asset.naturalWidth ?? 100, naturalHeight: asset.naturalHeight ?? 100 },
     });
     useCompositionStore.getState().addLayer(comp.id, layer);
     useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: comp.id });
+    try { (window as any).__renderer?.renderLoop?.requestRender?.(); } catch { /* ok */ }
   }, [comp]);
 
   if (!comp) {
@@ -195,7 +265,14 @@ export const TimelinePanel: React.FC = () => {
       ref={rootRef}
       className="flex flex-col h-full select-none"
       style={{ background: 'var(--color-panel)', borderRadius: 'var(--radius-panel)', overflow: 'hidden', outline: timelineDrop ? '2px dashed var(--color-accent)' : 'none', outlineOffset: -2 }}
-      onDragOver={(e) => { if (e.dataTransfer.types.includes('application/onion-asset')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setTimelineDrop(true); } }}
+      onDragOver={(e) => {
+        const types = Array.from(e.dataTransfer.types);
+        if (types.includes('application/onion-asset') || types.includes('application/onion-effect')) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+          setTimelineDrop(true);
+        }
+      }}
       onDragLeave={() => setTimelineDrop(false)}
       onDrop={handleTimelineDrop}
     >
@@ -276,6 +353,13 @@ export const TimelinePanel: React.FC = () => {
 
 const OutlinerTracksHeader: React.FC<{ compId: string }> = ({ compId }) => {
   const ctx = useContextMenu();
+  const layers = useCompositionStore(s => {
+    const comp = s.compositions.find(c => c.id === compId);
+    return comp?.layers ?? [];
+  });
+  const allVisible = layers.length > 0 && layers.every(l => l.visible);
+  const someHidden = layers.length > 0 && layers.some(l => !l.visible);
+
   const openAdd = (e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
     ctx.open(e, [
@@ -291,6 +375,37 @@ const OutlinerTracksHeader: React.FC<{ compId: string }> = ({ compId }) => {
       { id: 'add.video', label: 'Video', onClick: () => addFromHeader(compId, 'video') },
     ]);
   };
+
+  const toggleMasterVisibility = (e: React.MouseEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    const cs = useCompositionStore.getState();
+    const comp = cs.compositions.find(c => c.id === compId);
+    if (!comp) return;
+    if (e.altKey) {
+      // Alt+click: invert visibility of all layers
+      for (const l of comp.layers) {
+        cs.updateLayer(compId, l.id, { visible: !l.visible });
+      }
+    } else if (allVisible) {
+      // All visible → hide all
+      for (const l of comp.layers) {
+        if (l.visible) cs.updateLayer(compId, l.id, { visible: false });
+      }
+    } else {
+      // Some hidden → show all
+      for (const l of comp.layers) {
+        if (!l.visible) cs.updateLayer(compId, l.id, { visible: true });
+      }
+    }
+  };
+
+  const btnStyle: React.CSSProperties = {
+    width: 22, height: 22, color: 'var(--color-text-secondary)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    borderRadius: 4, border: 0, background: 'transparent', cursor: 'pointer',
+    transition: 'background 120ms, color 120ms',
+  };
+
   return (
     <div
       className="flex items-center px-3 gap-2"
@@ -304,19 +419,27 @@ const OutlinerTracksHeader: React.FC<{ compId: string }> = ({ compId }) => {
       }}
     >
       <span className="flex-1 truncate">Layers</span>
+      {/* Master visibility toggle */}
+      <button
+        onClick={toggleMasterVisibility}
+        title={allVisible ? 'Hide All Layers (Alt+Click to invert)' : someHidden ? 'Show All Layers (Alt+Click to invert)' : 'Hide All Layers (Alt+Click to invert)'}
+        style={{
+          ...btnStyle,
+          color: allVisible ? 'var(--color-text-secondary)' : someHidden ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+          opacity: allVisible ? 0.7 : someHidden ? 0.9 : 0.4,
+        }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+      >
+        {allVisible ? <Eye size={14} strokeWidth={1.75} /> : <EyeOff size={14} strokeWidth={1.75} />}
+      </button>
+      {/* Add layer button */}
       <button
         onClick={openAdd}
         title="Add Layer"
-        className="flex items-center justify-center rounded-md border-0 bg-transparent cursor-pointer transition-colors"
-        style={{ width: 22, height: 22, color: 'var(--color-text-secondary)' }}
-        onMouseEnter={(e)=>{
-          (e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)';
-          (e.currentTarget as HTMLElement).style.color='var(--color-text-primary)';
-        }}
-        onMouseLeave={(e)=>{
-          (e.currentTarget as HTMLElement).style.background='transparent';
-          (e.currentTarget as HTMLElement).style.color='var(--color-text-secondary)';
-        }}
+        style={btnStyle}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; (e.currentTarget as HTMLElement).style.color = 'var(--color-text-primary)'; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'var(--color-text-secondary)'; }}
       >
         <Plus size={14} strokeWidth={2} />
       </button>

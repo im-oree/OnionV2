@@ -7,7 +7,6 @@ import * as THREE from 'three';
 interface CacheEntry {
   texture: THREE.Texture;
   refCount: number;
-  videoElement?: HTMLVideoElement;
 }
 
 export class TextureCache {
@@ -23,33 +22,17 @@ export class TextureCache {
 
     const loader = new THREE.TextureLoader();
     const texture = await loader.loadAsync(url);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    // Explicit: image textures upload top-left origin (like a DOM image).
+    // Video textures use flipY=false (baked into geometry UVs) — different codepath.
+    texture.flipY = true;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
     texture.needsUpdate = true;
 
     this.cache.set(assetId, { texture, refCount: 1 });
     return texture;
-  }
-
-  /** Create a video texture from an HTML video element */
-  loadVideo(assetId: string, url: string): { texture: THREE.VideoTexture; video: HTMLVideoElement } {
-    const existing = this.cache.get(assetId);
-    if (existing && existing.videoElement) {
-      existing.refCount++;
-      return { texture: existing.texture as THREE.VideoTexture, video: existing.videoElement };
-    }
-
-    const video = document.createElement('video');
-    video.src = url;
-    video.crossOrigin = 'anonymous';
-    video.loop = true;
-    video.muted = true;
-    video.playsInline = true;
-    video.load();
-
-    const texture = new THREE.VideoTexture(video);
-    texture.needsUpdate = true;
-
-    this.cache.set(assetId, { texture, refCount: 1, videoElement: video });
-    return { texture, video };
   }
 
   /** Check if an asset is already cached */
@@ -61,6 +44,7 @@ export class TextureCache {
   get(assetId: string): THREE.Texture | undefined {
     return this.cache.get(assetId)?.texture;
   }
+
 
   /** Increment reference count */
   incRef(assetId: string): void {
@@ -89,11 +73,6 @@ export class TextureCache {
     const entry = this.cache.get(assetId);
     if (!entry) return;
     entry.texture.dispose();
-    if (entry.videoElement) {
-      entry.videoElement.pause();
-      entry.videoElement.src = '';
-      entry.videoElement.load();
-    }
     this.cache.delete(assetId);
   }
 }

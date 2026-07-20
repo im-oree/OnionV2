@@ -31,7 +31,14 @@ export class FileSystemAPIAdapter implements StorageAdapter {
   /** Restore workspace handle from IndexedDB. Call on app startup. */
   async ensureWorkspace(): Promise<boolean> {
     // Already restored in memory — return immediately
-    if (this.workspaceHandle !== null) return true;
+    if (this.workspaceHandle !== null) {
+      // Double-check the handle is still valid (not stale after page refresh)
+      if (typeof (this.workspaceHandle as any).getFileHandle === 'function') {
+        return true;
+      }
+      // Handle is stale — clear it and re-restore
+      this.workspaceHandle = null;
+    }
 
     // Only attempt restore once per session (unless it failed and we need to retry)
     if (this._restoreAttempted) return false;
@@ -65,40 +72,19 @@ export class FileSystemAPIAdapter implements StorageAdapter {
         return false;
       }
 
-      // Verify permission is still valid — but be lenient.
-      // After a page refresh, queryPermission returns 'prompt' and requestPermission
-      // requires a user gesture (click) to succeed. Calling it from useEffect fails.
-      // So we treat 'prompt' as valid — the handle exists and will work once the
-      // user interacts with the filesystem (e.g. listing projects, saving).
-      try {
-        const opts: any = { mode: 'readwrite' };
-        let perm: string;
-        if (typeof (handle as any).queryPermission === 'function') {
-          perm = await (handle as any).queryPermission(opts);
-          // Only try requestPermission if we have a user gesture context
-          // (calling from useEffect without gesture silently fails)
-          if (perm === 'prompt' && typeof (handle as any).requestPermission === 'function') {
-            try {
-              perm = await (handle as any).requestPermission(opts);
-            } catch {
-              // requestPermission failed (likely no user gesture) — treat prompt as OK
-              perm = 'prompt';
-            }
-          }
-        } else {
-          perm = 'granted'; // Permission API not available — assume granted
-        }
-        // 'granted' and 'prompt' are both OK — the handle is valid.
-        // Only 'denied' means the workspace is truly inaccessible.
-        if (perm === 'denied') {
-          localStorage.removeItem('onion_workspace_set');
-          this._restoreAttempted = true;
-          return false;
-        }
-      } catch {
-        // Permission API not available — assume granted
+      // CRITICAL: After page refresh, stored FileSystemDirectoryHandle loses
+      // its prototype methods (getFileHandle, etc). This is a browser limitation.
+      // The ONLY way to get a working handle is via showDirectoryPicker(), which
+      // requires a user gesture (click). We cannot auto-restore.
+      if (typeof (handle as any).getFileHandle !== 'function') {
+        // Handle is stale — user must re-pick the workspace folder.
+        // Clear the invalid flag so they can re-pick.
+        localStorage.removeItem('onion_workspace_set');
+        this._restoreAttempted = true;
+        return false;
       }
 
+      // Handle looks valid — try to use it
       this.workspaceHandle = handle;
       this._restoreAttempted = true;
       return true;
@@ -224,9 +210,38 @@ export class FileSystemAPIAdapter implements StorageAdapter {
     };
   }
 
+  /** Get a fresh directory handle for a project, re-obtaining from workspace if stale */
+  private async _getProjectDir(handle: ProjectHandle): Promise<FileSystemDirectoryHandle> {
+    let dirHandle = handle.internal as FileSystemDirectoryHandle;
+    
+    // Check if the handle is stale (missing getFileHandle method)
+    if (!dirHandle || typeof dirHandle.getFileHandle !== 'function') {
+      // Try to restore workspace
+      if (!this.workspaceHandle) {
+        await this.ensureWorkspace();
+      }
+      
+      // If workspace is available, get a fresh project handle
+      if (this.workspaceHandle && typeof (this.workspaceHandle as any).getFileHandle === 'function') {
+        try {
+          dirHandle = await this.workspaceHandle.getDirectoryHandle(handle.name);
+          return dirHandle;
+        } catch {
+          // Project folder not found in workspace
+          throw new Error(`Project folder "${handle.name}" not found in workspace. The folder may have been moved or deleted.`);
+        }
+      }
+      
+      // Workspace is also stale — user needs to re-pick
+      throw new Error('Workspace folder needs to be re-selected. Please use File > Pick Workspace to choose your project folder again.');
+    }
+    
+    return dirHandle;
+  }
+
   async saveProject(project: SerializedProject, handle: ProjectHandle, _options?: SaveOptions): Promise<void> {
     await this._ensurePermission();
-    const dirHandle = handle.internal as FileSystemDirectoryHandle;
+    const dirHandle = await this._getProjectDir(handle);
     // Write a .bak backup before overwriting, then write directly.
     // The OS ensures createWritable({ keepExistingData: false }) is safe —
     // old content is only removed after the new content is fully written and closed.
@@ -248,7 +263,7 @@ export class FileSystemAPIAdapter implements StorageAdapter {
 
   async loadProject(handle: ProjectHandle): Promise<SerializedProject> {
     await this._ensurePermission();
-    const dirHandle = handle.internal as FileSystemDirectoryHandle;
+    const dirHandle = await this._getProjectDir(handle);
     if (!dirHandle || typeof dirHandle.getFileHandle !== 'function') {
       throw new Error('Invalid project handle — the project may have been created with a different storage adapter (e.g. IndexedDB). Please create a new project or re-import from the File menu.');
     }
@@ -267,7 +282,7 @@ export class FileSystemAPIAdapter implements StorageAdapter {
 
   async saveAsset(blob: Blob, filename: string, projectHandle: ProjectHandle): Promise<AssetRef> {
     await this._ensurePermission();
-    const dirHandle = projectHandle.internal as FileSystemDirectoryHandle;
+    const dirHandle = await this._getProjectDir(projectHandle);
     const assetsDir = await dirHandle.getDirectoryHandle('assets', { create: true });
     const fileHandle = await assetsDir.getFileHandle(filename, { create: true });
     const writable = await fileHandle.createWritable({ keepExistingData: false });
@@ -284,7 +299,7 @@ export class FileSystemAPIAdapter implements StorageAdapter {
 
   async loadAsset(ref: AssetRef, projectHandle: ProjectHandle): Promise<Blob> {
     await this._ensurePermission();
-    const dirHandle = projectHandle.internal as FileSystemDirectoryHandle;
+    const dirHandle = await this._getProjectDir(projectHandle);
     const assetsDir = await dirHandle.getDirectoryHandle('assets');
     const fileHandle = await assetsDir.getFileHandle(ref.filename);
     const file = await fileHandle.getFile();
@@ -293,7 +308,7 @@ export class FileSystemAPIAdapter implements StorageAdapter {
 
   async deleteAsset(ref: AssetRef, projectHandle: ProjectHandle): Promise<void> {
     await this._ensurePermission();
-    const dirHandle = projectHandle.internal as FileSystemDirectoryHandle;
+    const dirHandle = await this._getProjectDir(projectHandle);
     try {
       const assetsDir = await dirHandle.getDirectoryHandle('assets');
       await assetsDir.removeEntry(ref.filename);
@@ -303,7 +318,7 @@ export class FileSystemAPIAdapter implements StorageAdapter {
   }
 
   async listAssets(projectHandle: ProjectHandle): Promise<AssetRef[]> {
-    const dirHandle = projectHandle.internal as FileSystemDirectoryHandle;
+    const dirHandle = await this._getProjectDir(projectHandle);
     const assets: AssetRef[] = [];
     try {
       const assetsDir = await dirHandle.getDirectoryHandle('assets');
@@ -334,5 +349,85 @@ export class FileSystemAPIAdapter implements StorageAdapter {
       modified: project.modified,
       version: project.version,
     };
+  }
+
+  // ── Internal workspace-scoped files ─────────────────────────
+
+  /** Save a file to the workspace root under an arbitrary relative path. */
+  async saveInternalFile(relativePath: string, blob: Blob): Promise<void> {
+    if (!this.workspaceHandle) {
+      const ok = await this.ensureWorkspace();
+      if (!ok || !this.workspaceHandle) throw new Error('No workspace available');
+    }
+    await this._ensurePermission();
+    const { dir, filename } = this._splitPath(relativePath);
+    const dirHandle = await this._resolveDir(this.workspaceHandle!, dir, true);
+    const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+    const writable = await fileHandle.createWritable({ keepExistingData: false });
+    await writable.write(blob);
+    await writable.close();
+  }
+
+  async loadInternalFile(relativePath: string): Promise<Blob | null> {
+    if (!this.workspaceHandle) {
+      const ok = await this.ensureWorkspace();
+      if (!ok || !this.workspaceHandle) return null;
+    }
+    await this._ensurePermission();
+    try {
+      const { dir, filename } = this._splitPath(relativePath);
+      const dirHandle = await this._resolveDir(this.workspaceHandle!, dir, false);
+      const fileHandle = await dirHandle.getFileHandle(filename);
+      return await fileHandle.getFile();
+    } catch {
+      return null;
+    }
+  }
+
+  async deleteInternalFile(relativePath: string): Promise<void> {
+    if (!this.workspaceHandle) return;
+    await this._ensurePermission();
+    try {
+      const { dir, filename } = this._splitPath(relativePath);
+      const dirHandle = await this._resolveDir(this.workspaceHandle, dir, false);
+      await dirHandle.removeEntry(filename);
+    } catch {
+      /* not present */
+    }
+  }
+
+  async deleteInternalDirectory(relativePath: string): Promise<void> {
+    if (!this.workspaceHandle) return;
+    await this._ensurePermission();
+    try {
+      const parts = relativePath.split('/').filter(Boolean);
+      const leaf = parts.pop();
+      if (!leaf) return;
+      const parent = await this._resolveDir(this.workspaceHandle, parts.join('/'), false);
+      await parent.removeEntry(leaf, { recursive: true });
+    } catch {
+      /* not present */
+    }
+  }
+
+  private _splitPath(relativePath: string): { dir: string; filename: string } {
+    const clean = relativePath.replace(/^\/+/, '');
+    const idx = clean.lastIndexOf('/');
+    if (idx < 0) return { dir: '', filename: clean };
+    return { dir: clean.slice(0, idx), filename: clean.slice(idx + 1) };
+  }
+
+  private async _resolveDir(
+    root: FileSystemDirectoryHandle,
+    dir: string,
+    create: boolean,
+  ): Promise<FileSystemDirectoryHandle> {
+    if (!dir) return root;
+    const parts = dir.split('/').filter(Boolean);
+    let current = root;
+    for (const p of parts) {
+      current = await current.getDirectoryHandle(p, { create });
+    }
+    return current;
   }
 }

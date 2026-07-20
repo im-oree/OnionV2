@@ -27,15 +27,22 @@ export const FrameInput: React.FC<Props> = ({ value, onChange, min = 0, max, lab
     setLocal(String(v));
   }, [value, min, max, onChange]);
 
+  const valueRef = useRef(value);
+  valueRef.current = value;
+
   const scrub = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
-    e.preventDefault();
+    const isInput = e.target === ref.current;
     const sx = e.clientX, sv = value;
-    let moved = false;
-    document.body.style.cursor = 'ew-resize';
+    let dragging = false;
     const mm = (ev: MouseEvent) => {
       const dx = ev.clientX - sx;
-      if (Math.abs(dx) > 2) moved = true;
+      if (!dragging && Math.abs(dx) > 3) {
+        dragging = true;
+        if (isInput) ref.current?.blur();
+        document.body.style.cursor = 'ew-resize';
+      }
+      if (!dragging) return;
       let v = Math.round(sv + dx);
       if (min !== undefined) v = Math.max(min, v);
       if (max !== undefined) v = Math.min(max, v);
@@ -45,11 +52,31 @@ export const FrameInput: React.FC<Props> = ({ value, onChange, min = 0, max, lab
       document.body.style.cursor = '';
       document.removeEventListener('mousemove', mm);
       document.removeEventListener('mouseup', mu);
-      if (!moved) ref.current?.focus();
+      if (!dragging) {
+        if (isInput) { ref.current?.focus(); ref.current?.select(); }
+      }
     };
+    if (!isInput) e.preventDefault();
     document.addEventListener('mousemove', mm);
     document.addEventListener('mouseup', mu);
   }, [value, min, max, onChange]);
+
+  // Scroll wheel scrub — stable listener via ref (avoids re-attach every frame)
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 1 : -1;
+      const multiplier = e.shiftKey ? 10 : 1;
+      let v = Math.round(valueRef.current + delta * multiplier);
+      if (min !== undefined) v = Math.max(min, v);
+      if (max !== undefined) v = Math.min(max, v);
+      onChange(v);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [min, max, onChange]);
 
   return (
     <div

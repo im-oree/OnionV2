@@ -8,7 +8,7 @@ export interface ProjectState{
   project:Project; dirty:boolean; fileHandle:FileSystemFileHandle|null;
   setProject:(p:Project)=>void; setDirty:(d:boolean)=>void;
   setFileHandle:(h:FileSystemFileHandle|null)=>void;
-  addAsset:(a:ProjectAsset)=>void; removeAsset:(id:string)=>void;
+  addAsset:(a:ProjectAsset)=>void; removeAsset:(id:string)=>void; renameAsset:(id:string,name:string)=>void;
   updateSettings:(s:Partial<Project['settings']>)=>void;
   newProject:()=>void;
 }
@@ -21,6 +21,7 @@ export const useProjectStore = create<ProjectState>((set)=>({
   setFileHandle:(handle)=>set({fileHandle:handle}),
   addAsset:(asset)=>set((s)=>({project:{...s.project,assets:[...s.project.assets,asset],modified:Date.now()},dirty:true})),
   removeAsset:(assetId)=>set((s)=>({project:{...s.project,assets:s.project.assets.filter(a=>a.id!==assetId),modified:Date.now()},dirty:true})),
+  renameAsset:(assetId,newName)=>set((s)=>({project:{...s.project,assets:s.project.assets.map(a=>a.id===assetId?{...a,name:newName}:a),modified:Date.now()},dirty:true})),
   updateSettings:(settings)=>set((s)=>({project:{...s.project,settings:{...s.project.settings,...settings},modified:Date.now()},dirty:true})),
   newProject:()=>set({project:{...DEFAULT_PROJECT,id:genId()},dirty:false,fileHandle:null}),
 }));

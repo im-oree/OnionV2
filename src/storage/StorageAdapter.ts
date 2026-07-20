@@ -33,6 +33,8 @@ export interface AssetRef {
   size: number;
   /** Relative path within project */
   relativePath: string;
+  /** Original in-memory asset ID — used to restore layers' assetId references */
+  originalId?: string;
 }
 
 export interface ProjectMetadata {
@@ -95,4 +97,11 @@ export interface StorageAdapter {
   // Metadata
   getProjectMetadata(handle: ProjectHandle): Promise<ProjectMetadata>;
   adapterAvailable(): Promise<boolean>;
+
+  // Internal workspace-scoped files (thumbnails, presets, etc.)
+  // Optional — adapters may implement or omit; consumers should feature-detect.
+  saveInternalFile?(relativePath: string, blob: Blob): Promise<void>;
+  loadInternalFile?(relativePath: string): Promise<Blob | null>;
+  deleteInternalFile?(relativePath: string): Promise<void>;
+  deleteInternalDirectory?(relativePath: string): Promise<void>;
 }

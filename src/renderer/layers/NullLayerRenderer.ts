@@ -8,25 +8,26 @@ import { BaseLayerRenderer } from './BaseLayerRenderer';
 
 export class NullLayerRenderer extends BaseLayerRenderer {
   constructor(id: string) {
-    const geo = new THREE.PlaneGeometry(10, 10);
+    // Null objects are invisible helper layers — no visual output.
+    // We still create a tiny mesh so the selection overlay can find it,
+    // but it renders nothing (transparent, zero opacity, no depth write).
+    const geo = new THREE.PlaneGeometry(1, 1);
     const mat = new THREE.MeshBasicMaterial({
-      color: 0x666666,
+      color: 0x000000,
       transparent: true,
-      opacity: 0.3,
+      opacity: 0,
       depthWrite: false,
       depthTest: false,
-      side: THREE.DoubleSide,
-      wireframe: true,
     });
     super(id, geo, mat);
-    this.group.renderOrder = 0;
+    this.group.renderOrder = -1;
   }
 
   protected geometryWidth(): number {
-    return 10;
+    return 1;
   }
 
   protected geometryHeight(): number {
-    return 10;
+    return 1;
   }
 }

@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import type { Layer } from '../../types/layer';
 import type { SceneManager } from '../SceneManager';
 import { LayerFactory } from '../layers/LayerFactory';
@@ -10,6 +11,8 @@ export class LayerSync {
   private renderers = new Map<string, BaseLayerRenderer>();
   private prevLayers: Layer[] = [];
   private _runtimeOverridesActive = false;
+  /** Stores the last-applied LOCAL transform override for each layer (used for child computation). */
+  private _localOverrides = new Map<string, Layer['transform']>();
 
   constructor(sceneManager: SceneManager) { this.factory = new LayerFactory(sceneManager); }
 
@@ -33,6 +36,20 @@ export class LayerSync {
       else{this._updateRenderer(layer.id,prev,layer);}
     }
     this._updateZOrder(layers);
+
+    // Second pass: recompute world transforms for ALL parented layers.
+    // This ensures children update when a parent moves, even if the child's
+    // own local transform hasn't changed.
+    const layerMap = new Map<string, Layer>();
+    for (const l of layers) layerMap.set(l.id, l);
+    for (const layer of layers) {
+      if (!layer.parentId) continue;
+      const r = this.renderers.get(layer.id);
+      if (!r) continue;
+      const worldTransform = this._computeWorldTransform(layer.transform, layer.parentId, layerMap);
+      r.updateTransform(worldTransform);
+    }
+
     this.prevLayers=layers;
   }
 
@@ -43,34 +60,67 @@ export class LayerSync {
   }
 
   applyRuntimeOverrides(overrides: RuntimeOverrides): void {
+    // Clear stale overrides from previous frame
+    this._localOverrides.clear();
+
     const layers=this._getLayers();
+    const layerMap = new Map<string, Layer>();
+    for (const l of layers) layerMap.set(l.id, l);
+
+    // First pass: apply overrides to directly-animated layers
     for(const [layerId,override] of overrides){
       const r=this.renderers.get(layerId); if(!r)continue;
       const layer=layers.find(l=>l.id===layerId); if(!layer)continue;
-      r.updateTransform({
+      const localTransform = {
         position:override.position??layer.transform.position,
         scale:override.scale??layer.transform.scale,
         rotation:override.rotation??layer.transform.rotation,
         anchorPoint:override.anchorPoint??layer.transform.anchorPoint,
-      });
+      };
+      const worldTransform = this._computeWorldTransform(localTransform, layer.parentId, layerMap);
+      this._localOverrides.set(layerId, localTransform);
+      r.updateTransform(worldTransform);
       if(override.opacity!==undefined)r.updateOpacity(override.opacity/100);
+    }
+
+    // Second pass: recompute world transforms for ALL parented layers
+    // This ensures children follow their parent's animated position
+    for (const layer of layers) {
+      if (!layer.parentId) continue;
+      // Skip layers that were already updated in the first pass (they have overrides)
+      if (overrides.has(layer.id)) continue;
+      const r = this.renderers.get(layer.id);
+      if (!r) continue;
+      const worldTransform = this._computeWorldTransform(layer.transform, layer.parentId, layerMap);
+      r.updateTransform(worldTransform);
     }
   }
 
   restoreFromOverrides(): void {
     const layers=this._getLayers();
+    const layerMap = new Map<string, Layer>();
+    for (const l of layers) layerMap.set(l.id, l);
     for(const layer of layers){
       const r=this.renderers.get(layer.id); if(!r)continue;
-      r.updateTransform(layer.transform);
+      const worldTransform = this._computeWorldTransform(layer.transform, layer.parentId, layerMap);
+      r.updateTransform(worldTransform);
       r.updateOpacity(layer.opacity/100);
     }
   }
 
   updateFrameVisibility(currentFrame: number): void {
     const layers=this._getLayers();
+    // Check if ANY layer is soloed — if so, only soloed layers (that are
+    // also visible and in frame range) should be shown.
+    const hasSolo = layers.some(l => l.soloed);
     for(const layer of layers){
       const r=this.renderers.get(layer.id); if(!r)continue;
-      r.setVisible(layer.visible&&currentFrame>=layer.startFrame&&currentFrame<=layer.endFrame);
+      // Adjustment layers never render as a mesh — their effect output is
+      // shown on a compositor quad managed by AdjustmentCompositor.
+      if (layer.type === 'adjustment') { r.setVisible(false); continue; }
+      const inFrame = currentFrame >= layer.startFrame && currentFrame <= layer.endFrame;
+      const visible = layer.visible && inFrame && (hasSolo ? !!layer.soloed : true);
+      r.setVisible(visible);
     }
   }
 
@@ -86,7 +136,12 @@ export class LayerSync {
     const r=this.renderers.get(layerId); if(!r)return;
 
     if(!this._runtimeOverridesActive){
-      if(this._txChanged(prev.transform,next.transform))r.updateTransform(next.transform);
+      if(this._txChanged(prev.transform,next.transform)||prev.parentId!==next.parentId){
+        const layerMap = new Map<string, Layer>();
+        for (const l of this.prevLayers) layerMap.set(l.id, l);
+        const worldTransform = this._computeWorldTransform(next.transform, next.parentId, layerMap);
+        r.updateTransform(worldTransform);
+      }
       if(prev.opacity!==next.opacity)r.updateOpacity(next.opacity/100);
     }
     if(prev.visible!==next.visible)r.setVisible(next.visible);
@@ -120,7 +175,95 @@ export class LayerSync {
       a.anchorPoint.x!==b.anchorPoint.x||a.anchorPoint.y!==b.anchorPoint.y;
   }
 
+  /**
+   * Compute the world transform for a layer by composing with its parent's transform.
+   * Child position is rotated/scaled by parent, child rotation adds to parent rotation,
+   * child scale multiplies with parent scale. Uses iterative approach to handle
+   * nested hierarchies (grandparent → parent → child).
+   */
+  private _computeWorldTransform(
+    local: Layer['transform'],
+    parentId: string | null | undefined,
+    layerMap: Map<string, Layer>,
+  ): Layer['transform'] {
+    if (!parentId) return local;
+
+    // Build ancestor chain (child → parent → grandparent → ...)
+    const chain: Layer[] = [];
+    let currentId: string | null | undefined = parentId;
+    const visited = new Set<string>();
+    while (currentId) {
+      if (visited.has(currentId)) break; // prevent infinite loops
+      visited.add(currentId);
+      const parent = layerMap.get(currentId);
+      if (!parent) break;
+      chain.push(parent);
+      currentId = parent.parentId;
+    }
+
+    // Apply transforms from root to immediate parent (innermost first)
+    let worldPos = { x: local.position.x, y: local.position.y };
+    let worldRot = local.rotation;
+    let worldScale = { x: local.scale.x, y: local.scale.y };
+
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const p = chain[i];
+      // Use animated override if parent was animated, else base transform
+      const override = this._localOverrides.get(p.id);
+      const px = override ? override.position.x : p.transform.position.x;
+      const py = override ? override.position.y : p.transform.position.y;
+      const pr = override ? override.rotation : p.transform.rotation;
+      const psx = (override ? override.scale.x : p.transform.scale.x) / 100;
+      const psy = (override ? override.scale.y : p.transform.scale.y) / 100;
+      const prRad = THREE.MathUtils.degToRad(pr);
+
+      // Rotate child position by parent rotation, then scale, then add parent position
+      const cos = Math.cos(prRad);
+      const sin = Math.sin(prRad);
+      const sx = worldPos.x * psx;
+      const sy = worldPos.y * psy;
+      worldPos = {
+        x: px + sx * cos - sy * sin,
+        y: py + sx * sin + sy * cos,
+      };
+
+      // Add parent rotation
+      worldRot += pr;
+
+      // Multiply parent scale (as percentage)
+      worldScale = {
+        x: worldScale.x * psx,
+        y: worldScale.y * psy,
+      };
+    }
+
+    return {
+      position: worldPos,
+      scale: { x: worldScale.x * 100, y: worldScale.y * 100 },
+      rotation: worldRot,
+      anchorPoint: local.anchorPoint,
+    };
+  }
+
   private _updateZOrder(layers: Layer[]): void {
-    layers.forEach((l,i)=>{ const r=this.renderers.get(l.id); if(r)r.group.position.z=-(i*0.001); });
+    // Sort by zIndex descending: higher zIndex = rendered on top
+    // This matches the timeline display order (top of timeline = highest zIndex)
+    const sorted = [...layers].sort((a, b) => b.zIndex - a.zIndex);
+    sorted.forEach((l, i) => {
+      const r = this.renderers.get(l.id);
+      if (!r) return;
+      // Three.js renders meshes with HIGHER renderOrder ON TOP when depthTest is false.
+      // sorted[0] has highest zIndex (top of timeline) → gets highest renderOrder.
+      r.mesh.renderOrder = sorted.length - 1 - i;
+      r.group.position.z = -(i * 0.001);
+      // Enforce depthTest:false + depthWrite:false on ALL layer materials
+      // so that renderOrder (set above) controls stacking, not Z depth.
+      const mat = r.mesh.material as THREE.MeshBasicMaterial;
+      if (mat && mat.depthTest !== false) {
+        mat.depthTest = false;
+        mat.depthWrite = false;
+        mat.needsUpdate = true;
+      }
+    });
   }
 }

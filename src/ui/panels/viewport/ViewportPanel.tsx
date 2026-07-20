@@ -25,6 +25,7 @@ import { ShapeContextToolbar } from './ShapeContextToolbar';
 import { assetManager } from '../../../storage/AssetManager';
 import { createLayerInstance } from '../../../utils/createLayerInstance';
 import { useNotificationStore } from '../../../state/notificationStore';
+import { useProjectStore } from '../../../state/projectStore';
 
 export const ViewportPanel: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -54,26 +55,19 @@ export const ViewportPanel: React.FC = () => {
     requestRender: renderer?()=>renderer.renderLoop.requestRender():undefined,
   });
 
-  // Handle asset drop from project panel
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  // Handle asset drop from project panel OR raw file drop from OS
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     setDropHighlight(false);
 
-    const assetId = e.dataTransfer.getData('application/onion-asset');
-    if (!assetId) return;
-
     const state = useCompositionStore.getState();
     const compId = state.activeCompositionId;
-    if (!compId) return;
-    const comp = state.compositions.find(c => c.id === compId);
-    if (!comp) return;
-
-    const asset = assetManager.getAsset(assetId);
-    if (!asset) return;
-    if (asset.type === 'audio') {
-      useNotificationStore.getState().addNotification({ type: 'warning', message: 'Audio files cannot be placed as layers. Use them via expressions or the audio API.', autoDismiss: 3000 });
+    if (!compId) {
+      useNotificationStore.getState().addNotification({ type: 'warning', message: 'Create a composition first.', autoDismiss: 3000 });
       return;
     }
+    const comp = state.compositions.find(c => c.id === compId);
+    if (!comp) return;
 
     // Get drop position in world space
     let worldX = comp.width / 2;
@@ -87,22 +81,72 @@ export const ViewportPanel: React.FC = () => {
       worldY = world.y;
     }
 
-    const type = asset.type === 'video' ? 'video' : 'image';
-    const layer = createLayerInstance(type, comp, {
-      name: asset.name,
-      zIndex: comp.layers.length + 1,
-      transform: {
-        position: { x: worldX, y: worldY },
-        scale: { x: 100, y: 100 },
-        rotation: 0,
-        anchorPoint: { x: 0, y: 0 },
-      },
-      data: type === 'video'
-        ? { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
-        : { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight },
-    });
-    state.addLayer(compId, layer);
-    useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+    // Case 1: Asset drop from project panel
+    const assetId = e.dataTransfer.getData('application/onion-asset');
+    if (assetId) {
+      // Try assetManager first, fall back to projectStore
+      let asset = assetManager.getAsset(assetId);
+      if (!asset) {
+        const pa = useProjectStore.getState().project.assets.find(a => a.id === assetId);
+        if (pa) {
+          asset = { id: pa.id, name: pa.name, type: pa.type as any, url: pa.path, size: pa.size, mimeType: pa.mimeType, importedAt: pa.importedAt, missing: false, naturalWidth: pa.naturalWidth ?? 100, naturalHeight: pa.naturalHeight ?? 100, duration: pa.duration } as any;
+        }
+      }
+      if (!asset) {
+        useNotificationStore.getState().addNotification({ type: 'warning', message: 'Asset not found — try re-importing.', autoDismiss: 3000 });
+        return;
+      }
+      const type = asset.type === 'video' ? 'video' : asset.type === 'audio' ? 'audio' : 'image';
+      const layer = createLayerInstance(type, comp, {
+        name: asset.name,
+        zIndex: comp.layers.length + 1,
+        transform: {
+          position: { x: worldX, y: worldY },
+          scale: { x: 100, y: 100 },
+          rotation: 0,
+          anchorPoint: { x: 0, y: 0 },
+        },
+        data: type === 'audio'
+          ? { assetId: asset.id, duration: asset.duration ?? 10, volume: 1, muted: false, playbackRate: 1 }
+          : type === 'video'
+          ? { assetId: asset.id, naturalWidth: asset.naturalWidth ?? 100, naturalHeight: asset.naturalHeight ?? 100, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
+          : { assetId: asset.id, naturalWidth: asset.naturalWidth ?? 100, naturalHeight: asset.naturalHeight ?? 100 },
+      });
+      state.addLayer(compId, layer);
+      useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+      renderer?.renderLoop?.requestRender();
+      return;
+    }
+
+    // Case 2: Raw file drop from OS — import to project AND add as layer
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+    for (const file of files) {
+      try {
+        const asset = await assetManager.importFile(file);
+        const type = asset.type === 'video' ? 'video' : asset.type === 'audio' ? 'audio' : 'image';
+        const layer = createLayerInstance(type, comp, {
+          name: asset.name,
+          zIndex: comp.layers.length + 1,
+          transform: {
+            position: { x: worldX, y: worldY },
+            scale: { x: 100, y: 100 },
+            rotation: 0,
+            anchorPoint: { x: 0, y: 0 },
+          },
+          data: type === 'audio'
+            ? { assetId: asset.id, duration: asset.duration ?? 10, volume: 1, muted: false, playbackRate: 1 }
+            : type === 'video'
+            ? { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
+            : { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight },
+        });
+        state.addLayer(compId, layer);
+        useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+        useNotificationStore.getState().addNotification({ type: 'success', message: `Added "${asset.name}" to timeline`, autoDismiss: 2000 });
+      } catch (err) {
+        useNotificationStore.getState().addNotification({ type: 'error', message: `Failed to import "${file.name}": ${(err as Error)?.message ?? 'Unknown error'}` });
+      }
+    }
     renderer?.renderLoop?.requestRender();
   }, [renderer]);
 
@@ -138,7 +182,20 @@ export const ViewportPanel: React.FC = () => {
   },[renderer,ctxMenu]);
 
   return (
-    <div className="w-full h-full relative overflow-hidden" style={{background:'var(--color-app-bg)'}}>
+    <div className="w-full h-full relative overflow-hidden" style={{background:'var(--color-app-bg)'}}
+      onDragOver={(e) => {
+        const types = Array.from(e.dataTransfer.types);
+        const hasAsset = types.includes('application/onion-asset');
+        const hasFiles = types.includes('Files');
+        if (hasAsset || hasFiles) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+          setDropHighlight(true);
+        }
+      }}
+      onDragLeave={() => setDropHighlight(false)}
+      onDrop={handleDrop}
+    >
       {comp&&(
         <CompBoundsCSS comp={comp} viewportSize={viewportSize} cameraManager={renderer?.cameraManager??null} zoom={state.zoom}/>
       )}
@@ -146,17 +203,8 @@ export const ViewportPanel: React.FC = () => {
       <div
         ref={containerRef}
         className="absolute inset-0"
-        style={{zIndex:1, outline: dropHighlight ? '2px dashed var(--color-accent)' : 'none', outlineOffset: -4}}
+        style={{zIndex:1}}
         onContextMenu={handleCtx}
-        onDragOver={(e) => {
-          if (e.dataTransfer.types.includes('application/onion-asset')) {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'copy';
-            setDropHighlight(true);
-          }
-        }}
-        onDragLeave={() => setDropHighlight(false)}
-        onDrop={handleDrop}
       />
 
       {comp&&<Breadcrumb/>}

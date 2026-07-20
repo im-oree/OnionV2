@@ -4,6 +4,7 @@
  */
 import { EventEmitter } from '../renderer/utils/EventEmitter';
 import { StorageManager } from './StorageManager';
+import { useNotificationStore } from '../state/notificationStore';
 import type { AssetRef } from './StorageAdapter';
 
 export interface Asset {
@@ -41,6 +42,18 @@ class AssetManagerClass {
 
   /** Import a File (image or video) and create an Asset */
   async importFile(file: File): Promise<Asset> {
+    // Deduplication: skip if a file with the same name and size already exists
+    for (const existing of this.assets.values()) {
+      if (existing.name === file.name && existing.size === file.size && !existing.missing) {
+        useNotificationStore.getState().addNotification({
+          type: 'info',
+          message: `"${file.name}" is already in the project — skipped.`,
+          autoDismiss: 3000,
+        });
+        return existing;
+      }
+    }
+
     const url = URL.createObjectURL(file);
     const id = genAssetId();
 
@@ -82,12 +95,15 @@ class AssetManagerClass {
 
   /** Add an asset from persistent storage reference */
   async addFromStorageRef(ref: AssetRef): Promise<Asset> {
-    // Check if already loaded
+    // Check if already loaded (by original ID first, then by storageRef ID)
+    const checkId = ref.originalId || ref.id;
     for (const existing of this.assets.values()) {
+      if (existing.id === checkId) return existing;
       if (existing.storageRef?.id === ref.id) return existing;
     }
 
-    const id = ref.id || genAssetId();
+    // Use the original in-memory ID so layer data.assetId references stay valid
+    const id = ref.originalId || ref.id || genAssetId();
     const asset: Asset = {
       id,
       name: ref.filename,
@@ -236,7 +252,7 @@ class AssetManagerClass {
   }
 
   /** Open a file picker and import selected files */
-  async importFromFilePicker(accept = 'image/*,video/*'): Promise<Asset[]> {
+  async importFromFilePicker(accept = 'image/*,video/*,audio/*'): Promise<Asset[]> {
     return new Promise((resolve) => {
       const input = document.createElement('input');
       input.type = 'file';
@@ -273,8 +289,9 @@ class AssetManagerClass {
 
   /** Generate a small thumbnail (256px max) for an asset */
   private async generateThumbnail(file: File, url: string): Promise<string | undefined> {
+    const assetType = this.getAssetType(file);
     return new Promise((resolve) => {
-      if (file.type.startsWith('video/')) {
+      if (assetType === 'video') {
         const video = document.createElement('video');
         video.preload = 'metadata';
         video.muted = true;
@@ -285,9 +302,11 @@ class AssetManagerClass {
           try {
             const canvas = document.createElement('canvas');
             const maxDim = 256;
-            const scale = Math.min(maxDim / video.videoWidth, maxDim / video.videoHeight);
-            canvas.width = Math.round(video.videoWidth * scale);
-            canvas.height = Math.round(video.videoHeight * scale);
+            const vw = video.videoWidth || 100;
+            const vh = video.videoHeight || 100;
+            const scale = Math.min(maxDim / vw, maxDim / vh);
+            canvas.width = Math.round(vw * scale);
+            canvas.height = Math.round(vh * scale);
             const ctx = canvas.getContext('2d');
             if (ctx) {
               ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -302,7 +321,7 @@ class AssetManagerClass {
         };
         video.onerror = () => resolve(undefined);
         video.src = url;
-      } else if (file.type.startsWith('image/')) {
+      } else if (assetType === 'image') {
         const img = new Image();
         img.onload = () => {
           try {
@@ -336,15 +355,25 @@ class AssetManagerClass {
   }
 
   private getAssetType(file: File): Asset['type'] {
+    // Check MIME type first
     if (file.type.startsWith('video/')) return 'video';
     if (file.type.startsWith('audio/')) return 'audio';
+    if (file.type.startsWith('image/')) return 'image';
+    // Fallback: detect by file extension when MIME type is empty or generic
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    const videoExts = ['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'ogv', 'ts', 'mts'];
+    const audioExts = ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'wma'];
+    const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'svg', 'ico', 'avif'];
+    if (videoExts.includes(ext)) return 'video';
+    if (audioExts.includes(ext)) return 'audio';
     return 'image';
   }
 
   private getTypeFromMime(mime: string): Asset['type'] {
     if (mime.startsWith('video/')) return 'video';
     if (mime.startsWith('audio/')) return 'audio';
-    return 'image';
+    if (mime.startsWith('image/')) return 'image';
+    return 'image'; // Default for unknown MIME types from storage
   }
 
   /** Get natural dimensions of a media file */
@@ -359,8 +388,12 @@ class AssetManagerClass {
     blob: Blob,
     url: string,
   ): Promise<{ width: number; height: number; duration?: number }> {
+    // Detect type from MIME or extension fallback
+    const isVideo = blob.type.startsWith('video/') || ['mp4','webm','mov','avi','mkv','m4v','ogv'].some(ext => url.toLowerCase().includes('.' + ext));
+    const isImage = blob.type.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp','svg'].some(ext => url.toLowerCase().includes('.' + ext));
+    const isAudio = blob.type.startsWith('audio/') || ['mp3','wav','ogg','aac','flac','m4a','wma'].some(ext => url.toLowerCase().includes('.' + ext));
     return new Promise((resolve, reject) => {
-      if (blob.type.startsWith('video/')) {
+      if (isVideo) {
         const video = document.createElement('video');
         video.preload = 'metadata';
         video.onloadedmetadata = () => {
@@ -373,15 +406,24 @@ class AssetManagerClass {
         };
         video.onerror = () => reject(new Error('Failed to load video'));
         video.src = url;
-      } else if (blob.type.startsWith('image/')) {
+      } else if (isImage) {
         const img = new Image();
         img.onload = () => {
           resolve({ width: img.naturalWidth, height: img.naturalHeight });
         };
         img.onerror = () => reject(new Error('Failed to load image'));
         img.src = url;
+      } else if (isAudio) {
+        const audio = document.createElement('audio');
+        audio.preload = 'metadata';
+        audio.onloadedmetadata = () => {
+          resolve({ width: 0, height: 0, duration: audio.duration });
+          audio.src = '';
+        };
+        audio.onerror = () => resolve({ width: 0, height: 0 });
+        audio.src = url;
       } else {
-        resolve({ width: 100, height: 100 });
+        resolve({ width: 0, height: 0 });
       }
     });
   }

@@ -3,6 +3,7 @@ export const APP = { NAME:'OnionV2', VERSION:'0.1.0', BUILD:'Phase 11' } as cons
 export const COMPOSITION = {
   DEFAULT_WIDTH:1920, DEFAULT_HEIGHT:1080, MIN_SIZE:64, MAX_SIZE:8192,
   DEFAULT_FPS:30, DEFAULT_DURATION:10, PIXEL_ASPECT:1,
+
 } as const;
 
 export const TIME_DISPLAY = { FRAMES:'frames', SECONDS:'seconds', SMPTE:'smpte' } as const;

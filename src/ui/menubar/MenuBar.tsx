@@ -65,7 +65,7 @@ export const MenuBar:React.FC = ()=>{
         className="px-3"
         style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-disabled)', letterSpacing: '0.03em' }}
       >
-        OnionV2 v0.1.0
+        OnionV2 BETA
       </span>
     </div>
   );

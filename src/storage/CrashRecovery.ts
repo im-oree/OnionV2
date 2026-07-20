@@ -92,6 +92,8 @@ export class CrashRecovery {
 
     try {
       const project = await adapter.loadProject(projectHandle);
+      // Restore assets first so images/videos can load during deserialize
+      await ProjectSerializer.restoreAssets(project);
       ProjectSerializer.deserialize(project);
       useNotificationStore.getState().addNotification({
         type: 'success',

@@ -5,6 +5,7 @@ import { useKeyframeStore } from '../../../state/keyframeStore';
 import { animationClock } from '../timeline/PlaybackControls';
 import type { Layer } from '../../../types/layer';
 
+
 function kfId(): string {
   return `kf_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
 }
@@ -86,6 +87,7 @@ export function buildInsertKeyframeMenu(): ContextMenuItem[] {
 export function buildViewportContextMenu(): ContextMenuItem[] {
   const sel = getSelected();
   const has = sel && sel.layers.length > 0;
+  const hasMulti = has && sel!.layers.length > 1;
 
   const dup = () => {
     if (!sel) return;
@@ -116,6 +118,7 @@ export function buildViewportContextMenu(): ContextMenuItem[] {
     { id: 'v.d3', divider: true },
     { id: 'v.kf', label: 'Insert Keyframe', shortcut: 'I', disabled: !has, children: kfChildren },
     { id: 'v.d4', divider: true },
+    { id: 'v.join', label: 'Join (Parent to Last Selected)', shortcut: 'Ctrl+J', disabled: !hasMulti, onClick: () => import('../../../utils/joinLayers').then(m => m.joinSelectedLayers()) },
     { id: 'v.del', label: 'Delete', shortcut: 'X', disabled: !has, onClick: del },
   ];
 }

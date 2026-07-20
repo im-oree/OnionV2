@@ -3,6 +3,7 @@ import { Section, PropRow } from './Section';
 import { NumberInput } from './inputs/NumberInput';
 import { ColorInput } from './inputs/ColorInput';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { ResolutionPresets } from './ResolutionPresets';
 
 export const CompSection: React.FC = () => {
   const comp = useCompositionStore((s) => {
@@ -13,6 +14,7 @@ export const CompSection: React.FC = () => {
 
   return (
     <Section label="Composition">
+      <ResolutionPresets />
       <PropRow label="Name">
         <input
           type="text" value={comp.name}

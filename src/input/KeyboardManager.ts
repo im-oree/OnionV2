@@ -41,9 +41,22 @@ function dupSel(): void {
 
 function delSel(): void {
   const ctx = getCtx(); if (!ctx) return;
-  for (const id of useSelectionStore.getState().getSelectedIds())
-    useCompositionStore.getState().removeLayer(ctx.compId, id);
-  useSelectionStore.getState().clearSelection();
+  const ids = useSelectionStore.getState().getSelectedIds();
+  if (ids.length === 0) return;
+  import('../ui/common/ConfirmDialog').then(({ confirm }) => {
+    const count = ids.length;
+    confirm(
+      `Delete ${count} layer${count === 1 ? '' : 's'}?`,
+      'Delete Layers',
+      { confirmLabel: `Delete ${count}` },
+    ).then(yes => {
+      if (yes) {
+        for (const id of ids)
+          useCompositionStore.getState().removeLayer(ctx.compId, id);
+        useSelectionStore.getState().clearSelection();
+      }
+    });
+  });
 }
 
 export function registerAllShortcuts(): void {
@@ -346,6 +359,11 @@ export function registerAllShortcuts(): void {
   // Polygon tool
   shortcutRegistry.register({ id: 'tool.polygon', key: 'p', shift: true, context: 'global', handler: () => {
     useToolStore.getState().setActiveTool('shapePolygon');
+  }, remappable: true });
+
+  // Layer parent — Ctrl+J (Join)
+  shortcutRegistry.register({ id: 'layer.join', key: 'j', ctrl: true, context: 'global', handler: () => {
+    import('../utils/joinLayers').then(m => m.joinSelectedLayers());
   }, remappable: true });
 
   // Layer reorder — Ctrl+] / Ctrl+[

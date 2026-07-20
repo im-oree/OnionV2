@@ -39,8 +39,6 @@ export const PlaybackControls: React.FC<Props> = ({
       if (renderer?.propertyBinder) renderer.propertyBinder.setActive(true);
 
       // Cancel any ongoing cache build — don't prefetch during live playback.
-      // The background prefetch loop was piling up setTimeout calls every
-      // 100ms inside _buildNextFrame's playback-pause branch, burning CPU.
       const builder = (window as any).__ramPreviewBuilder;
       if (builder?.isBuilding) builder.cancel();
     };
@@ -49,6 +47,8 @@ export const PlaybackControls: React.FC<Props> = ({
       setPlaybackState('paused');
       const renderer = (window as any).__renderer;
       if (renderer) {
+        if (renderer.pauseAllVideos) renderer.pauseAllVideos();
+        if (renderer.pauseAllAudio) renderer.pauseAllAudio();
         if (renderer.propertyBinder?.isActive) {
           renderer.propertyBinder.setActive(false);
           renderer.layerSync.restoreFromOverrides();
@@ -60,8 +60,6 @@ export const PlaybackControls: React.FC<Props> = ({
       }
 
       // After pausing, trigger a single background prefetch pass
-      // (if autoCache is enabled). This does NOT loop — idle caching
-      // handles long-running background caching via the activity tracker.
       if (useTimelineStore.getState().autoCache) {
         const builder = (window as any).__ramPreviewBuilder;
         if (builder && !builder.isBuilding) {
@@ -78,6 +76,8 @@ export const PlaybackControls: React.FC<Props> = ({
       setPlaybackState('stopped');
       const renderer = (window as any).__renderer;
       if (renderer) {
+        if (renderer.pauseAllVideos) renderer.pauseAllVideos();
+        if (renderer.pauseAllAudio) renderer.pauseAllAudio();
         if (renderer.propertyBinder?.isActive) {
           renderer.propertyBinder.setActive(false);
           renderer.layerSync.restoreFromOverrides();

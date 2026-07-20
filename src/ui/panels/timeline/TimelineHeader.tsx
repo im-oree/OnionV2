@@ -160,8 +160,8 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
         {timeDisplay === 'frames' ? 'f' : timeDisplay === 'seconds' ? 's' : 'tc'}
       </span>
       <div className="w-2" />
-      <FrameInput value={0} onChange={() => {}} label="Start" width={76} />
-      <FrameInput value={totalFrames} onChange={setDuration} min={1} label="End" width={76} />
+      <FrameInput value={0} onChange={() => {}} label="Start" width={96} />
+      <FrameInput value={totalFrames} onChange={setDuration} min={1} label="End" width={96} />
 
       <Sep />
 

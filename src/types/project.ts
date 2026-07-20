@@ -12,6 +12,7 @@ export interface ProjectAsset {
   type:'image'|'video'|'audio'|'font'|'other';
   path:string; size:number; originalName:string;
   mimeType:string; importedAt:number;
+  naturalWidth?:number; naturalHeight?:number; duration?:number;
 }
 
 export interface Project {
