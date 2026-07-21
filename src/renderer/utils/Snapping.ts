@@ -1,15 +1,12 @@
 /**
- * Snapping — handles snapping of points to composition edges, center, guides, and layers.
- * Returns snapped position plus which snap lines were hit (for visual display).
+ * Snapping — handles snapping of points/rects to composition edges, center, guides, and layers.
  */
 import { VIEWPORT_CONFIG } from '../../config/viewportConfig';
 
 export interface SnapResult {
   x: number;
   y: number;
-  /** Whether a snap occurred */
   snapped: boolean;
-  /** Snap lines to draw (positions in world coords) */
   lines: SnapLine[];
 }
 
@@ -19,18 +16,14 @@ export interface SnapLine {
 }
 
 export interface SnapTargets {
-  /** Composition edges (left, right, top, bottom) */
   compLeft: number;
   compRight: number;
   compTop: number;
   compBottom: number;
-  /** Composition center */
   compCenterX: number;
   compCenterY: number;
-  /** Guide lines (world positions) */
   guidesH: number[];
   guidesV: number[];
-  /** Layer edges (Phase 3: populated by layer bounds) */
   layers?: LayerSnapRect[];
 }
 
@@ -51,10 +44,6 @@ export class Snapping {
   set enabled(val: boolean) { this._enabled = val; }
   toggle(): void { this._enabled = !this._enabled; }
 
-  /**
-   * Snap a world-space point to nearby targets.
-   * Returns the snapped position and which snap lines were hit.
-   */
   snapPoint(
     worldX: number,
     worldY: number,
@@ -62,63 +51,148 @@ export class Snapping {
     thresholdPx?: number,
   ): SnapResult {
     const result: SnapResult = { x: worldX, y: worldY, snapped: false, lines: [] };
-
     if (!this._enabled) return result;
 
-    const threshold = (thresholdPx ?? VIEWPORT_CONFIG.SNAP_THRESHOLD_PX);
+    const threshold = thresholdPx ?? VIEWPORT_CONFIG.SNAP_THRESHOLD_PX;
+    const { verticals, horizontals } = this._flattenTargets(targets);
 
-    const snapTargets: Array<{ type: 'horizontal' | 'vertical'; pos: number; axis: 'x' | 'y' }> = [
-      // Composition edges
-      { type: 'vertical', pos: targets.compLeft, axis: 'x' },
-      { type: 'vertical', pos: targets.compRight, axis: 'x' },
-      { type: 'vertical', pos: targets.compCenterX, axis: 'x' },
-      { type: 'horizontal', pos: targets.compTop, axis: 'y' },
-      { type: 'horizontal', pos: targets.compBottom, axis: 'y' },
-      { type: 'horizontal', pos: targets.compCenterY, axis: 'y' },
-      // Guides
-      ...targets.guidesH.map((p) => ({ type: 'horizontal' as const, pos: p, axis: 'y' as const })),
-      ...targets.guidesV.map((p) => ({ type: 'vertical' as const, pos: p, axis: 'x' as const })),
-      // Layers (Phase 3: populated dynamically)
-      ...(targets.layers ?? []).flatMap((l) => [
-        { type: 'vertical' as const, pos: l.left, axis: 'x' as const },
-        { type: 'vertical' as const, pos: l.right, axis: 'x' as const },
-        { type: 'vertical' as const, pos: l.centerX, axis: 'x' as const },
-        { type: 'horizontal' as const, pos: l.top, axis: 'y' as const },
-        { type: 'horizontal' as const, pos: l.bottom, axis: 'y' as const },
-        { type: 'horizontal' as const, pos: l.centerY, axis: 'y' as const },
-      ]),
+    let bestDx = 0;
+    let bestDy = 0;
+    let bestXDist = Infinity;
+    let bestYDist = Infinity;
+    let bestXLine: number | null = null;
+    let bestYLine: number | null = null;
+
+    for (const x of verticals) {
+      const d = Math.abs(worldX - x);
+      if (d < threshold && d < bestXDist) {
+        bestXDist = d;
+        bestDx = x - worldX;
+        bestXLine = x;
+      }
+    }
+
+    for (const y of horizontals) {
+      const d = Math.abs(worldY - y);
+      if (d < threshold && d < bestYDist) {
+        bestYDist = d;
+        bestDy = y - worldY;
+        bestYLine = y;
+      }
+    }
+
+    if (bestXLine !== null) {
+      result.x += bestDx;
+      result.snapped = true;
+      result.lines.push({ type: 'vertical', position: bestXLine });
+    }
+
+    if (bestYLine !== null) {
+      result.y += bestDy;
+      result.snapped = true;
+      result.lines.push({ type: 'horizontal', position: bestYLine });
+    }
+
+    return result;
+  }
+
+  /**
+   * Snap a moving rectangle by comparing its left/right/centerX and
+   * top/bottom/centerY against all target lines.
+   *
+   * dx/dy are the current proposed movement offsets.
+   */
+  snapRect(
+    rect: LayerSnapRect,
+    dx: number,
+    dy: number,
+    targets: SnapTargets,
+    thresholdPx?: number,
+  ): { dx: number; dy: number; snapped: boolean; lines: SnapLine[] } {
+    const result = { dx, dy, snapped: false, lines: [] as SnapLine[] };
+    if (!this._enabled) return result;
+
+    const threshold = thresholdPx ?? VIEWPORT_CONFIG.SNAP_THRESHOLD_PX;
+    const { verticals, horizontals } = this._flattenTargets(targets);
+
+    const movingXs = [
+      rect.left + dx,
+      rect.centerX + dx,
+      rect.right + dx,
     ];
 
-    let snappedX = worldX;
-    let snappedY = worldY;
+    const movingYs = [
+      rect.bottom + dy,
+      rect.centerY + dy,
+      rect.top + dy,
+    ];
 
-    for (const target of snapTargets) {
-      if (target.axis === 'x') {
-        const dist = Math.abs(worldX - target.pos);
-        if (dist < threshold) {
-          snappedX = target.pos;
-          result.snapped = true;
-          if (!result.lines.some((l) => l.type === 'vertical' && Math.abs(l.position - target.pos) < 1)) {
-            result.lines.push({ type: 'vertical', position: target.pos });
-          }
-        }
-      } else {
-        const dist = Math.abs(worldY - target.pos);
-        if (dist < threshold) {
-          snappedY = target.pos;
-          result.snapped = true;
-          if (!result.lines.some((l) => l.type === 'horizontal' && Math.abs(l.position - target.pos) < 1)) {
-            result.lines.push({ type: 'horizontal', position: target.pos });
-          }
+    let bestDx = 0;
+    let bestDy = 0;
+    let bestXDist = Infinity;
+    let bestYDist = Infinity;
+    let bestXLine: number | null = null;
+    let bestYLine: number | null = null;
+
+    for (const movingX of movingXs) {
+      for (const targetX of verticals) {
+        const d = Math.abs(movingX - targetX);
+        if (d < threshold && d < bestXDist) {
+          bestXDist = d;
+          bestDx = targetX - movingX;
+          bestXLine = targetX;
         }
       }
     }
 
-    result.x = snappedX;
-    result.y = snappedY;
+    for (const movingY of movingYs) {
+      for (const targetY of horizontals) {
+        const d = Math.abs(movingY - targetY);
+        if (d < threshold && d < bestYDist) {
+          bestYDist = d;
+          bestDy = targetY - movingY;
+          bestYLine = targetY;
+        }
+      }
+    }
+
+    if (bestXLine !== null) {
+      result.dx += bestDx;
+      result.snapped = true;
+      result.lines.push({ type: 'vertical', position: bestXLine });
+    }
+
+    if (bestYLine !== null) {
+      result.dy += bestDy;
+      result.snapped = true;
+      result.lines.push({ type: 'horizontal', position: bestYLine });
+    }
+
     return result;
+  }
+
+  private _flattenTargets(targets: SnapTargets): { verticals: number[]; horizontals: number[] } {
+    const verticals = [
+      targets.compLeft,
+      targets.compCenterX,
+      targets.compRight,
+      ...targets.guidesV,
+    ];
+
+    const horizontals = [
+      targets.compBottom,
+      targets.compCenterY,
+      targets.compTop,
+      ...targets.guidesH,
+    ];
+
+    for (const l of targets.layers ?? []) {
+      verticals.push(l.left, l.centerX, l.right);
+      horizontals.push(l.bottom, l.centerY, l.top);
+    }
+
+    return { verticals, horizontals };
   }
 }
 
-/** Singleton used by the renderer */
 export const snapping = new Snapping();

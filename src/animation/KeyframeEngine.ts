@@ -100,6 +100,17 @@ export class KeyframeEngine {
     return propMap ? Array.from(propMap.keys()) : [];
   }
 
+  /** Find a keyframe by its ID across all layers */
+  getKeyframe(keyframeId: string): Keyframe | null {
+    for (const [, propMap] of this._data) {
+      for (const [, arr] of propMap) {
+        const found = arr.find((k) => k.id === keyframeId);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
   /** Get total keyframe count across all layers */
   get totalKeyframes(): number {
     let count = 0;

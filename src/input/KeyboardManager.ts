@@ -367,6 +367,11 @@ export function registerAllShortcuts(): void {
     import('../utils/joinLayers').then(m => m.joinSelectedLayers());
   }, remappable: true });
 
+  // Pre-compose — Ctrl+Shift+C
+  shortcutRegistry.register({ id: 'edit.precompose', key: 'c', ctrl: true, shift: true, context: 'global', handler: () => {
+    import('../utils/precomp').then(m => m.precomposeSelectedLayers());
+  }, remappable: true });
+
   // Layer reorder — Ctrl+] / Ctrl+[
   shortcutRegistry.register({ id: 'layer.bringForward', key: ']', ctrl: true, context: 'global', handler: () => {
     const ctx = getCtx(); if (!ctx) return;
@@ -394,5 +399,15 @@ export function registerAllShortcuts(): void {
         useCompositionStore.getState().reorderLayers(ctx.compId, idx, idx - 1);
       }
     }
+  }, remappable: true });
+
+  // Bring to Front — Ctrl+Shift+]
+  shortcutRegistry.register({ id: 'layer.bringToFront', key: ']', ctrl: true, shift: true, context: 'global', handler: () => {
+    import('../utils/reorderLayers').then(m => m.bringToFront());
+  }, remappable: true });
+
+  // Send to Back — Ctrl+Shift+[
+  shortcutRegistry.register({ id: 'layer.sendToBack', key: '[', ctrl: true, shift: true, context: 'global', handler: () => {
+    import('../utils/reorderLayers').then(m => m.sendToBack());
   }, remappable: true });
 }

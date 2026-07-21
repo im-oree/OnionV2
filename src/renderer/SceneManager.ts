@@ -20,9 +20,16 @@ export class SceneManager {
   public compWidth = 1920;
   public compHeight = 1080;
 
+  private _ambientLight: THREE.AmbientLight | null = null;
+  private _directionalLight: THREE.DirectionalLight | null = null;
+  private _skybox: THREE.Mesh | null = null;
+
   constructor() {
     this.scene = new THREE.Scene();
     this.scene.background = null;
+
+    // Create skybox — large inverted sphere with app background color
+    this._createSkybox(APP_BG_COLOR);
 
     // Render order via renderOrder to ensure correct layering.
     // Since all materials use depthTest: false, THREE.js renders
@@ -54,12 +61,68 @@ export class SceneManager {
     this.scene.background = null;
   }
 
-  applyComposition(width: number, height: number, bgColor: string): void {
+  /** Create or update the skybox sphere */
+  private _createSkybox(color: number): void {
+    if (this._skybox) {
+      this.scene.remove(this._skybox);
+      this._skybox.geometry.dispose();
+      (this._skybox.material as THREE.Material).dispose();
+    }
+
+    const geo = new THREE.SphereGeometry(10000, 32, 16);
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+    });
+    this._skybox = new THREE.Mesh(geo, mat);
+    this._skybox.renderOrder = -1000;
+    this._skybox.name = 'skybox';
+    this.scene.add(this._skybox);
+  }
+
+  /** Update skybox color when composition background changes */
+  updateBackgroundColor(bgColor: string): void {
+    const color = (bgColor === '#000000' || bgColor === 'transparent')
+      ? new THREE.Color(APP_BG_COLOR)
+      : new THREE.Color(bgColor);
+    if (this._skybox) {
+      (this._skybox.material as THREE.MeshBasicMaterial).color.copy(color);
+    }
+  }
+
+  /** Toggle ground grid visibility */
+  setGridVisible(visible: boolean): void {
+    visible ? this.grid.show() : this.grid.hide();
+  }
+
+  get gridVisible(): boolean { return this.grid.visible; }
+
+  applyComposition(width: number, height: number, bgColor: string, is3D?: boolean): void {
     this.compWidth = width;
     this.compHeight = height;
     this.grid.update(width, height, 1);
     this.compBounds.update(width, height, bgColor);
     this.safeZones.update(width, height);
+
+    this.grid.set3DMode(is3D ?? false, width, height);
+
+    if (is3D) {
+      // Add a standard 3-point light setup if no lights exist
+      if (!this._ambientLight) {
+        this._ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        this.scene.add(this._ambientLight);
+      }
+      if (!this._directionalLight) {
+        this._directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        this._directionalLight.position.set(500, 500, 500);
+        this._directionalLight.castShadow = true;
+        this._directionalLight.shadow.mapSize.width = 2048;
+        this._directionalLight.shadow.mapSize.height = 2048;
+        this.scene.add(this._directionalLight);
+      }
+    }
   }
 
   updateGrid(zoom: number): void {
@@ -91,6 +154,12 @@ export class SceneManager {
   }
 
   dispose(): void {
+    if (this._skybox) {
+      this.scene.remove(this._skybox);
+      this._skybox.geometry.dispose();
+      (this._skybox.material as THREE.Material).dispose();
+      this._skybox = null;
+    }
     this.grid.dispose();
     this.safeZones.dispose();
     this.compBounds.dispose();

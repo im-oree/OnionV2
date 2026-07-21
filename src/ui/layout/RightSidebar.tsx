@@ -3,7 +3,7 @@ import { useUIStore, type RightSidebarTab } from '../../state/uiStore';
 import { Tooltip } from '../common/Tooltip';
 import {
   SlidersHorizontal, Sparkles, LibraryBig, AlignVerticalJustifyCenter,
-  Type, Info, Video, Activity,
+  Type, Info, Video, Activity, Camera, ArrowLeftRight,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -14,14 +14,16 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { id: 'properties',    label: 'Properties',      Icon: SlidersHorizontal },
-  { id: 'effects',       label: 'Effects',         Icon: Sparkles },
-  { id: 'effectLibrary', label: 'Effect Library',  Icon: LibraryBig },
-  { id: 'align',         label: 'Align',           Icon: AlignVerticalJustifyCenter },
-  { id: 'character',     label: 'Character',       Icon: Type },
-  { id: 'info',          label: 'Info',            Icon: Info },
-  { id: 'render',        label: 'Render',          Icon: Video },
-  { id: 'performance',   label: 'Performance',     Icon: Activity },
+  { id: 'properties',        label: 'Properties',         Icon: SlidersHorizontal },
+  { id: 'effects',           label: 'Effects',            Icon: Sparkles },
+  { id: 'effectLibrary',     label: 'Effect Library',     Icon: LibraryBig },
+  { id: 'transitionLibrary', label: 'Transitions',        Icon: ArrowLeftRight },
+  { id: 'camera',            label: 'Camera',             Icon: Camera },
+  { id: 'align',             label: 'Align',              Icon: AlignVerticalJustifyCenter },
+  { id: 'character',         label: 'Character',          Icon: Type },
+  { id: 'info',              label: 'Info',               Icon: Info },
+  { id: 'render',            label: 'Render',             Icon: Video },
+  { id: 'performance',       label: 'Performance',        Icon: Activity },
 ];
 
 export const RightSidebar: React.FC = () => {

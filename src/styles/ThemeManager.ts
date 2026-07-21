@@ -21,6 +21,10 @@ const THEME_PREFIXES = ['--color-', '--timeline-', '--viewport-', '--radius-', '
 const BUILT_IN_THEMES: ThemeDefinition[] = [
   { id: 'dark', name: 'Dark', type: 'built-in', vars: {} },
   { id: 'darker', name: 'Darker', type: 'built-in', vars: {} },
+  { id: 'orange', name: 'Orange Glow', type: 'built-in', vars: {} },
+  { id: 'purple', name: 'Purple Haze', type: 'built-in', vars: {} },
+  { id: 'green', name: 'Matrix Green', type: 'built-in', vars: {} },
+  { id: 'red', name: 'Crimson', type: 'built-in', vars: {} },
   { id: 'blender-classic', name: 'Blender Classic', type: 'built-in', vars: {} },
   { id: 'light', name: 'Light', type: 'built-in', vars: {} },
   { id: 'high-contrast', name: 'High Contrast', type: 'built-in', vars: {} },

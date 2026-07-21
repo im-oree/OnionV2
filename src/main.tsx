@@ -8,6 +8,10 @@ import './styles/themes/darker.css';
 import './styles/themes/blender-classic.css';
 import './styles/themes/light.css';
 import './styles/themes/high-contrast.css';
+import './styles/themes/orange.css';
+import './styles/themes/purple.css';
+import './styles/themes/green.css';
+import './styles/themes/red.css';
 import { registerAllEffects } from './renderer/effects/registerEffects';
 import { registerExpressionControls } from './renderer/effects/ExpressionControls';
 

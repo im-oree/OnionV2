@@ -9,6 +9,13 @@ import { TextSection } from './TextSection';
 import { CompSection } from './CompSection';
 import { EffectsSection } from './EffectsSection';
 import { VideoSection } from './VideoSection';
+import { ChartSection } from './ChartSection';
+import { MaskSection } from './MaskSection';
+import { SplineSection } from './SplineSection';
+import { ModifierSection } from './ModifierSection';
+import { TextAnimatorSection } from './TextAnimatorSection';
+import { ModelSection } from './ModelSection';
+import { MaterialSection } from './MaterialSection';
 
 type TabId = 'transform' | 'object' | 'modifiers';
 
@@ -264,7 +271,16 @@ export const PropertiesPanel: React.FC = () => {
               {single.type === 'solid' && <SolidSection layer={single} compId={comp.id} />}
               {single.type === 'shape' && <ShapeSection layer={single} compId={comp.id} />}
               {single.type === 'text' && <TextSection layer={single} compId={comp.id} />}
+              {single.type === 'text' && (single.data as any)?.animators?.map((anim: any) => (
+                <TextAnimatorSection key={anim.id} anim={anim} compId={comp.id} layerId={single.id} />
+              ))}
               {single.type === 'video' && <VideoSection layer={single} compId={comp.id} />}
+              {single.type === 'chart' && <ChartSection layer={single} compId={comp.id} />}
+              {single.type === 'spline' && <SplineSection layer={single} compId={comp.id} />}
+              {single.type === 'model3d' && <ModelSection layer={single} compId={comp.id} />}
+              {(single.type === 'model3d' || (single.type === 'shape' && single.is3D)) && (
+                <MaterialSection layer={single} compId={comp.id} />
+              )}
             </>
           )}
 
@@ -273,7 +289,11 @@ export const PropertiesPanel: React.FC = () => {
           )}
 
           {activeTab === 'modifiers' && single && (
-            <EffectsSection layer={single} compId={comp.id} />
+            <>
+              <EffectsSection layer={single} compId={comp.id} />
+              <MaskSection layerId={single.id} />
+              <ModifierSection layer={single} compId={comp.id} />
+            </>
           )}
 
           {activeTab === 'modifiers' && selectedLayers.length > 1 && (

@@ -19,7 +19,7 @@ const PROP_ROW_H = 26;
 const LAYER_ICONS: Record<string, string> = {
   solid: 'rectangle', shape: 'polygon', text: 'text',
   image: 'image', video: 'video', audio: 'audio', null: 'ellipse', comp: 'grid',
-  adjustment: 'effect',
+  adjustment: 'effect', spline: 'pen', chart: 'diamond', model3d: 'collection',
 };
 
 function handleTrackDrop(e: React.DragEvent, compId: string, targetLayerId?: string): void {
@@ -92,6 +92,96 @@ function buildAddLayerMenu(compId: string): ContextMenuItem[] {
   ];
 }
 
+const CAMERA_ID = '__camera__';
+
+/** Camera pseudo-track — shows animated camera properties in the timeline */
+const CameraTrack: React.FC<{ compId: string }> = ({ compId }) => {
+  const engine = useKeyframeStore(s => { void s.revision; return s.engine; });
+  const revision = useKeyframeStore(s => s.revision);
+  const comp = useCompositionStore(s => s.compositions.find(c => c.id === compId));
+  const expanded = useTimelineExpanded(s => s.expanded.has(CAMERA_ID));
+  const toggle = useTimelineExpanded(s => s.toggle);
+  void revision;
+
+  const camProps = engine.getAllAnimatedProperties(CAMERA_ID);
+  const hasKfs = camProps.length > 0;
+
+  // Only show when 3D perspective is active
+  if (!comp?.perspective3D && !hasKfs) return null;
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <div
+        className="flex items-center gap-2 cursor-pointer transition-colors"
+        style={{
+          height: LAYER_ROW_H, padding: '0 8px',
+          borderBottom: '1px solid var(--color-divider)',
+          background: 'transparent',
+          color: 'var(--color-text-secondary)',
+          fontSize: 'var(--font-size-sm)',
+        }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+      >
+        <div style={{ width: 12 }} />
+        <div className="shrink-0 rounded-full" style={{
+          width: 4, height: 16,
+          background: 'linear-gradient(180deg, #4a9eff, #2d7ad6)',
+        }} />
+        <button
+          className="w-4 h-4 flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
+          style={{ color: hasKfs ? 'var(--color-text-tertiary)' : 'transparent' }}
+          onClick={() => toggle(CAMERA_ID)}
+          disabled={!hasKfs}
+        >
+          {hasKfs && <ChevronRight size={11} strokeWidth={2}
+            style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 120ms' }} />}
+        </button>
+        <span style={{ fontSize: 13 }}>🎬</span>
+        <span className="truncate flex-1" style={{ fontWeight: 500, color: '#4a9eff' }}>Camera</span>
+        {hasKfs && (
+          <span className="shrink-0" style={{
+            fontSize: 9, padding: '1px 6px', fontWeight: 600,
+            color: '#4a9eff', background: 'rgba(74,158,255,0.12)',
+            borderRadius: 999, fontFamily: 'var(--font-family-mono)',
+          }}>{camProps.length}</span>
+        )}
+      </div>
+      {expanded && camProps.map(propPath => (
+        <div key={propPath} data-tracks-row="1"
+          className="flex items-center gap-2 transition-colors"
+          style={{
+            height: PROP_ROW_H, padding: '0 8px 0 38px',
+            borderBottom: '1px solid var(--color-divider)',
+            background: 'rgba(0,0,0,0.06)',
+            fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)',
+          }}
+          onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'}
+          onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.background = 'rgba(0,0,0,0.06)'}
+        >
+          <svg width="7" height="7" viewBox="0 0 8 8" className="shrink-0" style={{ color: '#4a9eff' }}>
+            <polygon points="4,0 8,4 4,8 0,4" fill="currentColor" />
+          </svg>
+          <span className="truncate flex-1">{formatPropertyLabel(propPath)}</span>
+          <button
+            onClick={() => {
+              const store = useKeyframeStore.getState();
+              store.toggleAnimatedProperty(CAMERA_ID, propPath);
+            }}
+            className="border-0 bg-transparent cursor-pointer transition-colors"
+            style={{ color: 'var(--color-text-disabled)' }}
+            onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.color = 'var(--color-danger)'}
+            onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.color = 'var(--color-text-disabled)'}
+            title="Remove animation"
+          >
+            <X size={11} strokeWidth={2} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 function buildLayerCtx(compId: string, layer: Layer, idx: number, total: number): ContextMenuItem[] {
   const cs = useCompositionStore.getState();
   const canUp = idx < total - 1;
@@ -133,6 +223,50 @@ function buildLayerCtx(compId: string, layer: Layer, idx: number, total: number)
     { id: 'l.vis', label: layer.visible ? 'Hide' : 'Show', onClick: () => cs.updateLayer(compId, layer.id, { visible: !layer.visible }) },
     { id: 'l.lock', label: layer.locked ? 'Unlock' : 'Lock', onClick: () => cs.updateLayer(compId, layer.id, { locked: !layer.locked }) },
     { id: 'l.d2', divider: true },
+    { id: 'l.3d', label: layer.is3D ? 'Disable 3D' : 'Enable 3D', onClick: () => {
+      cs.updateLayer(compId, layer.id, {
+        is3D: !layer.is3D,
+        transform3D: layer.transform3D || { position: { x: 0, y: 0, z: 0 }, scale: { x: 100, y: 100, z: 100 }, rotationX: 0, rotationY: 0, rotationZ: 0, orientation: { x: 0, y: 0, z: 0 }, anchorPoint: { x: 0, y: 0, z: 0 }, opacity: 100 },
+      });
+    } },
+    { id: 'l.addMask', label: 'Add Rect Mask', onClick: () => {
+      import('../../../state/maskStore').then(m => m.useMaskStore.getState().addRectMask(layer.id));
+    } },
+    { id: 'l.d3', divider: true },
+    // Time Remapping (video/comp/image layers)
+    ...(layer.type === 'video' || layer.type === 'comp' || layer.type === 'image' ? [
+      { id: 'l.timeRemap', label: (layer.data as any)?.timeRemap ? 'Disable Time Remapping' : 'Enable Time Remapping', shortcut: 'Ctrl+Alt+T',
+        onClick: () => {
+          const d = { ...((layer.data ?? {}) as any) };
+          d.timeRemap = !d.timeRemap;
+          if (d.timeRemap && !d.timeRemapKeyframes) {
+            d.timeRemapKeyframes = [
+              { time: 0, sourceFrame: 0 },
+              { time: Math.round(((layer.endFrame ?? 300) - (layer.startFrame ?? 0))), sourceFrame: Math.round(((layer.endFrame ?? 300) - (layer.startFrame ?? 0))) },
+            ];
+          }
+          cs.updateLayer(compId, layer.id, { data: d });
+        } },
+      { id: 'l.frameBlend', label: (layer.data as any)?.frameBlending ? 'Disable Frame Blending' : 'Enable Frame Blending',
+        onClick: () => {
+          const d = { ...((layer.data ?? {}) as any) };
+          if (d.frameBlending) {
+            d.frameBlending = false;
+            delete d.frameBlendingType;
+          } else {
+            d.frameBlending = true;
+            d.frameBlendingType = 'frameMix';
+          }
+          cs.updateLayer(compId, layer.id, { data: d });
+        } },
+      { id: 'l.timeSep', divider: true },
+    ] : []),
+    { id: 'l.precomp', label: 'Pre-compose', shortcut: 'Ctrl+Shift+C', onClick: () => {
+      import('../../../utils/precomp').then(({ precomposeSelectedLayers }) => {
+        precomposeSelectedLayers();
+      });
+    }},
+    { id: 'l.d5', divider: true },
     { id: 'l.del', label: 'Delete', shortcut: 'Del', onClick: () => { cs.removeLayer(compId, layer.id); useSelectionStore.getState().deselect(layer.id); } },
   ];
 }
@@ -168,9 +302,9 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
   const boxSelectState = useRef<{ startX: number; startY: number; additive: boolean } | null>(null);
   const [boxRect, setBoxRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
-  const [dragOverPos, setDragOverPos] = useState<'above' | 'below' | null>(null);
-  const dragOverPosRef = useRef<'above' | 'below' | null>(null);
+  // Custom reorder drag state
+  const [reorderDragId, setReorderDragId] = useState<string | null>(null);
+  const [reorderTargetIdx, setReorderTargetIdx] = useState<number | null>(null);
 
   // Box-select (rubber-band) on empty area
   const onContainerMouseDown = useCallback((e: React.MouseEvent) => {
@@ -247,7 +381,7 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
   }, [compId, select, selectRange, selectedIds, sortedLayers]);
   const onLayerContext = useCallback((e: React.MouseEvent, layer: Layer, layerIdx: number) => {
     e.preventDefault(); e.stopPropagation();
-    if (!selectedIds.includes(layer.id)) onClickLayer(layer.id);
+    if (!selectedIds.includes(layer.id)) onClickLayer(layer.id, false, false);
     ctx.open(e, buildLayerCtx(compId, layer, layerIdx, sortedLayers.length));
   }, [ctx, compId, onClickLayer, selectedIds, sortedLayers.length]);
 
@@ -268,10 +402,63 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
     useCompositionStore.getState().reorderLayers(compId, idx, idx - 1);
   }, [compId]);
 
-  const handleLayerDragStart = useCallback((e: React.DragEvent, layerId: string) => {
-    e.dataTransfer.setData('text/plain', `layer:${layerId}`);
-    e.dataTransfer.effectAllowed = 'move';
-  }, []);
+  // Custom mouse-based layer reorder drag — smooth, real-time reordering
+  const handleLayerReorderDrag = useCallback((e: React.MouseEvent, layerId: string) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const startY = e.clientY;
+    const comp = useCompositionStore.getState().compositions.find(c => c.id === compId);
+    if (!comp) return;
+
+    const sorted = [...comp.layers].sort((a, b) => b.zIndex - a.zIndex);
+    const layerIdx = sorted.findIndex(l => l.id === layerId);
+    if (layerIdx === -1) return;
+
+    // Get row height from DOM
+    const rowEl = (e.currentTarget as HTMLElement).closest('[data-tracks-row]');
+    const rowHeight = rowEl?.getBoundingClientRect().height ?? LAYER_ROW_H;
+
+    document.body.style.cursor = 'grabbing';
+    document.body.style.userSelect = 'none';
+
+    let currentIdx = layerIdx;
+    setReorderDragId(layerId);
+    setReorderTargetIdx(layerIdx);
+
+    const onMove = (ev: MouseEvent) => {
+      const dy = ev.clientY - startY;
+      const idxShift = Math.round(dy / rowHeight);
+      const newIdx = Math.max(0, Math.min(sorted.length - 1, layerIdx + idxShift));
+
+      if (newIdx !== currentIdx) {
+        currentIdx = newIdx;
+        setReorderTargetIdx(newIdx);
+        // Reorder in real-time
+        const cs = useCompositionStore.getState();
+        const c = cs.compositions.find(cc => cc.id === compId);
+        if (!c) return;
+        const fromIdx = c.layers.findIndex(l => l.id === layerId);
+        const toIdx = c.layers.findIndex(l => l.id === sorted[currentIdx].id);
+        if (fromIdx !== -1 && toIdx !== -1 && fromIdx !== toIdx) {
+          cs.reorderLayers(compId, fromIdx, toIdx);
+        }
+      }
+    };
+
+    const onUp = () => {
+      setReorderDragId(null);
+      setReorderTargetIdx(null);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [compId]);
 
   const onEmptyContext = useCallback((e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('[data-tracks-row]')) return;
@@ -317,6 +504,8 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
           onDrop={(e) => handleTrackDrop(e, compId)}
         >No layers — right-click or click + to add</div>
       )}
+      {/* Camera pseudo-track */}
+      <CameraTrack compId={compId} />
       {sortedLayers.map((layer, li) => {
         const expanded = expandedSet.has(layer.id);
         const props = engine.getAllAnimatedProperties(layer.id);
@@ -326,13 +515,8 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
         const hasKfs = displayProps.length > 0;
         const isSel = selectedIds.includes(layer.id);
         const palette = layer.type === 'adjustment' ? ADJUSTMENT_COLOR : LAYER_COLORS[li % LAYER_COLORS.length];
-        const isDragOver = dragOverId === layer.id;
         return (
           <div key={layer.id} style={{ position: 'relative' }}>
-            {/* Drag indicator line — above */}
-            {isDragOver && dragOverPos === 'above' && (
-              <div style={{ position: 'absolute', top: 0, left: 8, right: 8, height: 2, background: 'var(--color-accent)', borderRadius: 1, zIndex: 10 }} />
-            )}
             <div data-tracks-row="1" data-layer-id={layer.id}
               className="flex items-center gap-2 cursor-pointer transition-colors"
               style={{
@@ -342,29 +526,25 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
                 color: isSel ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
                 fontSize: 'var(--font-size-sm)',
                 boxShadow: dropTarget === layer.id ? 'inset 0 0 0 1px var(--color-accent)' : 'none',
+                opacity: reorderDragId === layer.id ? 0.5 : 1,
               }}
               onMouseEnter={(e) => { if (!isSel) (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; }}
               onMouseLeave={(e) => { if (!isSel) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
               onClick={(e) => onClickLayer(layer.id, e.ctrlKey || e.metaKey, e.shiftKey)}
               onContextMenu={(e) => onLayerContext(e, layer, li)}
-              draggable={true}
-              onDragStart={(e) => handleLayerDragStart(e, layer.id)}
               onDragOver={(e) => {
-                e.preventDefault(); e.stopPropagation();
-                const isEffect = Array.from(e.dataTransfer.types).includes('application/onion-effect');
-                e.dataTransfer.dropEffect = isEffect ? 'copy' : 'move';
-                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                const y = e.clientY - rect.top;
-                const pos = y < rect.height / 2 ? 'above' : 'below';
-                setDropTarget(layer.id);
-                setDragOverId(layer.id);
-                setDragOverPos(pos);
-                dragOverPosRef.current = pos;
+                // Only accept external drops (effects from library)
+                const types = Array.from(e.dataTransfer.types);
+                if (types.includes('application/onion-effect') || types.includes('text/plain')) {
+                  e.preventDefault(); e.stopPropagation();
+                  e.dataTransfer.dropEffect = 'copy';
+                  setDropTarget(layer.id);
+                }
               }}
-              onDragLeave={() => { setDropTarget(null); setDragOverId(null); setDragOverPos(null); }}
+              onDragLeave={() => { setDropTarget(null); }}
               onDrop={(e) => {
                 e.preventDefault(); e.stopPropagation();
-                setDropTarget(null); setDragOverId(null); setDragOverPos(null);
+                setDropTarget(null);
                 handleTrackDrop(e, compId, layer.id);
               }}
             >
@@ -372,7 +552,8 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
               {Array.from({ length: depthMap.get(layer.id) ?? 0 }).map((_, di) => (
                 <div key={di} style={{ width: 16, flexShrink: 0 }} />
               ))}
-              <GripVertical size={12} strokeWidth={2} style={{ color: 'var(--color-text-disabled)', flexShrink: 0, cursor: 'grab' }} />
+              <GripVertical size={12} strokeWidth={2} style={{ color: 'var(--color-text-disabled)', flexShrink: 0, cursor: 'grab' }}
+                onMouseDown={(e) => handleLayerReorderDrag(e, layer.id)} />
               <div className="shrink-0 rounded-full" style={{
                 width: 4, height: 16,
                 background: `linear-gradient(180deg, ${palette.from}, ${palette.to})`,
@@ -416,6 +597,32 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
               >
                 <Headphones size={13} strokeWidth={1.75} />
               </button>
+              {/* 3D indicator */}
+              {layer.is3D && (
+                <span className="shrink-0" style={{
+                  fontSize: 8, padding: '1px 5px', fontWeight: 700, letterSpacing: '0.04em',
+                  color: '#4a9eff', background: 'rgba(74,158,255,0.12)',
+                  borderRadius: 999, fontFamily: 'var(--font-family-mono)',
+                }} title="3D Layer">
+                  3D
+                </span>
+              )}
+              <button
+                className="border-0 bg-transparent cursor-pointer shrink-0 flex items-center justify-center transition-colors"
+                style={{
+                  width: 18, height: 18,
+                  color: layer.motionBlur ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+                  opacity: layer.motionBlur ? 0.9 : 0.3,
+                  fontSize: 9, fontWeight: 700, letterSpacing: '0.03em',
+                }}
+                title={layer.motionBlur ? 'Disable motion blur for this layer' : 'Enable motion blur for this layer'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  useCompositionStore.getState().updateLayer(compId, layer.id, { motionBlur: !layer.motionBlur });
+                }}
+              >
+                <span style={{ fontSize: 8, fontWeight: 800 }}>MB</span>
+              </button>
               <span className="truncate flex-1" style={{ fontWeight: isSel ? 500 : 400 }}>{layer.name}</span>
               {layer.parentId && (
                 <span className="shrink-0" style={{
@@ -447,9 +654,9 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
                 onClick={(e) => { e.stopPropagation(); moveLayerDown(layer.id); }}
               ><ChevronDown size={13} strokeWidth={2} /></button>
             </div>
-            {/* Drag indicator line — below */}
-            {isDragOver && dragOverPos === 'below' && (
-              <div style={{ position: 'absolute', bottom: 0, left: 8, right: 8, height: 2, background: 'var(--color-accent)', borderRadius: 1, zIndex: 10 }} />
+            {/* Reorder drop indicator line */}
+            {reorderDragId && reorderTargetIdx === li && reorderDragId !== layer.id && (
+              <div style={{ position: 'absolute', top: -1, left: 8, right: 8, height: 2, background: 'var(--color-accent)', borderRadius: 1, zIndex: 10 }} />
             )}
             {expanded && displayProps.map(propPath => (
               <div key={propPath} data-tracks-row="1"

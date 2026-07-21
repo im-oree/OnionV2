@@ -34,4 +34,6 @@ export const SHORTCUTS: Record<string, Shortcut> = {
   OPEN: { id:'file.open', label:'Open', display:'Ctrl+O', key:'o', modifiers:[MODIFIERS.CTRL], context:'global', remappable:true },
   NEW_COMPOSITION: { id:'composition.new', label:'New Composition', display:'Ctrl+N', key:'n', modifiers:[MODIFIERS.CTRL], context:'global', remappable:true },
   RENDER: { id:'render.addToQueue', label:'Add to Render Queue', display:'Ctrl+M', key:'m', modifiers:[MODIFIERS.CTRL], context:'global', remappable:true },
+  PRECOMPOSE: { id:'edit.precompose', label:'Pre-compose', display:'Ctrl+Shift+C', key:'c', modifiers:[MODIFIERS.CTRL, MODIFIERS.SHIFT], context:'global', remappable:true },
+  JOIN_LAYERS: { id:'edit.joinLayers', label:'Join Layers', display:'Ctrl+J', key:'j', modifiers:[MODIFIERS.CTRL], context:'global', remappable:true },
 };

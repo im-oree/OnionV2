@@ -27,7 +27,10 @@ export class HitTester {
     const ndcX = (screenX / this.cameraManager.viewportWidth) * 2 - 1;
     const ndcY = -(screenY / this.cameraManager.viewportHeight) * 2 + 1;
 
-    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.cameraManager.camera);
+    this.raycaster.setFromCamera(
+      new THREE.Vector2(ndcX, ndcY),
+      this.cameraManager.getActiveCamera(),
+    );
 
     // CRITICAL: Update all world matrices so group transforms are baked
     this.sceneManager.scene.updateMatrixWorld(true);

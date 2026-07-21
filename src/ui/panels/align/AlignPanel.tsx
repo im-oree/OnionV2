@@ -15,21 +15,8 @@ export const AlignPanel: React.FC = () => {
   const comp = useCompositionStore((s) => s.activeCompositionId ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null : null);
   const [anchor, setAnchor] = useState<AnchorPos>([0.5, 0.5]);
 
-  const alignTo = (mode: string) => {
-    if (!comp || selectedIds.length === 0) return;
-    for (const id of selectedIds) {
-      const layer = comp.layers.find((l) => l.id === id);
-      if (!layer) continue;
-      const t = { ...layer.transform, position: { ...layer.transform.position } };
-      const hw = comp.width / 2, hh = comp.height / 2;
-      if (mode === 'centerH') t.position.x = 0;
-      if (mode === 'centerV') t.position.y = 0;
-      if (mode === 'left')    t.position.x = -hw + 50;
-      if (mode === 'right')   t.position.x = hw - 50;
-      if (mode === 'top')     t.position.y = hh - 50;
-      if (mode === 'bottom')  t.position.y = -hh + 50;
-      useCompositionStore.getState().updateLayer(comp.id, id, { transform: t });
-    }
+  const alignTo = (mode: 'left'|'centerH'|'right'|'top'|'centerV'|'bottom') => {
+    import('../../../utils/alignLayers').then(m => m.alignLayers(mode, 'composition'));
   };
 
   const alignButtons = [
@@ -130,7 +117,7 @@ export const AlignPanel: React.FC = () => {
         <div className="grid grid-cols-2 gap-2 mt-2">
           <Tooltip content="Distribute Horizontally" position="top" delay={300}>
             <button
-              onClick={() => {/* todo */}}
+              onClick={() => import('../../../utils/alignLayers').then(m => m.distributeLayers('horizontal'))}
               className="flex items-center justify-center border-0 cursor-pointer transition-all"
               style={{ height: 40, borderRadius: 'var(--radius-md)', background: 'var(--color-input-bg)', color: 'var(--color-text-secondary)' }}
               onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; (e.currentTarget as HTMLElement).style.color = 'var(--color-text-primary)'; }}
@@ -141,7 +128,7 @@ export const AlignPanel: React.FC = () => {
           </Tooltip>
           <Tooltip content="Distribute Vertically" position="top" delay={300}>
             <button
-              onClick={() => {/* todo */}}
+              onClick={() => import('../../../utils/alignLayers').then(m => m.distributeLayers('vertical'))}
               className="flex items-center justify-center border-0 cursor-pointer transition-all"
               style={{ height: 40, borderRadius: 'var(--radius-md)', background: 'var(--color-input-bg)', color: 'var(--color-text-secondary)' }}
               onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; (e.currentTarget as HTMLElement).style.color = 'var(--color-text-primary)'; }}

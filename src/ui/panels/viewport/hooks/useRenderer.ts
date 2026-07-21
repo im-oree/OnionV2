@@ -158,7 +158,7 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
     const renderers = selectedIds
       .map((id) => r.layerSync.getRenderer(id))
       .filter(Boolean) as any[];
-    r.selectionOverlay.update(renderers);
+    r.selectionOverlay.update(renderers, layers.some(l => selectedIds.includes(l.id) && l.is3D));
     r.renderLoop.requestRender();
   }, [selectedIds, layers, state.zoom, transformMode]);
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo } from 'react';
-import { Plus, Square, Triangle, Type as TypeI, Image as ImageI, Film, ChevronUp, ChevronDown } from 'lucide-react';
+import { Plus, Square, Triangle, Type as TypeI, Film, PenTool, PieChart, Globe, Box, Cylinder, CircleDot, ConeIcon, Lightbulb, Sun } from 'lucide-react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useSelectionStore } from '../../../state/selectionStore';
 import { LayerRow } from './LayerRow';
@@ -62,6 +62,11 @@ export const OutlinerPanel: React.FC = () => {
   const toggleV = useCallback((id: string) => { if (!comp) return; const l = comp.layers.find(x => x.id === id); if (l) updateLayer(comp.id, id, { visible: !l.visible }); }, [comp, updateLayer]);
   const toggleL = useCallback((id: string) => { if (!comp) return; const l = comp.layers.find(x => x.id === id); if (l) updateLayer(comp.id, id, { locked: !l.locked }); }, [comp, updateLayer]);
   const toggleS = useCallback((id: string) => { if (!comp) return; const l = comp.layers.find(x => x.id === id); if (l) updateLayer(comp.id, id, { soloed: !l.soloed }); }, [comp, updateLayer]);
+  const toggleMB = useCallback((id: string) => {
+    if (!comp) return;
+    const l = comp.layers.find((x) => x.id === id);
+    if (l) updateLayer(comp.id, id, { motionBlur: !l.motionBlur });
+  }, [comp, updateLayer]);
 
   const moveLayerUp = useCallback((id: string) => {
     if (!comp) return;
@@ -134,9 +139,54 @@ export const OutlinerPanel: React.FC = () => {
     useSelectionStore.getState().clearSelection();
   }, [comp]);
 
-  const handleAddLayer = useCallback((type: Layer['type']) => {
+  const handleAddLayer = useCallback(async (type: string) => {
     if (!comp) return;
-    const layer = createNewLayer(comp.id, type, comp.width, comp.height, comp.layers.length, comp.duration, comp.fps);
+
+    // 3D shape presets
+    const shape3D = ['sphere','cube','cylinder','torus','cone'] as string[];
+    if (shape3D.includes(type)) {
+      const { createLayerInstance } = await import('../../../utils/createLayerInstance');
+      const layer = createLayerInstance('shape', comp, {
+        name: `${type.charAt(0).toUpperCase() + type.slice(1)}`,
+        is3D: true,
+        transform3D: { position:{x:0,y:0,z:0}, scale:{x:100,y:100,z:100},
+          rotationX:0, rotationY:0, rotationZ:0,
+          orientation:{x:0,y:0,z:0}, anchorPoint:{x:0,y:0,z:0}, opacity:100 },
+      }, type);
+      addLayer(comp.id, layer);
+      select({ type: 'layer', id: layer.id, compositionId: comp.id });
+      setShowAddMenu(false);
+      return;
+    }
+
+    // Light presets
+    const lightTypes: Record<string, string> = {
+      light_point: 'point', light_spot: 'spot', light_directional: 'parallel',
+    };
+    if (type.startsWith('light_')) {
+      const { createLayerInstance } = await import('../../../utils/createLayerInstance');
+      const lt = lightTypes[type] ?? 'point';
+      const layer = createLayerInstance('light' as any, comp, {
+        name: `${lt.charAt(0).toUpperCase() + lt.slice(1)} Light`,
+        is3D: true,
+        transform3D: { position:{x:0,y:0,z:500}, scale:{x:100,y:100,z:100},
+          rotationX:0, rotationY:0, rotationZ:0,
+          orientation:{x:0,y:0,z:0}, anchorPoint:{x:0,y:0,z:0}, opacity:100 },
+        lightData: {
+          lightType: lt, color: '#ffffff', intensity: 100,
+          castsShadows: false, shadowDarkness: 75, shadowDiffusion: 0,
+          falloff: 'smooth', falloffDistance: 500, falloffRadius: 500,
+          coneAngle: 54, coneFeather: 50,
+          pointOfInterest: {x:0,y:0,z:0},
+        },
+      } as any);
+      addLayer(comp.id, layer);
+      select({ type: 'layer', id: layer.id, compositionId: comp.id });
+      setShowAddMenu(false);
+      return;
+    }
+
+    const layer = createNewLayer(comp.id, type as Layer['type'], comp.width, comp.height, comp.layers.length, comp.duration, comp.fps);
     addLayer(comp.id, layer);
     select({ type: 'layer', id: layer.id, compositionId: comp.id });
     setShowAddMenu(false);
@@ -220,9 +270,24 @@ export const OutlinerPanel: React.FC = () => {
               style={{ background: 'var(--color-panel-raised)', borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-dropdown)', animation: 'dropdown-in 140ms var(--ease-out)' }}
             >
               {[
-                { t: 'solid', I: Square }, { t: 'shape', I: Triangle }, { t: 'text', I: TypeI },
+                { t: 'solid', I: Square, label: 'Solid' },
+                { t: 'shape', I: Triangle, label: 'Shape' },
+                { t: 'text', I: TypeI, label: 'Text' },
+                { t: 'null', I: Square, label: 'Null Object' },
+                { t: 'adjustment', I: Film, label: 'Adjustment' },
                 null,
-                { t: 'image', I: ImageI }, { t: 'video', I: Film },
+                { t: 'sphere', I: Globe, label: 'Sphere', is3D: true },
+                { t: 'cube', I: Box, label: 'Cube', is3D: true },
+                { t: 'cylinder', I: Cylinder, label: 'Cylinder', is3D: true },
+                { t: 'torus', I: CircleDot, label: 'Torus', is3D: true },
+                { t: 'cone', I: ConeIcon, label: 'Cone', is3D: true },
+                null,
+                { t: 'light_point', I: Lightbulb, label: 'Point Light', is3D: true },
+                { t: 'light_spot', I: Sun, label: 'Spot Light', is3D: true },
+                { t: 'light_directional', I: Sun, label: 'Directional Light', is3D: true },
+                null,
+                { t: 'spline', I: PenTool, label: 'Spline' },
+                { t: 'chart', I: PieChart, label: 'Chart' },
               ].map((it, i) => it === null ? (
                 <div key={`d${i}`} className="h-px my-1 mx-2" style={{ background: 'var(--color-divider)' }} />
               ) : (
@@ -234,8 +299,8 @@ export const OutlinerPanel: React.FC = () => {
                   onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'}
                   onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
                 >
-                  <it.I size={14} strokeWidth={1.75} style={{ color: 'var(--color-text-secondary)' }} />
-                  <span>New {capitalize(it.t)}</span>
+                  <it.I size={14} strokeWidth={1.75} style={{ color: it.is3D ? '#4A90E2' : 'var(--color-text-secondary)' }} />
+                  <span>{it.label}</span>
                 </button>
               ))}
             </div>
@@ -257,6 +322,7 @@ export const OutlinerPanel: React.FC = () => {
               onToggleVisibility={toggleV}
               onToggleLock={toggleL}
               onToggleSolo={toggleS}
+              onToggleMotionBlur={toggleMB}
               onRename={handleRename}
               onDragStart={handleDragStart}
               onDrop={handleDrop}

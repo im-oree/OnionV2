@@ -1,0 +1,20 @@
+/* Crimson theme */
+[data-theme="red"] {
+  --color-app-bg: #1a0a0a;
+  --color-panel: #220e0e;
+  --color-panel-raised: #2a1414;
+  --color-panel-header: #220e0e;
+  --color-panel-hover: #341c1c;
+  --color-panel-active: #3c2424;
+  --color-input-bg: #1e0e0e;
+  --color-border: rgba(255, 255, 255, 0.06);
+  --color-border-strong: rgba(255, 255, 255, 0.10);
+  --color-text-primary: rgba(255, 230, 230, 0.92);
+  --color-text-secondary: rgba(255, 180, 180, 0.55);
+  --color-text-disabled: rgba(200, 140, 140, 0.22);
+  --color-accent: #e25b4a;
+  --color-accent-hover: #f07060;
+  --color-accent-muted: rgba(226, 91, 74, 0.16);
+  --color-danger: #ff4444;
+  --color-success: #6ad588;
+}

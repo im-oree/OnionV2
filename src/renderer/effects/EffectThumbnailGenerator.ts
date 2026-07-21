@@ -3,27 +3,41 @@
  * gradient image and produces a small PNG thumbnail. Thumbnails are cached
  * to the workspace folder (or IndexedDB as fallback) under `.thumbs/effects/`.
  *
+ * Now supports ANIMATED thumbnails: for effects that use time (uTime), the
+ * generator renders 6 frames at staggered time values and packs them into a
+ * horizontal spritesheet. The EffectLibraryPanel cycles through frames with
+ * a CSS steps() animation.
+ *
  * Called once at startup after effect registration. Missing thumbnails are
  * generated lazily on first request.
  */
 import * as THREE from 'three';
 import { effectRegistry } from './EffectRegistry';
+import { effectShaderRegistry } from './EffectShaderRegistry';
 import { EffectChain } from './EffectChain';
 import { StorageManager } from '../../storage/StorageManager';
 import type { EffectType, EffectInstance } from '../../types/effect';
 
 const THUMB_SIZE = 96;
 const THUMB_DIR = '.thumbs/effects';
-const THUMB_VERSION = 1;
+const THUMB_VERSION = 2;
+
+/** Number of frames in an animated thumbnail spritesheet. */
+const ANIM_FRAMES = 6;
+/** Time values (seconds) for each frame — staggered to reveal motion over the loop. */
+const ANIM_TIMES = [0, 0.25, 0.75, 1.5, 2.5, 4.0];
 
 interface ThumbCacheEntry {
   version: number;
   dataUrl: string;
+  frames?: number;
+  sheetWidth?: number;
 }
 
 class EffectThumbnailGeneratorClass {
-  private cache = new Map<EffectType, string>();
-  private inflight = new Map<EffectType, Promise<string | null>>();
+  // Use string maps so we can key animated thumbnails as "animated_<type>" as well.
+  private cache = new Map<string, string>();
+  private inflight = new Map<string, Promise<string | null>>();
   private sampleTexture: THREE.CanvasTexture | null = null;
   private renderer: THREE.WebGLRenderer | null = null;
   private disposed = false;
@@ -38,6 +52,11 @@ class EffectThumbnailGeneratorClass {
 
   /** Get a thumbnail (data URL) for an effect type. Triggers generation if missing. */
   async getThumbnail(type: EffectType): Promise<string | null> {
+    // Animated effects delegate to getAnimatedThumbnail for unified caching
+    if (effectShaderRegistry.get(type)?.usesTime) {
+      return this.getAnimatedThumbnail(type);
+    }
+
     if (this.cache.has(type)) return this.cache.get(type)!;
     if (this.inflight.has(type)) return this.inflight.get(type)!;
 
@@ -47,6 +66,23 @@ class EffectThumbnailGeneratorClass {
     this.inflight.delete(type);
     if (result) this.cache.set(type, result);
     return result;
+  }
+
+  /**
+   * Check whether an effect has an animated (multi-frame) thumbnail.
+   * Returns the number of frames, or 1 if static.
+   */
+  getFrameCount(type: EffectType): number {
+    const module = effectShaderRegistry.get(type);
+    return module?.usesTime ? ANIM_FRAMES : 1;
+  }
+
+  /**
+   * Get the total spritesheet width for an animated effect.
+   * Returns THUMB_SIZE for static effects.
+   */
+  getSheetWidth(type: EffectType): number {
+    return this.getFrameCount(type) * THUMB_SIZE;
   }
 
   /** Kick off background generation of all missing thumbnails. */
@@ -60,7 +96,12 @@ class EffectThumbnailGeneratorClass {
         onProgress?.(done, all.length);
         continue;
       }
-      await this.getThumbnail(def.type);
+      // Animated effects generate their spritesheet; static effects use the single frame.
+      if (effectShaderRegistry.get(def.type)?.usesTime) {
+        await this.getAnimatedThumbnail(def.type);
+      } else {
+        await this.getThumbnail(def.type);
+      }
       done++;
       onProgress?.(done, all.length);
     }
@@ -92,7 +133,22 @@ class EffectThumbnailGeneratorClass {
     }
   }
 
+  /** Get an animated thumbnail (6-frame spritesheet) for an effect. */
+  async getAnimatedThumbnail(type: EffectType): Promise<string | null> {
+    const key = `animated_${type}`;
+    if (this.cache.has(key)) return this.cache.get(key)!;
+    if (this.inflight.has(key)) return this.inflight.get(key)!;
+
+    const promise = this._loadAnimated(type);
+    this.inflight.set(key, promise);
+    const result = await promise;
+    this.inflight.delete(key);
+    if (result) this.cache.set(key, result);
+    return result;
+  }
+
   private async _loadOrGenerate(type: EffectType): Promise<string | null> {
+    // Only called for static effects (animated ones delegate to getAnimatedThumbnail)
     // 1. Try workspace cache
     const cached = await this._loadFromStorage(type);
     if (cached) return cached;
@@ -102,7 +158,7 @@ class EffectThumbnailGeneratorClass {
     if (!dataUrl) return null;
 
     // 3. Persist for next time
-    void this._saveToStorage(type, dataUrl);
+    void this._saveToStorage(type, dataUrl, 1);
 
     return dataUrl;
   }
@@ -138,9 +194,9 @@ class EffectThumbnailGeneratorClass {
     return null;
   }
 
-  private async _saveToStorage(type: EffectType, dataUrl: string): Promise<void> {
+  private async _saveToStorage(type: EffectType, dataUrl: string, frames: number = 1): Promise<void> {
     const key = this._storageKey(type);
-    const payload: ThumbCacheEntry = { version: THUMB_VERSION, dataUrl };
+    const payload: ThumbCacheEntry = { version: THUMB_VERSION, dataUrl, frames };
     const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
 
     try {
@@ -160,6 +216,84 @@ class EffectThumbnailGeneratorClass {
 
   private _storageKey(type: EffectType): string {
     return `${THUMB_DIR}/${type}.json`;
+  }
+
+  /**
+   * Render an animated spritesheet: 6 frames at staggered time values,
+   * packed horizontally into one image.
+   */
+  private async _renderAnimated(type: EffectType): Promise<string | null> {
+    const def = effectRegistry.get(type);
+    if (!def) return null;
+    if (def.passes === 0) return null;
+    if (!this.renderer) return null;
+
+    const sample = this._getSampleTexture();
+    if (!sample) return null;
+
+    const chain = new EffectChain(this.renderer);
+    try {
+      // Render each frame at a different time value
+      const canvases: HTMLCanvasElement[] = [];
+      for (let i = 0; i < ANIM_FRAMES; i++) {
+        chain.setSource(sample, THUMB_SIZE, THUMB_SIZE, ANIM_TIMES[i]);
+
+        const instance: EffectInstance = {
+          id: `thumb_${type}_${i}`,
+          type,
+          name: def.displayName,
+          enabled: true,
+          collapsed: false,
+          parameters: def.createDefaultParameters(),
+        };
+
+        const outputTex = chain.render([instance]);
+        if (!outputTex) continue;
+
+        const canvas = await this._textureToCanvas(outputTex);
+        if (canvas) canvases.push(canvas);
+      }
+
+      if (canvases.length === 0) return null;
+
+      // Pack frames into a horizontal spritesheet
+      const sheetSize = THUMB_SIZE;
+      const totalWidth = sheetSize * canvases.length;
+      const sheetCanvas = document.createElement('canvas');
+      sheetCanvas.width = totalWidth;
+      sheetCanvas.height = sheetSize;
+      const ctx = sheetCanvas.getContext('2d');
+      if (!ctx) return null;
+
+      for (let i = 0; i < canvases.length; i++) {
+        ctx.drawImage(canvases[i], i * sheetSize, 0, sheetSize, sheetSize);
+      }
+
+      return sheetCanvas.toDataURL('image/png');
+    } catch (err) {
+      console.warn(`[EffectThumb] Failed to render animated ${type}:`, err);
+      return null;
+    } finally {
+      chain.dispose();
+    }
+  }
+
+  /**
+   * Load an animated spritesheet (from storage or generate fresh).
+   */
+  private async _loadAnimated(type: EffectType): Promise<string | null> {
+    // 1. Try workspace cache
+    const cached = await this._loadFromStorage(type);
+    if (cached) return cached;
+
+    // 2. Generate fresh
+    const dataUrl = await this._renderAnimated(type);
+    if (!dataUrl) return null;
+
+    // 3. Persist
+    void this._saveToStorage(type, dataUrl, ANIM_FRAMES);
+
+    return dataUrl;
   }
 
   private async _render(type: EffectType): Promise<string | null> {
@@ -200,7 +334,7 @@ class EffectThumbnailGeneratorClass {
     }
   }
 
-  private async _textureToDataURL(texture: THREE.Texture): Promise<string | null> {
+  private async _textureToCanvas(texture: THREE.Texture): Promise<HTMLCanvasElement | null> {
     const renderer = this.renderer;
     if (!renderer) return null;
 
@@ -253,7 +387,7 @@ class EffectThumbnailGeneratorClass {
         imgData.data.set(pixels.subarray(src, src + row), dst);
       }
       ctx.putImageData(imgData, 0, 0);
-      return canvas.toDataURL('image/png');
+      return canvas;
     } finally {
       renderer.setRenderTarget(oldTarget);
       renderer.setViewport(oldViewport);
@@ -261,6 +395,12 @@ class EffectThumbnailGeneratorClass {
       mat.dispose();
       rt.dispose();
     }
+  }
+
+  private async _textureToDataURL(texture: THREE.Texture): Promise<string | null> {
+    const canvas = await this._textureToCanvas(texture);
+    if (!canvas) return null;
+    return canvas.toDataURL('image/png');
   }
 
    private _getSampleTexture(): THREE.CanvasTexture | null {
@@ -390,3 +530,4 @@ class EffectThumbnailGeneratorClass {
 }
 
 export const effectThumbnailGenerator = new EffectThumbnailGeneratorClass();
+export { THUMB_SIZE, ANIM_FRAMES };

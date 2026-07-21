@@ -30,6 +30,7 @@ interface Options {
   snapToFrame: boolean;
   svgWidth: number;
   svgHeight: number;
+  autoTangent?: boolean;
 }
 
 function findKf(engine: any, id: string): Keyframe | null {
@@ -43,6 +44,7 @@ function findKf(engine: any, id: string): Keyframe | null {
 export function useGraphInteraction({
   svgRef, viewBox, setViewBox, engine, curves, totalFrames, snapToFrame,
   svgWidth, svgHeight,
+  autoTangent = true,
 }: Options) {
   const dragRef = useRef<DragState | null>(null);
   const [dragType, setDragType] = useState<DragType>(null);
@@ -178,15 +180,32 @@ export function useGraphInteraction({
         // Both in and out handles move UP when mouse goes UP (negative dyPx).
         // signY is always -1 so that drag-up (dyNorm<0) → tangent.y increases.
         const signY = -1;
-        // Shift key: snap handle Y to 0 (horizontal) — prevents rotation, only allows stretch
-      const handleY = e.shiftKey ? 0 : Math.max(-3, Math.min(3, d.origHandle.y + signY * dyNorm));
+        // Key-lock behavior:
+        // Shift: snap handle Y to 0 (horizontal) — prevents rotation, only allows stretch
+        // Alt: break handle link (move in/out independently, ignore autoTangent)
+        const lockY = e.shiftKey;
+        const breakLink = e.altKey;
+        const handleY = lockY ? 0 : Math.max(-3, Math.min(3, d.origHandle.y + signY * dyNorm));
       const newHandle = {
           x: Math.max(0, Math.min(1, d.origHandle.x + signX * dxNorm)),
           y: handleY,
         };
-        const patch: any = d.type === 'handleIn'
-          ? { inTangent: newHandle, interpolation: 'bezier' }
-          : { outTangent: newHandle, interpolation: 'bezier' };
+        // Build patch with both handles for auto-tangent mirroring
+        const patch: any = {};
+        if (d.type === 'handleIn') {
+          patch.inTangent = newHandle;
+          if (autoTangent && !breakLink) {
+            // Mirror in-handle to out-handle: invert X, keep Y
+            patch.outTangent = { x: newHandle.x, y: newHandle.y };
+          }
+        } else {
+          patch.outTangent = newHandle;
+          if (autoTangent && !breakLink) {
+            // Mirror out-handle to in-handle: invert X, keep Y
+            patch.inTangent = { x: newHandle.x, y: newHandle.y };
+          }
+        }
+        patch.interpolation = 'bezier';
         useKeyframeStore.getState().engine.updateKeyframe(d.kfId, patch);
         useKeyframeStore.setState(s => ({ revision: s.revision + 1 }));
       } else if (d.type === 'box-select') {

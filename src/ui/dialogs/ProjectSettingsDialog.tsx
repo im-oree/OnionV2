@@ -3,6 +3,8 @@
  */
 import React from 'react';
 import { useProjectStore } from '../../state/projectStore';
+import { useCompositionStore } from '../../state/compositionStore';
+import { defaultMotionBlur } from '../../types/composition';
 
 interface Props {
   onClose: () => void;
@@ -115,6 +117,50 @@ export const ProjectSettingsDialog: React.FC<Props> = ({ onClose }) => {
               <span className="text-text-disabled text-ui-xs">minutes</span>
             </div>
           </Field>
+
+          {/* Motion Blur Settings */}
+          {(() => {
+            const activeComp = useCompositionStore((s) =>
+              s.activeCompositionId ? s.compositions.find(c => c.id === s.activeCompositionId) : null,
+            );
+            const updateComp = useCompositionStore((s) => s.updateComposition);
+            if (!activeComp) return null;
+            const mb = activeComp.motionBlur ?? defaultMotionBlur();
+            const patch = (upd: Partial<typeof mb>) => {
+              updateComp(activeComp.id, { motionBlur: { ...mb, ...upd } });
+            };
+            return (
+              <>
+                <div className="h-px bg-border my-2" />
+                <div className="flex flex-col gap-1">
+                  <label className="text-ui-xs text-text-secondary font-medium uppercase tracking-wide">Motion Blur (Composition)</label>
+                  <div className="flex items-center justify-between">
+                    <span className="text-ui-xs text-text-secondary">Enable Motion Blur</span>
+                    <input type="checkbox" checked={mb.enabled}
+                      onChange={(e) => patch({ enabled: e.target.checked })} className="accent-accent" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-ui-xs text-text-secondary">Shutter Angle (°)</span>
+                    <input type="number" min={0} max={720} step={1} value={mb.shutterAngle}
+                      onChange={(e) => patch({ shutterAngle: Number(e.target.value) })}
+                      className="w-20 px-2 py-1.5 bg-panel border border-border rounded-md text-ui-xs text-text-primary outline-none focus:border-accent" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-ui-xs text-text-secondary">Shutter Phase (°)</span>
+                    <input type="number" min={-360} max={360} step={1} value={mb.shutterPhase}
+                      onChange={(e) => patch({ shutterPhase: Number(e.target.value) })}
+                      className="w-20 px-2 py-1.5 bg-panel border border-border rounded-md text-ui-xs text-text-primary outline-none focus:border-accent" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-ui-xs text-text-secondary">Samples per Frame</span>
+                    <input type="number" min={2} max={64} step={1} value={mb.samples}
+                      onChange={(e) => patch({ samples: Math.max(2, Math.min(64, Number(e.target.value))) })}
+                      className="w-20 px-2 py-1.5 bg-panel border border-border rounded-md text-ui-xs text-text-primary outline-none focus:border-accent" />
+                  </div>
+                </div>
+              </>
+            );
+          })()}
 
           {/* Notes */}
           <Field label="Project Notes">

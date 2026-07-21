@@ -98,6 +98,27 @@ export const viewMenu: MenuItemDefinition[] = [
     },
   },
   {
+    id: 'view.toggleClipToComp',
+    label: 'Clip Layer Contents to Composition',
+    shortcut: 'Alt+/',
+    checked: true,
+    onClick: () => {
+      const r = (window as any).__renderer;
+      if (r) {
+        const next = !r.clipToCompositionBounds;
+        r.setClipToCompositionBounds(next);
+        try {
+          const { useNotificationStore } = require('../../../state/notificationStore');
+          useNotificationStore.getState().addNotification({
+            type: 'info',
+            message: `Composition clipping ${next ? 'ON' : 'OFF'}`,
+            autoDismiss: 1500,
+          });
+        } catch { /* ignore */ }
+      }
+    },
+  },
+  {
     id: 'view.sep2',
     label: '',
     divider: true,

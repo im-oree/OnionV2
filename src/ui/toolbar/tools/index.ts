@@ -24,6 +24,9 @@ export const TOOL_GROUPS: ToolDefinition[][] = [
   [{ id:TOOLS.PEN as ToolId, icon:'pen', label:'Pen', shortcut:'P' },
    { id:TOOLS.TEXT as ToolId, icon:'text', label:'Text', shortcut:'T' },
    { id:TOOLS.GRADIENT as ToolId, icon:'gradient', label:'Gradient', shortcut:'Shift+G' }],
+  // Mask & Perspective tools
+  [{ id:TOOLS.MASK as ToolId, icon:'mask', label:'Mask Tool', shortcut:'M' },
+   { id:TOOLS.PERSPECTIVE as ToolId, icon:'perspective', label:'Perspective', shortcut:'Shift+M' }],
   [{ id:TOOLS.HAND as ToolId, icon:'hand', label:'Hand', shortcut:'H' }],
   [{ id:TOOLS.PICK_WHIP as ToolId, icon:'link', label:'Pick Whip', shortcut:'W' }],
 ];

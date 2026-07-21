@@ -1,15 +1,16 @@
+import * as THREE from 'three';
 import type { CameraManager } from '../CameraManager';
 import { useCompositionStore } from '../../state/compositionStore';
 import { useSelectionStore } from '../../state/selectionStore';
 import { useViewportStore } from '../../state/viewportStore';
 import { registerModalActiveCheck, registerForceCancelModal } from '../../input/ShortcutRegistry';
-import { Snapping, type SnapTargets } from '../utils/Snapping';
+import { Snapping, type SnapTargets, type LayerSnapRect } from '../utils/Snapping';
 import type { Layer } from '../../types/layer';
 import { useTimelineStore } from '../../state/timelineStore';
 import { useKeyframeStore } from '../../state/keyframeStore';
 import { autoKeyTransform } from './KeyframeHelpers';
 
-export type TransformMode = 'grab' | 'rotate' | 'scale';
+export type TransformMode = 'grab' | 'rotate' | 'scale' | 'perspective';
 
 export interface TransformInfo {
   mode: TransformMode | null;
@@ -30,6 +31,12 @@ interface LayerSnapshot {
   pos: { x: number; y: number };
   scale: { x: number; y: number };
   rotation: number;
+  // 3D snapshots
+  pos3d?: { x: number; y: number; z: number };
+  scale3d?: { x: number; y: number; z: number };
+  rotX?: number;
+  rotY?: number;
+  rotZ?: number;
 }
 
 declare global {
@@ -105,11 +112,19 @@ export class ModalTransform {
     for (const id of layerIds) {
       const layer = comp.layers.find((l) => l.id === id);
       if (layer) {
-        startTransforms.set(id, {
+        const snap: LayerSnapshot = {
           pos: { ...layer.transform.position },
           scale: { ...layer.transform.scale },
           rotation: layer.transform.rotation,
-        });
+        };
+        if (layer.is3D && layer.transform3D) {
+          snap.pos3d = { ...layer.transform3D.position };
+          snap.scale3d = { ...layer.transform3D.scale };
+          snap.rotX = layer.transform3D.rotationX;
+          snap.rotY = layer.transform3D.rotationY;
+          snap.rotZ = layer.transform3D.rotationZ;
+        }
+        startTransforms.set(id, snap);
       }
     }
     if (startTransforms.size === 0) return;
@@ -200,6 +215,11 @@ export class ModalTransform {
     // Auto-keying: if autoKey is ON, insert keyframes for the changed transforms
     this._autoKeyChangedTransforms();
 
+    // Clear Z-axis and Blender key active flags
+    (window as any).__moveZActive = false;
+    (window as any).__pendingBlenderKey = null;
+    (window as any).__3DAxisLock = null;
+
     // Push a single undo entry for the complete drag operation
     const snapshot = this._captureUndoSnapshot();
     if (snapshot) {
@@ -245,6 +265,28 @@ export class ModalTransform {
         changedProps.push({ prop: 'transform.rotation', value: t.rotation });
       }
 
+      // Also detect 3D transform changes
+      if (start.pos3d) {
+        const t3d = (layer as any).transform3D;
+        if (t3d) {
+          if (t3d.rotationZ !== start.rotZ) {
+            changedProps.push({ prop: 'transform3D.rotationZ', value: t3d.rotationZ });
+          }
+          if (t3d.position.z !== start.pos3d.z) {
+            changedProps.push({ prop: 'transform3D.position.z', value: t3d.position.z });
+          }
+          if (t3d.scale.z !== start.scale3d?.z) {
+            changedProps.push({ prop: 'transform3D.scale.z', value: t3d.scale.z });
+          }
+          if (t3d.rotationX !== start.rotX) {
+            changedProps.push({ prop: 'transform3D.rotationX', value: t3d.rotationX });
+          }
+          if (t3d.rotationY !== start.rotY) {
+            changedProps.push({ prop: 'transform3D.rotationY', value: t3d.rotationY });
+          }
+        }
+      }
+
       if (changedProps.length === 0) continue;
 
       // For each changed property, decide whether to insert a keyframe:
@@ -254,7 +296,7 @@ export class ModalTransform {
         const hasKeyframes = engine.getKeyframesForProperty(layerId, prop).length > 0;
         if (!autoKey && !hasKeyframes) continue;
 
-        autoKeyTransform(layerId, layer.transform, start, currentFrame);
+        autoKeyTransform(layerId, layer.transform, start, currentFrame, start, (layer as any).transform3D ?? null);
         break; // autoKeyTransform handles all changed props for this layer
       }
     }
@@ -273,8 +315,28 @@ export class ModalTransform {
             anchorPoint: { x: 0, y: 0 },
           },
         }, true);
+        // Also restore transform3D for 3D layers
+        if (start.pos3d) {
+          const layer = useCompositionStore.getState().compositions.find(c=>c.id===this._compId)?.layers.find(l=>l.id===layerId);
+          if (layer?.transform3D) {
+            useCompositionStore.getState().updateLayer(this._compId, layerId, {
+              transform3D: {
+                ...layer.transform3D,
+                position: { ...start.pos3d },
+                scale: { ...start.scale3d! },
+                rotationX: start.rotX ?? 0,
+                rotationY: start.rotY ?? 0,
+                rotationZ: start.rotZ ?? 0,
+              },
+            }, true);
+          }
+        }
       }
     }
+    // Clear Z-axis and Blender key active flags
+    (window as any).__moveZActive = false;
+    (window as any).__pendingBlenderKey = null;
+    (window as any).__3DAxisLock = null;
     this._releasePointerLock();
     this._active = false;
     this.lastSnapLines = [];
@@ -387,6 +449,85 @@ export class ModalTransform {
 
     switch (_mode) {
       case 'grab': {
+        // 3D perspective-aware movement: project screen delta onto camera view plane
+        const is3DPerspective = !!(window as any).__perspectiveActive;
+
+        if (is3DPerspective) {
+          const cam = (window as any).__perspectiveCamera as any;
+          if (cam) {
+            // Camera's local right and up vectors
+            const camRight = new THREE.Vector3(1, 0, 0);
+            const camUp = new THREE.Vector3(0, 1, 0);
+            camRight.applyQuaternion(cam.quaternion);
+            camUp.applyQuaternion(cam.quaternion);
+
+            let moveX = delta.x / zoom;
+            let moveY = -delta.y / zoom;
+
+            if (_axisLock === 'x' || _axisExclude === 'y') moveY = 0;
+            if (_axisLock === 'y' || _axisExclude === 'x') moveX = 0;
+            if (_precisionMode) { moveX *= 0.1; moveY *= 0.1; }
+
+            // Z-axis lock: move along camera forward
+            const z3dLock = (window as any).__3DAxisLock;
+            if (z3dLock === 'z') {
+              const camForward = new THREE.Vector3(0, 0, -1);
+              camForward.applyQuaternion(cam.quaternion);
+              for (const [layerId, start] of _startTransforms) {
+                const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
+                if (!layer) continue;
+                const posLocked = (layer.lockedProperties ?? {})['transform.position'];
+                if (posLocked) continue;
+                if (layer.is3D && layer.transform3D && start.pos3d) {
+                  const nx = start.pos3d.x + camForward.x * moveY * 2;
+                  const ny = start.pos3d.y + camForward.y * moveY * 2;
+                  const nz = start.pos3d.z + camForward.z * moveY * 2;
+                  store.updateLayer(_compId, layerId, {
+                    transform3D: { ...layer.transform3D, position: { x: nx, y: ny, z: nz } },
+                    transform: { ...layer.transform, position: { x: nx, y: ny } },
+                  }, true);
+                }
+              }
+              break;
+            }
+
+            // Normal 3D movement on camera plane
+            for (const [layerId, start] of _startTransforms) {
+              const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
+              if (!layer) continue;
+              // Skip locked position
+              const posLocked = (layer.lockedProperties ?? {})['transform.position'];
+              if (posLocked) continue;
+
+              if (layer.is3D && layer.transform3D && start.pos3d) {
+                const newX = start.pos3d.x + camRight.x * moveX + camUp.x * moveY;
+                const newY = start.pos3d.y + camRight.y * moveX + camUp.y * moveY;
+                const newZ = start.pos3d.z + camRight.z * moveX + camUp.z * moveY;
+                store.updateLayer(_compId, layerId, {
+                  transform3D: {
+                    ...layer.transform3D,
+                    position: { x: newX, y: newY, z: newZ },
+                  },
+                  transform: {
+                    ...layer.transform,
+                    position: { x: newX, y: newY },
+                  },
+                }, true);
+              } else {
+                // Non-3D layer: fall back to 2D movement
+                store.updateLayer(_compId, layerId, {
+                  transform: {
+                    position: { x: start.pos.x + moveX, y: start.pos.y + moveY },
+                    scale: start.scale, rotation: start.rotation, anchorPoint: { x: 0, y: 0 },
+                  },
+                }, true);
+              }
+            }
+            break;
+          }
+        }
+
+        // Original 2D movement (when not in 3D perspective)
         let gx = delta.x / zoom;
         let gy = delta.y / zoom;
 
@@ -395,58 +536,103 @@ export class ModalTransform {
         if (_precisionMode) { gx *= 0.1; gy *= 0.1; }
 
         if (useSnap) {
-          const firstId = Array.from(_startTransforms.keys())[0];
-          if (firstId) {
-            const start = _startTransforms.get(firstId)!;
-            const testX = start.pos.x + gx;
-            const testY = start.pos.y + gy;
-            const snapped = this.snapping.snapPoint(testX, testY, _cachedSnapTargets!, 6);
-            if (snapped.snapped) {
-              gx += snapped.x - testX;
-              gy += snapped.y - testY;
-              this.lastSnapLines = snapped.lines;
-            } else {
-              this.lastSnapLines = [];
-            }
+          const movingRect = this._buildMovingSelectionStartBounds();
+          if (movingRect) {
+            // Zoom-aware threshold: keep 8 screen pixels regardless of zoom level.
+            const threshold = 8 / Math.max(0.01, zoom);
+            const snapped = this.snapping.snapRect(movingRect, gx, gy, _cachedSnapTargets!, threshold);
+            gx = snapped.dx;
+            gy = snapped.dy;
+            this.lastSnapLines = snapped.snapped ? snapped.lines : [];
+          } else {
+            this.lastSnapLines = [];
           }
         } else {
           this.lastSnapLines = [];
         }
 
-        for (const [layerId, start] of _startTransforms) {
-          store.updateLayer(_compId, layerId, {
-            transform: {
-              position: { x: start.pos.x + gx, y: start.pos.y + gy },
-              scale: start.scale, rotation: start.rotation,
-              anchorPoint: { x: 0, y: 0 },
-            },
-          }, true);
+        // Check if Z-axis dragging is active — route entire Y delta to transform3D.position.z
+        const zAxisActive = (window as any).__moveZActive;
+        if (zAxisActive) {
+          // Use gy (vertical world delta) for Z movement
+          const zDelta = gy;
+          for (const [layerId, start] of _startTransforms) {
+            const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
+            if (!layer) continue;
+            const posLocked = (layer.lockedProperties ?? {})['transform.position'];
+            if (posLocked) continue;
+            store.updateLayer(_compId, layerId, {
+              transform: {
+                position: start.pos,
+                scale: start.scale, rotation: start.rotation,
+                anchorPoint: { x: 0, y: 0 },
+              },
+            }, true);
+            if (layer.is3D && layer.transform3D && start.pos3d) {
+              store.updateLayer(_compId, layerId, {
+                transform3D: {
+                  ...layer.transform3D,
+                  position: { x: start.pos3d.x, y: start.pos3d.y, z: start.pos3d.z + zDelta },
+                },
+              }, true);
+            }
+          }
+        } else {
+          for (const [layerId, start] of _startTransforms) {
+            const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
+            if (!layer) continue;
+            const posLocked = (layer.lockedProperties ?? {})['transform.position'];
+            if (posLocked) continue;
+            store.updateLayer(_compId, layerId, {
+              transform: {
+                position: { x: start.pos.x + gx, y: start.pos.y + gy },
+                scale: start.scale, rotation: start.rotation,
+                anchorPoint: { x: 0, y: 0 },
+              },
+            }, true);
+            // Also update transform3D if layer is 3D
+            if (layer.is3D && layer.transform3D && start.pos3d) {
+              store.updateLayer(_compId, layerId, {
+                transform3D: {
+                  ...layer.transform3D,
+                  position: { x: start.pos3d.x + gx, y: start.pos3d.y + gy, z: start.pos3d.z },
+                },
+              }, true);
+            }
+          }
         }
         break;
       }
 
       case 'rotate': {
+        // Z-axis lock: only rotate around Z (roll) using screen X movement
+        const zLock = (window as any).__3DAxisLock as string | undefined;
         let rawAngle: number;
         if (this._handlePivotWorld) {
-          // M3: Handle-based rotation: angle from pivot to mouse
+          // Handle-based rotation: angle from pivot to mouse
           const pivot = this._handlePivotWorld;
           const currentScreenX = this.startMouseScreen.x + delta.x;
           const currentScreenY = this.startMouseScreen.y - delta.y;
           const currentWorld = this.cameraManager.screenToWorld(currentScreenX, currentScreenY);
           if (this._startRotateAngle === null) {
-            // First frame: store the initial angle but apply ZERO rotation
             const startWorld = this.cameraManager.screenToWorld(this.startMouseScreen.x, this.startMouseScreen.y);
             this._startRotateAngle = Math.atan2(startWorld.y - pivot.y, startWorld.x - pivot.x);
           }
           const currentAngle = Math.atan2(currentWorld.y - pivot.y, currentWorld.x - pivot.x);
           rawAngle = (currentAngle - this._startRotateAngle) * (180 / Math.PI);
+        } else if (zLock === 'z') {
+          // Z rotation: screen X movement = rotation around Z axis (roll)
+          rawAngle = delta.x * (_precisionMode ? 0.02 : 0.2);
+        } else if (zLock === 'x' || zLock === 'y') {
+          // X/Y rotation: screen movement = rotation around that axis
+          rawAngle = delta.x * (_precisionMode ? 0.02 : 0.2);
         } else {
-          // Free rotation (keyboard R):
+          // Free rotation (keyboard R): screen X = rotation
           rawAngle = delta.x * (_precisionMode ? 0.02 : 0.2);
         }
         const snappedAngle = _snapMode ? Math.round(rawAngle / 1) : rawAngle;
         for (const [layerId, start] of _startTransforms) {
-          // Normalize accumulated rotation to [-180, 180] to prevent unbounded growth
+          // Always update 2D rotation (maps to Z rotation)
           let newRotation = start.rotation + snappedAngle;
           newRotation = ((newRotation + 180) % 360 + 360) % 360 - 180;
           store.updateLayer(_compId, layerId, {
@@ -456,7 +642,40 @@ export class ModalTransform {
               anchorPoint: { x: 0, y: 0 },
             },
           }, true);
+          // Also update transform3D for 3D layers
+          const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
+          if (layer?.is3D && layer.transform3D) {
+            const t3d = layer.transform3D;
+            if (zLock === 'x') {
+              store.updateLayer(_compId, layerId, {
+                transform3D: { ...t3d, rotationX: (start.rotX ?? 0) + snappedAngle },
+              }, true);
+            } else if (zLock === 'y') {
+              store.updateLayer(_compId, layerId, {
+                transform3D: { ...t3d, rotationY: (start.rotY ?? 0) + snappedAngle },
+              }, true);
+            } else {
+              // Default: Z rotation (roll)
+              store.updateLayer(_compId, layerId, {
+                transform3D: { ...t3d, rotationZ: (start.rotZ ?? 0) + snappedAngle },
+              }, true);
+            }
+          }
         }
+        break;
+      }
+
+      case 'perspective': {
+        const layerId = Array.from(this._startTransforms.keys())[0];
+        const corner = ((window as any).__activeCorner || 'tl') as 'tl' | 'tr' | 'br' | 'bl';
+        const pZoom = this.cameraManager.zoom;
+
+        const dx = delta.x / pZoom;
+        const dy = delta.y / pZoom;
+
+        import('../../state/perspectiveStore').then(m => {
+          m.usePerspectiveStore.getState().updateCorner(layerId, corner, dx, dy);
+        });
         break;
       }
 
@@ -554,6 +773,17 @@ export class ModalTransform {
         sx = Math.max(0.01, sx);
         sy = Math.max(0.01, sy);
 
+        // Z-axis lock: only scale Z
+        const zLockScale = (window as any).__3DAxisLock as string | undefined;
+        let factorZ = 1;
+        if (zLockScale === 'z') {
+          const travel = Math.hypot(delta.x, delta.y);
+          factorZ = 1 + (delta.y < 0 ? 1 : -1) * travel * 0.005;
+          if (_precisionMode) factorZ = 1 + (factorZ - 1) * 0.1;
+          factorZ = Math.max(0.01, factorZ);
+          sx = 1; sy = 1; // Only scale Z
+        }
+
         for (const [layerId, start] of _startTransforms) {
           store.updateLayer(_compId, layerId, {
             transform: {
@@ -563,6 +793,20 @@ export class ModalTransform {
               anchorPoint: { x: 0, y: 0 },
             },
           }, true);
+          // Also update transform3D.scale for 3D layers
+          const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
+          if (layer?.is3D && layer.transform3D) {
+            store.updateLayer(_compId, layerId, {
+              transform3D: {
+                ...layer.transform3D,
+                scale: {
+                  x: (start.scale3d?.x ?? start.scale.x) * sx,
+                  y: (start.scale3d?.y ?? start.scale.y) * sy,
+                  z: (start.scale3d?.z ?? 100) * factorZ,
+                },
+              },
+            }, true);
+          }
         }
         break;
       }
@@ -610,23 +854,165 @@ export class ModalTransform {
   ): SnapTargets {
     const halfW = comp.width / 2;
     const halfH = comp.height / 2;
+
+    const viewportSettings = useViewportStore.getState().settings;
+
     return {
-      compLeft: -halfW, compRight: halfW,
-      compTop: halfH, compBottom: -halfH,
-      compCenterX: 0, compCenterY: 0,
-      guidesH: [], guidesV: [],
+      compLeft: -halfW,
+      compRight: halfW,
+      compTop: halfH,
+      compBottom: -halfH,
+      compCenterX: 0,
+      compCenterY: 0,
+      guidesH: viewportSettings.showGuides
+        ? viewportSettings.guides.filter((g) => g.type === 'horizontal').map((g) => g.position)
+        : [],
+      guidesV: viewportSettings.showGuides
+        ? viewportSettings.guides.filter((g) => g.type === 'vertical').map((g) => g.position)
+        : [],
       layers: comp.layers
-        .filter((l) => l.visible && !excludeLayerIds.includes(l.id))
-        .map((l) => {
-          const t = l.transform;
-          return {
-            id: l.id,
-            left: t.position.x - 50, right: t.position.x + 50,
-            top: t.position.y + 50, bottom: t.position.y - 50,
-            centerX: t.position.x, centerY: t.position.y,
-          };
-        }),
+        .filter((l) => l.visible && !l.locked && !excludeLayerIds.includes(l.id))
+        .map((l) => this._getLayerWorldBounds(l))
+        .filter(Boolean) as any,
     };
+  }
+
+  private _buildMovingSelectionStartBounds(): LayerSnapRect | null {
+    const compId = this._compId;
+    if (!compId) return null;
+
+    const compState = useCompositionStore.getState();
+    const comp = compState.compositions.find((c) => c.id === compId);
+    if (!comp) return null;
+
+    let left = Infinity;
+    let right = -Infinity;
+    let top = -Infinity;
+    let bottom = Infinity;
+    let found = false;
+
+    for (const [layerId, start] of this._startTransforms) {
+      const layer = comp.layers.find((l) => l.id === layerId);
+      if (!layer) continue;
+
+      const fakeLayer: Layer = {
+        ...layer,
+        transform: {
+          ...layer.transform,
+          position: { ...start.pos },
+          scale: { ...start.scale },
+          rotation: start.rotation,
+        },
+      };
+
+      const b = this._getLayerWorldBounds(fakeLayer);
+      if (!b) continue;
+
+      left = Math.min(left, b.left);
+      right = Math.max(right, b.right);
+      top = Math.max(top, b.top);
+      bottom = Math.min(bottom, b.bottom);
+      found = true;
+    }
+
+    if (!found) return null;
+
+    return {
+      id: '__selection__',
+      left,
+      right,
+      top,
+      bottom,
+      centerX: (left + right) / 2,
+      centerY: (top + bottom) / 2,
+    };
+  }
+
+  private _getLayerWorldBounds(layer: Layer): LayerSnapRect | null {
+    const size = this._getLayerLocalSize(layer);
+    if (!size) return null;
+
+    const t = layer.transform;
+    const sx = t.scale.x / 100;
+    const sy = t.scale.y / 100;
+    const hw = (size.w * Math.abs(sx)) / 2;
+    const hh = (size.h * Math.abs(sy)) / 2;
+
+    const rad = (t.rotation || 0) * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+
+    const corners = [
+      { x: -hw, y: -hh },
+      { x: hw, y: -hh },
+      { x: hw, y: hh },
+      { x: -hw, y: hh },
+    ].map((p) => ({
+      x: t.position.x + p.x * cos - p.y * sin,
+      y: t.position.y + p.x * sin + p.y * cos,
+    }));
+
+    const xs = corners.map((p) => p.x);
+    const ys = corners.map((p) => p.y);
+
+    const left = Math.min(...xs);
+    const right = Math.max(...xs);
+    const bottom = Math.min(...ys);
+    const top = Math.max(...ys);
+
+    return {
+      id: layer.id,
+      left,
+      right,
+      top,
+      bottom,
+      centerX: (left + right) / 2,
+      centerY: (top + bottom) / 2,
+    };
+  }
+
+  private _getLayerLocalSize(layer: Layer): { w: number; h: number } | null {
+    const d: any = layer.data;
+
+    if (layer.type === 'solid' && d) {
+      return { w: d.width ?? 100, h: d.height ?? 100 };
+    }
+
+    if ((layer.type === 'image' || layer.type === 'video') && d) {
+      return {
+        w: d.naturalWidth ?? 100,
+        h: d.naturalHeight ?? 100,
+      };
+    }
+
+    if (layer.type === 'shape' && d) {
+      if (d.type === 'rectangle') return { w: d.width ?? 100, h: d.height ?? 100 };
+      if (d.type === 'ellipse') return { w: (d.radiusX ?? 50) * 2, h: (d.radiusY ?? 50) * 2 };
+      if (d.type === 'polygon' || d.type === 'star') return { w: (d.radius ?? 50) * 2, h: (d.radius ?? 50) * 2 };
+      if (d.type === 'path' && d.bounds) {
+        return {
+          w: Math.max(1, d.bounds.maxX - d.bounds.minX),
+          h: Math.max(1, d.bounds.maxY - d.bounds.minY),
+        };
+      }
+      if (d.type === 'custom') return { w: d.width ?? 100, h: d.height ?? 100 };
+    }
+
+    if (layer.type === 'comp' && d) {
+      const compState = useCompositionStore.getState();
+      const source = compState.compositions.find((c) => c.id === d.sourceCompId);
+      if (source) return { w: source.width, h: source.height };
+    }
+
+    if (layer.type === 'text') {
+      return { w: 300, h: 100 };
+    }
+
+    if (layer.type === 'null') {
+      return { w: 100, h: 100 };
+    }
+
+    return { w: 100, h: 100 };
   }
 
   private _emitState(): void {

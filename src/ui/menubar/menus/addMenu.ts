@@ -36,7 +36,110 @@ async function importFromFile(): Promise<void> {
   }
 }
 
+function add3DShape(shapeType: string): void {
+  const state = useCompositionStore.getState();
+  const compId = state.activeCompositionId;
+  if (!compId) return;
+  const comp = state.compositions.find((c) => c.id === compId);
+  if (!comp) return;
+  const layer = createLayerInstance('shape', comp, {
+    name: `${shapeType.charAt(0).toUpperCase() + shapeType.slice(1)}`,
+    is3D: true,
+    transform3D: { position: {x:0,y:0,z:0}, scale: {x:100,y:100,z:100},
+      rotationX:0, rotationY:0, rotationZ:0,
+      orientation:{x:0,y:0,z:0}, anchorPoint:{x:0,y:0,z:0}, opacity:100 },
+  }, shapeType);
+  state.addLayer(compId, layer);
+  useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+}
+
+function addLight(lightType: string): void {
+  const state = useCompositionStore.getState();
+  const compId = state.activeCompositionId;
+  if (!compId) return;
+  const comp = state.compositions.find((c) => c.id === compId);
+  if (!comp) return;
+  const layer = createLayerInstance('light' as any, comp, {
+    name: `${lightType.charAt(0).toUpperCase() + lightType.slice(1)} Light`,
+    is3D: true,
+    transform3D: { position: {x:0,y:0,z:500}, scale: {x:100,y:100,z:100},
+      rotationX:0, rotationY:0, rotationZ:0,
+      orientation:{x:0,y:0,z:0}, anchorPoint:{x:0,y:0,z:0}, opacity:100 },
+    lightData: {
+      lightType: lightType as any,
+      color: '#ffffff', intensity: 100, castsShadows: false,
+      shadowDarkness: 75, shadowDiffusion: 0,
+      falloff: 'smooth', falloffDistance: 500, falloffRadius: 500,
+      coneAngle: 54, coneFeather: 50,
+      pointOfInterest: {x:0,y:0,z:0},
+    },
+  } as any);
+  state.addLayer(compId, layer);
+  useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+}
+
+function import3DModel(): void {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.gltf,.glb,.obj,.fbx,.ply,.stl,.3ds,.dae,.json';
+  input.multiple = true;
+  input.onchange = async () => {
+    const files = Array.from(input.files ?? []);
+    if (files.length === 0) return;
+    const { loadModelFile } = await import('../../../renderer/layers/Model3DLoader');
+    const state = useCompositionStore.getState();
+    const compId = state.activeCompositionId;
+    if (!compId) return;
+    const comp = state.compositions.find((c) => c.id === compId);
+    if (!comp) return;
+    for (const file of files) {
+      try {
+        const modelData = await loadModelFile(file);
+        const ext = file.name.split('.').pop()?.toLowerCase() ?? 'glb';
+        const format = (ext === 'gltf' || ext === 'glb') ? ext as 'gltf' | 'glb'
+          : (ext === 'obj') ? 'obj' as const
+          : 'gltf' as const;
+        const count = comp.layers.filter(l => l.type === 'model3d').length + 1;
+        const layer = createLayerInstance('model3d', comp, {
+          name: `${file.name.replace(/\.[^.]+$/, '')} ${count}`,
+          is3D: true,
+          transform3D: { position: {x:0,y:0,z:0}, scale: {x:100,y:100,z:100},
+            rotationX:0, rotationY:0, rotationZ:0,
+            orientation:{x:0,y:0,z:0}, anchorPoint:{x:0,y:0,z:0}, opacity:100 },
+          data: {
+            assetId: modelData.url,
+            url: modelData.url,
+            format,
+            scale: 1,
+            autoRotate: false,
+            autoRotateSpeed: 1,
+          },
+        } as any);
+        state.addLayer(compId, layer);
+        useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+        // Model will be loaded by Renderer._syncModel3DLayer via _loadModel3D
+        // (Model3DLoader cache prevents redundant re-downloading)
+      } catch (err) {
+        console.error(`[3D Import] Failed to load ${file.name}:`, err);
+      }
+    }
+  };
+  input.click();
+}
+
 export const addMenu: MenuItemDefinition[] = [
+  {
+    id: 'layer.importFile',
+    label: 'Import File...',
+    shortcut: 'Ctrl+I',
+    onClick: () => { importFromFile(); },
+  },
+  {
+    id: 'layer.addSep1',
+    label: '',
+    divider: true,
+    onClick: () => {},
+  },
   {
     id: 'layer.newSolid',
     label: 'New Solid',
@@ -55,29 +158,113 @@ export const addMenu: MenuItemDefinition[] = [
     onClick: () => addNewLayer('text'),
   },
   {
-    id: 'layer.addSep1',
+    id: 'layer.addAdjustment',
+    label: 'Adjustment Layer',
+    onClick: () => addNewLayer('adjustment'),
+  },
+  {
+    id: 'layer.nullLayer',
+    label: 'Null Object',
+    onClick: () => addNewLayer('null'),
+  },
+  {
+    id: 'layer.newSpline',
+    label: 'Spline',
+    onClick: () => addNewLayer('spline'),
+  },
+  {
+    id: 'layer.newChart',
+    label: 'Chart',
+    onClick: () => addNewLayer('chart'),
+  },
+  {
+    id: 'layer.addTransition',
+    label: 'Transition Layer',
+    onClick: () => addNewLayer('transition'),
+  },
+  {
+    id: 'layer.addSep2',
     label: '',
     divider: true,
     onClick: () => {},
   },
   {
-    id: 'layer.importFile',
-    label: 'Import File...',
-    shortcut: 'Ctrl+I',
-    onClick: () => { importFromFile(); },
+    id: 'layer.3dShapes',
+    label: '3D Shape',
+    disabled: true,
+    onClick: () => {},
   },
   {
-    id: 'layer.addAdjustment',
-    label: 'New Adjustment Layer',
-    onClick: () => addNewLayer('adjustment'),
+    id: 'layer.3dSphere',
+    label: '  Sphere',
+    onClick: () => add3DShape('sphere'),
   },
   {
-    id: 'layer.nullLayer',
-    label: 'New Null Object',
-    onClick: () => addNewLayer('null'),
+    id: 'layer.3dCube',
+    label: '  Cube',
+    onClick: () => add3DShape('cube'),
   },
   {
-    id: 'layer.addSep2',
+    id: 'layer.3dCylinder',
+    label: '  Cylinder',
+    onClick: () => add3DShape('cylinder'),
+  },
+  {
+    id: 'layer.3dTorus',
+    label: '  Torus',
+    onClick: () => add3DShape('torus'),
+  },
+  {
+    id: 'layer.3dCone',
+    label: '  Cone',
+    onClick: () => add3DShape('cone'),
+  },
+  {
+    id: 'layer.addSep3',
+    label: '',
+    divider: true,
+    onClick: () => {},
+  },
+  {
+    id: 'layer.import3DModel',
+    label: 'Import 3D Model...',
+    shortcut: 'Ctrl+Shift+I',
+    onClick: () => import3DModel(),
+  },
+  {
+    id: 'layer.addSep4',
+    label: '',
+    divider: true,
+    onClick: () => {},
+  },
+  {
+    id: 'layer.lights',
+    label: 'Light',
+    disabled: true,
+    onClick: () => {},
+  },
+  {
+    id: 'layer.lightPoint',
+    label: '  Point Light',
+    onClick: () => addLight('point'),
+  },
+  {
+    id: 'layer.lightSpot',
+    label: '  Spot Light',
+    onClick: () => addLight('spot'),
+  },
+  {
+    id: 'layer.lightDirectional',
+    label: '  Directional Light',
+    onClick: () => addLight('parallel'),
+  },
+  {
+    id: 'layer.lightAmbient',
+    label: '  Ambient Light',
+    onClick: () => addLight('ambient'),
+  },
+  {
+    id: 'layer.addSep5',
     label: '',
     divider: true,
     onClick: () => {},

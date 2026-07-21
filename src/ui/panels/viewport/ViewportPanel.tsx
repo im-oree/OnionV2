@@ -23,6 +23,17 @@ import { PenToolOverlay } from './PenToolOverlay';
 import { PickWhipOverlay } from './PickWhipOverlay';
 import { ShapeDrawOverlay } from './ShapeDrawOverlay';
 import { ShapeContextToolbar } from './ShapeContextToolbar';
+import { SnapGuidesOverlay } from './SnapGuidesOverlay';
+import { TextureLoadingOverlay } from './TextureLoadingOverlay';
+import { MotionBlurBadgeOverlay } from './MotionBlurBadgeOverlay';
+import { MaskOverlay } from './MaskOverlay';
+import { PerspectiveOverlay } from './PerspectiveOverlay';
+import { SplineOverlay } from './SplineOverlay';
+import { TransformGizmo3D } from './TransformGizmo3D';
+import { CameraFrameGuide } from './CameraFrameGuide';
+import { CameraFrustumOverlay } from './CameraFrustumOverlay';
+import { CameraPreview } from './CameraPreview';
+import { ViewportToolbar } from './ViewportToolbar';
 import { assetManager } from '../../../storage/AssetManager';
 import { createLayerInstance } from '../../../utils/createLayerInstance';
 import { useNotificationStore } from '../../../state/notificationStore';
@@ -33,6 +44,7 @@ export const ViewportPanel: React.FC = () => {
   const isHovering = useRef(false);
   const lastMouse = useRef({ x: 0, y: 0 });
   const [dropHighlight, setDropHighlight] = useState(false);
+  const [showGrid, setShowGrid] = useState(true);
 
   const viewportSize = useViewportSize(containerRef as React.RefObject<HTMLElement|null>);
   const { state, viewportState, renderer } = useRenderer(containerRef.current);
@@ -210,6 +222,15 @@ export const ViewportPanel: React.FC = () => {
 
       {comp&&<Breadcrumb/>}
 
+      {/* Unified viewport toolbar — view mode + gizmos + grid + wireframe */}
+      {comp && (
+        <ViewportToolbar
+          showGrid={showGrid}
+          setShowGrid={setShowGrid}
+          renderer={renderer}
+        />
+      )}
+
       {comp&&(
         <div className="absolute inset-0 z-20 pointer-events-none">
           {showRulers&&viewportSize.width>0&&(
@@ -225,11 +246,32 @@ export const ViewportPanel: React.FC = () => {
       {comp&&<MotionPathOverlay cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
       {comp&&<OnionSkinOverlay cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
       {comp&&<PickWhipOverlay/>}
+      {comp&&<TextureLoadingOverlay cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
+      {comp&&<MotionBlurBadgeOverlay cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
+      {comp&&<MaskOverlay cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
+      {comp&&<PerspectiveOverlay cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
+      {comp&&<SplineOverlay cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
+      {comp&&<TransformGizmo3D cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
+      {comp&&<CameraFrameGuide viewportSize={viewportSize}/>}
+      {comp&&<CameraFrustumOverlay cameraManager={renderer?.cameraManager??null} viewportSize={viewportSize}/>}
+      {comp&&<CameraPreview />}
+
 
       {/* Shape/Text context toolbar — floats above viewport */}
       {comp&&<ShapeContextToolbar/>}
 
-      {comp&&<AxisGizmo/>}
+      {comp&&<AxisGizmo
+        onAxisClick={() => {
+          // Switch to move tool when clicking an axis
+        }}
+      />}
+      {comp && (
+        <SnapGuidesOverlay
+          modalTransform={renderer?.modalTransform ?? null}
+          cameraManager={renderer?.cameraManager ?? null}
+          viewportSize={viewportSize}
+        />
+      )}
       {comp&&<TransformHUD modalTransform={renderer?.modalTransform??null} cameraManager={renderer?.cameraManager??null}/>}
 
       {comp&&comp.layers.length===0&&(

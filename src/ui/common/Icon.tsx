@@ -24,7 +24,7 @@ export type IconName =
   | 'plus'|'minus'|'grip'|'close'|'menu'|'grid'|'snap'
   | 'keyframe'|'keyframeAdd'|'folder'|'image'|'video'|'audio'
   | 'effect'|'mask'|'parent'|'link'|'unlink'|'more'|'search'
-  | 'diamond'|'collection'|'brush'|'eraser'|'gradient';
+  | 'diamond'|'collection'|'brush'|'eraser'|'gradient'|'perspective';
 
 const ICON_MAP: Record<IconName, LucideIcon> = {
   select: MousePointer2, move: Move, hand: Hand, zoom: ZoomIn,
@@ -44,6 +44,7 @@ const ICON_MAP: Record<IconName, LucideIcon> = {
   link: Link2, unlink: Unlink2, more: MoreHorizontal,
   search: Search, diamond: Diamond, collection: FolderOpen,
   brush: Paintbrush, eraser: Eraser, gradient: Palette,
+  perspective: Maximize2,
 };
 
 interface IconProps {

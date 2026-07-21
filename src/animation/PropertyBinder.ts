@@ -73,6 +73,7 @@ export class PropertyBinder {
   }
 
   evaluateFrame(compId: string, frame: number): number {
+    console.log(`[AnimDebug] evaluateFrame: compId=${compId}, frame=${frame}, totalKf=${this.engine.totalKeyframes}`);
     this._overrides.clear();
     const comp = useCompositionStore.getState().compositions.find((c) => c.id === compId);
     if (!comp) return 0;
@@ -81,6 +82,15 @@ export class PropertyBinder {
 
     for (const layer of comp.layers) {
       const paths = this.engine.getAllAnimatedProperties(layer.id);
+      // DEBUG: log what we find
+      if (paths.length > 0) {
+        console.log(`[AnimDebug] Layer "${layer.name}" (${layer.id}):`, {
+          paths,
+          localFrame: Math.max(0, frame - layer.startFrame),
+          startFrame: layer.startFrame,
+          globalFrame: frame,
+        });
+      }
       const exprCheckPaths = ['transform.position', 'transform.scale', 'transform.rotation', 'opacity', 'transform.anchorPoint'];
       const hasAnyExpr = exprCheckPaths.some(p => {
         const e = useExpressionStore.getState().getExpression(layer.id, p);
@@ -106,6 +116,8 @@ export class PropertyBinder {
       for (const path of paths) {
         const result = this.engine.evaluate(layer.id, path, localFrame);
         let val = result.value;
+        // DEBUG
+        console.log(`[AnimDebug] ${path} @ localFrame=${localFrame}:`, { val, inKeyframe: result.inKeyframe });
 
         let evalFrame = frame;
         const exprEntry = useExpressionStore.getState().getExpression(layer.id, path);
@@ -136,10 +148,55 @@ export class PropertyBinder {
           } catch { /* keep val */ }
         }
 
+        // Handle transform3D.* paths for 3D layers
+        if (path.startsWith('transform3D.')) {
+          const field = path.slice('transform3D.'.length);
+          const cs = useCompositionStore.getState();
+          const cid = cs.activeCompositionId;
+          if (!cid) continue;
+          const layerData = layer as any;
+          if (!layerData.is3D || !layerData.transform3D) continue;
+
+          let newTransform3D = { ...layerData.transform3D };
+
+          if (field === 'position.x') newTransform3D.position = { ...newTransform3D.position, x: val as number };
+          else if (field === 'position.y') newTransform3D.position = { ...newTransform3D.position, y: val as number };
+          else if (field === 'position.z') newTransform3D.position = { ...newTransform3D.position, z: val as number };
+          else if (field === 'scale.x') newTransform3D.scale = { ...newTransform3D.scale, x: val as number };
+          else if (field === 'scale.y') newTransform3D.scale = { ...newTransform3D.scale, y: val as number };
+          else if (field === 'scale.z') newTransform3D.scale = { ...newTransform3D.scale, z: val as number };
+          else if (field === 'rotationX') newTransform3D.rotationX = val as number;
+          else if (field === 'rotationY') newTransform3D.rotationY = val as number;
+          else if (field === 'rotationZ') newTransform3D.rotationZ = val as number;
+          else if (field === 'anchorPoint.x') newTransform3D.anchorPoint = { ...newTransform3D.anchorPoint, x: val as number };
+          else if (field === 'anchorPoint.y') newTransform3D.anchorPoint = { ...newTransform3D.anchorPoint, y: val as number };
+          else if (field === 'anchorPoint.z') newTransform3D.anchorPoint = { ...newTransform3D.anchorPoint, z: val as number };
+
+          cs.updateLayer(cid, layer.id, { transform3D: newTransform3D }, true);
+          continue;
+        }
+
         if (path.startsWith('effect.')) {
           const parts = path.split('.');
           if (parts.length >= 3) {
-            effectUpdates.push({ effectId: parts[1], paramId: parts.slice(2).join('.'), value: val });
+            // Only write back if this property is genuinely keyframed
+            // (has 2+ keyframes, or 1 keyframe AND an expression driving it).
+            // Single-keyframe "static" params with no expression should NOT be
+            // overwritten every frame — that fights the user's manual edits.
+            const kfsForPath = this.engine.getKeyframesForProperty(layer.id, path);
+            const hasExprForPath = (() => {
+              const e = useExpressionStore.getState().getExpression(layer.id, path);
+              return e && e.enabled && !e.compiled.error;
+            })();
+            // Write back if:
+            // - Active expression drives this param, OR
+            // - 2+ keyframes (genuine animation active), OR
+            // - Exactly 1 keyframe at this exact frame (so scrub display reflects it).
+            const atExactKeyframe = kfsForPath.some(k => k.time === localFrame);
+            const shouldWriteBack = hasExprForPath || kfsForPath.length >= 2 || atExactKeyframe;
+            if (shouldWriteBack) {
+              effectUpdates.push({ effectId: parts[1], paramId: parts.slice(2).join('.'), value: val });
+            }
           }
           continue;
         }
@@ -170,7 +227,19 @@ export class PropertyBinder {
         } else if (path === 'transform.scale.y') {
           override.scale = { x: override.scale!.x, y: val as number }; touched = true;
         } else if (path === 'transform.rotation') {
-          override.rotation = val as number; touched = true;
+          // For 3D layers, route rotation to transform3D.rotationZ
+          const layerData = layer as any;
+          if (layerData.is3D) {
+            const cs = useCompositionStore.getState();
+            const cid = cs.activeCompositionId;
+            if (cid && layerData.transform3D) {
+              cs.updateLayer(cid, layerData.id, {
+                transform3D: { ...layerData.transform3D, rotationZ: val as number }
+              }, true);
+            }
+          } else {
+            override.rotation = val as number; touched = true;
+          }
         } else if (path === 'transform.anchorPoint' && Array.isArray(val)) {
           override.anchorPoint = { x: val[0], y: val[1] }; touched = true;
         } else if (path === 'transform.anchorPoint.x') {
@@ -215,6 +284,46 @@ export class PropertyBinder {
       if (touched) {
         this._overrides.set(layer.id, override);
         updated++;
+      }
+    }
+
+    // === Camera property keyframes (composition-level) ===
+    const CAMERA_PROP_ID = '__camera__';
+    const cameraPaths = this.engine.getAllAnimatedProperties(CAMERA_PROP_ID);
+
+    if (cameraPaths.length > 0) {
+      for (const path of cameraPaths) {
+        const result = this.engine.evaluate(CAMERA_PROP_ID, path, frame);
+        let val = result.value;
+
+        // Check for expression
+        const exprEntry = useExpressionStore.getState().getExpression(CAMERA_PROP_ID, path);
+        if (exprEntry?.enabled && !exprEntry.compiled.error) {
+          try {
+            val = expressionEngine.evaluate(exprEntry.compiled,
+              this._buildExprCtx({ id: CAMERA_PROP_ID, name: 'Camera' }, frame, comp, frame, val));
+          } catch { /* keep val */ }
+        }
+
+        // Write back to composition
+        const field = path.replace('camera.', '');
+        const patch: Record<string, any> = {};
+
+        if (field === 'positionX' && typeof val === 'number') patch.cameraPositionX = val;
+        else if (field === 'positionY' && typeof val === 'number') patch.cameraPositionY = val;
+        else if (field === 'positionZ' && typeof val === 'number') patch.cameraPositionZ = val;
+        else if (field === 'rotationX' && typeof val === 'number') patch.cameraRotationX = val;
+        else if (field === 'rotationY' && typeof val === 'number') patch.cameraRotationY = val;
+        else if (field === 'rotationZ' && typeof val === 'number') patch.cameraRotationZ = val;
+        else if (field === 'fov' && typeof val === 'number') patch.cameraFOV = val;
+        else if (field === 'zoom' && typeof val === 'number') patch.cameraZoom = val;
+        else if (field === 'focusDistance' && typeof val === 'number') patch.cameraFocusDistance = val;
+        else if (field === 'aperture' && typeof val === 'number') patch.cameraAperture = val;
+
+        if (Object.keys(patch).length > 0) {
+          const cs = useCompositionStore.getState();
+          cs.updateComposition(compId, patch);
+        }
       }
     }
 

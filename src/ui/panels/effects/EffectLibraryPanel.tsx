@@ -9,20 +9,23 @@
  * - Double-click applies to currently selected layer
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, X, Sparkles } from 'lucide-react';
+import { Search, X, Sparkles, Save } from 'lucide-react';
 import { effectRegistry } from '../../../renderer/effects/EffectRegistry';
-import { effectThumbnailGenerator } from '../../../renderer/effects/EffectThumbnailGenerator';
+import { effectThumbnailGenerator, THUMB_SIZE } from '../../../renderer/effects/EffectThumbnailGenerator';
 import { useEffectsStore } from '../../../state/effectsStore';
 import { useSelectionStore } from '../../../state/selectionStore';
 import { useNotificationStore } from '../../../state/notificationStore';
+import { EffectPresetsPanel } from './EffectPresetsPanel';
 import type { EffectCategory, EffectDefinition, EffectType } from '../../../types/effect';
 
-const CATEGORY_LABELS: Record<EffectCategory, string> = {
+const CATEGORY_LABELS: Record<string, string> = {
   blur: 'Blur',
   color: 'Color',
   stylize: 'Stylize',
   distort: 'Distort',
   generate: 'Generate',
+  transition: 'Transition',
+  blend: 'Blend',
 };
 
 type CategoryFilter = 'all' | EffectCategory;
@@ -32,6 +35,9 @@ export const EffectLibraryPanel: React.FC = () => {
   const [category, setCategory] = useState<CategoryFilter>('all');
   const [genProgress, setGenProgress] = useState<{ done: number; total: number } | null>(null);
   const addNotif = useNotificationStore((s) => s.addNotification);
+  const selectedLayers = useSelectionStore((s) =>
+    s.selected.filter((x) => x.type === 'layer'),
+  );
 
   const allDefs = useMemo(() => effectRegistry.list().filter((d) => d.passes > 0), []);
   const cats = useMemo(() => effectRegistry.listCategories(), []);
@@ -145,6 +151,22 @@ export const EffectLibraryPanel: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {/* Presets section */}
+      <div style={{ borderTop: '1px solid var(--color-border)', marginTop: 4 }}>
+        {(() => {
+          const layerId = selectedLayers.length === 1 ? selectedLayers[0].id : null;
+          if (!layerId) {
+            return (
+              <div className="flex items-center gap-2 px-3 py-3" style={{ fontSize: 10, color: 'var(--color-text-disabled)' }}>
+                <Save size={12} strokeWidth={1.75} />
+                <span>Select a layer to save/load presets</span>
+              </div>
+            );
+          }
+          return <EffectPresetsPanel layerId={layerId} />;
+        })()}
+      </div>
     </div>
   );
 };
@@ -170,6 +192,9 @@ const EffectCard: React.FC<{ def: EffectDefinition; onDoubleClick: () => void }>
   const [thumb, setThumb] = useState<string | null>(null);
   const [hover, setHover] = useState(false);
 
+  const frameCount = useMemo(() => effectThumbnailGenerator.getFrameCount(def.type), [def.type]);
+  const isAnimated = useMemo(() => frameCount > 1, [frameCount]);
+
   useEffect(() => {
     let cancelled = false;
     effectThumbnailGenerator.getThumbnail(def.type).then((url) => {
@@ -177,6 +202,21 @@ const EffectCard: React.FC<{ def: EffectDefinition; onDoubleClick: () => void }>
     });
     return () => { cancelled = true; };
   }, [def.type]);
+
+  // Inject unique @keyframes for this effect's animated spritesheet
+  const animName = `thumbCycle-${def.type}`;
+  const styleId = `anim-${def.type}`;
+  useEffect(() => {
+    if (!isAnimated || !thumb) return;
+    if (document.getElementById(styleId)) return;
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `@keyframes ${animName} {
+      to { background-position: -${THUMB_SIZE * (frameCount - 1)}px; }
+    }`;
+    document.head.appendChild(style);
+    return () => { document.getElementById(styleId)?.remove(); };
+  }, [isAnimated, thumb, def.type, animName, frameCount, styleId]);
 
   const onDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData('application/onion-effect', def.type);
@@ -204,14 +244,18 @@ const EffectCard: React.FC<{ def: EffectDefinition; onDoubleClick: () => void }>
       <div
         style={{
           width: '100%',
-          aspectRatio: '1/1',
-          background: thumb ? `url(${thumb}) center/cover` : '#1a1c22',
+          aspectRatio: isAnimated ? `auto` : '1/1',
+          height: THUMB_SIZE,
+          background: thumb
+            ? `url(${thumb}) 0 0 / ${THUMB_SIZE * frameCount}px ${THUMB_SIZE}px no-repeat`
+            : '#1a1c22',
           borderRadius: 'var(--radius-sm)',
           border: '1px solid var(--color-border)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           overflow: 'hidden',
+          animation: isAnimated && thumb ? `${animName} 0.72s steps(${frameCount}) infinite` : undefined,
         }}
       >
         {!thumb && (

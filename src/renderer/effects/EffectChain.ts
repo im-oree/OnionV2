@@ -38,6 +38,10 @@ export class EffectChain {
   private targetW = 0;
   private targetH = 0;
 
+  /** Exposed for callers that need the post-effect output texture of a layer chain. */
+  private _lastResultTexture: THREE.Texture | null = null;
+  get lastResultTexture(): THREE.Texture | null { return this._lastResultTexture; }
+
   /** Transient scratch buffers used by customRender hooks. Reused per render. */
   private _scratchTargets: THREE.WebGLRenderTarget[] = [];
   private _scratchInUse = 0;
@@ -145,12 +149,14 @@ export class EffectChain {
         } else {
           console.warn(`[EffectChain] Effect ${effect.type} has neither fragmentShader nor customRender`);
           continue;
-        }
-
-        [read, write] = [write, read];
       }
 
-      return read.texture;
+      [read, write] = [write, read];
+    }
+
+    // Store the final output texture for external callers (e.g. Displacement Map).
+    this._lastResultTexture = read.texture;
+    return read.texture;
     } finally {
       this.renderer.setRenderTarget(oldTarget);
       this.renderer.setViewport(oldViewport);

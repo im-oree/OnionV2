@@ -1,8 +1,9 @@
 import type { EffectInstance } from './effect';
+import type { ModifierInstance } from './modifier';
 
 export type LayerType =
   | 'solid' | 'shape' | 'text' | 'image' | 'video' | 'audio' | 'null' | 'adjustment' | 'comp'
-  | 'camera' | 'light';
+  | 'camera' | 'light' | 'spline' | 'chart' | 'model3d' | 'transition';
 
 export type BlendMode =
   | 'normal'|'multiply'|'screen'|'overlay'|'darken'|'lighten'
@@ -27,6 +28,8 @@ export interface Transform3D {
   orientation: Vec3;
   anchorPoint: Vec3;
   opacity: number;
+  /** Extrusion depth in pixels (makes flat layers into 3D boxes) */
+  extrusion?: number;
 }
 
 export interface MaterialProperties {
@@ -86,7 +89,7 @@ export function defaultLightData(): LightData {
 }
 
 export function defaultTransform3D(): Transform3D {
-  return { position: { x: 0, y: 0, z: 0 }, scale: { x: 100, y: 100, z: 100 }, rotationX: 0, rotationY: 0, rotationZ: 0, orientation: { x: 0, y: 0, z: 0 }, anchorPoint: { x: 0, y: 0, z: 0 }, opacity: 100 };
+  return { position: { x: 0, y: 0, z: 0 }, scale: { x: 100, y: 100, z: 100 }, rotationX: 0, rotationY: 0, rotationZ: 0, orientation: { x: 0, y: 0, z: 0 }, anchorPoint: { x: 0, y: 0, z: 0 }, opacity: 100, extrusion: 0 };
 }
 
 export interface GradientStop { offset: number; color: string; }
@@ -194,6 +197,12 @@ export interface ImageData { assetId: string; naturalWidth: number; naturalHeigh
 export interface VideoData {
   assetId: string; naturalWidth: number; naturalHeight: number;
   duration: number; muted: boolean; volume: number; playbackRate: number;
+  /** Time Remapping — keyframeable timeline→source time mapping */
+  timeRemap?: boolean;
+  timeRemapKeyframes?: Array<{ time: number; sourceFrame: number }>;
+  /** Frame Blending */
+  frameBlending?: boolean;
+  frameBlendingType?: 'frameMix' | 'pixelMotion';
 }
 
 export interface AudioData {
@@ -261,9 +270,31 @@ export function defaultTextData(): TextData {
 
 export interface CompData {
   sourceCompId: string; loop: boolean; timeScale: number; timeOffset: number;
+  /** Time Remapping for pre-comps */
+  timeRemap?: boolean;
+  timeRemapKeyframes?: Array<{ time: number; sourceFrame: number }>;
+  /** Frame Blending */
+  frameBlending?: boolean;
+  frameBlendingType?: 'frameMix' | 'pixelMotion';
 }
 
-export type LayerPayload = SolidData | ShapeData | ImageData | VideoData | AudioData | TextData | CompData | Record<string,never>;
+export interface TransitionData {
+  transitionType: string;
+  /** Transition progress (0-1, computed automatically from timeline) */
+  progress: number;
+  /** Feather amount for soft edges */
+  feather: number;
+  /** Angle for directional transitions (degrees) */
+  angle: number;
+  /** Center X for iris/wipe transitions (0-1) */
+  centerX: number;
+  /** Center Y for iris/wipe transitions (0-1) */
+  centerY: number;
+  /** Custom parameters passed to the transition shader */
+  customParams: Record<string, number | string | boolean>;
+}
+
+export type LayerPayload = SolidData | ShapeData | ImageData | VideoData | AudioData | TextData | CompData | TransitionData | Record<string,never>;
 
 export interface Mask {
   id: string; points: Array<{x:number;y:number}>; inverted: boolean;
@@ -278,12 +309,23 @@ export interface BaseLayer {
   startFrame: number; endFrame: number;
   transform: Transform; zIndex: number;
   effects: EffectInstance[]; masks: Mask[];
+  motionBlur?: boolean;
   color?: string; data?: LayerPayload;
   is3D?: boolean;
   transform3D?: Transform3D;
   material?: MaterialProperties;
   cameraData?: CameraData;
   lightData?: LightData;
+  modifiers: ModifierInstance[];
+  /** Frame blending mode for this layer (AE-style: frame mix or pixel motion) */
+  frameBlending?: boolean;
+  frameBlendingType?: 'frameMix' | 'pixelMotion';
+  /** Track matte for this layer */
+  trackMatte?: { type: 'none' | 'alpha' | 'alphaInverted' | 'luma' | 'lumaInverted'; targetLayerId: string };
+  /** Per-property lock map — locked properties cannot be edited or keyframed */
+  lockedProperties?: Record<string, boolean>;
+  /** When false, all effects on this layer are skipped during rendering (AE-style). */
+  effectsEnabled?: boolean;
 }
 
 export type Layer = BaseLayer;

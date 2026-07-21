@@ -29,13 +29,27 @@ export class ImageLayerRenderer extends BaseLayerRenderer {
     this.assetId = assetId;
     this.naturalW = initW;
     this.naturalH = initH;
+    // Only show the loading indicator if the texture isn't already cached
+    // (avoids a one-frame spinner flash on already-loaded images).
+    if (!textureCache.has(assetId)) {
+      this._dispatchLoadingEvent(true);
+    }
     this.loadTexture();
+  }
+
+  private _dispatchLoadingEvent(starting: boolean): void {
+    try {
+      document.dispatchEvent(new CustomEvent('layer:texture-loading', {
+        detail: { layerId: this.id, loading: starting },
+      }));
+    } catch { /* ignore */ }
   }
 
   private async loadTexture(): Promise<void> {
     const asset = assetManager.getAsset(this.assetId);
     if (!asset || !asset.url) {
       console.warn(`[ImageLayer] Asset not found or has no URL: ${this.assetId}`);
+      this._dispatchLoadingEvent(false);
       return;
     }
 
@@ -43,6 +57,7 @@ export class ImageLayerRenderer extends BaseLayerRenderer {
       const texture = await textureCache.loadImage(this.assetId, asset.url);
       if (!texture) {
         console.warn(`[ImageLayer] textureCache returned null for ${this.assetId}`);
+        this._dispatchLoadingEvent(false);
         return;
       }
       texture.colorSpace = THREE.SRGBColorSpace;
@@ -80,6 +95,8 @@ export class ImageLayerRenderer extends BaseLayerRenderer {
       } catch { /* ignore */ }
     } catch (err) {
       console.warn(`[ImageLayer] Failed to load asset ${this.assetId}:`, err);
+    } finally {
+      this._dispatchLoadingEvent(false);
     }
   }
 
@@ -88,6 +105,7 @@ export class ImageLayerRenderer extends BaseLayerRenderer {
     this.assetId = assetId;
     textureCache.decRef(old);
     this._loaded = false;
+    this._dispatchLoadingEvent(true);
     this.loadTexture();
   }
 

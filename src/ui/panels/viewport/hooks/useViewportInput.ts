@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react';
 import type { CameraManager } from '../../../../renderer/CameraManager';
 import type { HitTester } from '../../../../renderer/interaction/HitTest';
 import type { ModalTransform } from '../../../../renderer/interaction/ModalTransform';
+import { useKeyframeStore } from '../../../../state/keyframeStore';
+import { useTimelineStore } from '../../../../state/timelineStore';
 import { VIEWPORT_CONFIG } from '../../../../config/viewportConfig';
 import { useCompositionStore } from '../../../../state/compositionStore';
 import { useNavigationStore } from '../../../../state/navigationStore';
@@ -30,7 +32,55 @@ function distToSegment(px: number, py: number, ax: number, ay: number, bx: numbe
   return { dist: Math.hypot(px - cx, py - cy), t };
 }
 
+const CAMERA_KEYFRAME_ID = '__camera__';
+
+/** Auto-key a single camera property at the current time. */
+function autoKeyCameraProp(property: string, value: number): void {
+  const cs = useCompositionStore.getState();
+  const compId = cs.activeCompositionId;
+  if (!compId) return;
+  const comp = cs.compositions.find(c => c.id === compId);
+  if (!comp) return;
+  const frame = Math.round(comp.currentTime * comp.fps);
+  const kfStore = useKeyframeStore.getState();
+
+  if (!kfStore.isPropertyAnimated(CAMERA_KEYFRAME_ID, property)) {
+    kfStore.toggleAnimatedProperty(CAMERA_KEYFRAME_ID, property);
+  }
+
+  const existing = kfStore.engine.getKeyframesForProperty(CAMERA_KEYFRAME_ID, property)
+    .find((k: any) => k.time === frame);
+
+  if (existing) {
+    kfStore.updateKeyframe(existing.id, { value });
+  } else {
+    kfStore.addKeyframe(CAMERA_KEYFRAME_ID, {
+      id: `kf_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+      property,
+      layerId: CAMERA_KEYFRAME_ID,
+      time: frame,
+      value,
+      interpolation: 'linear',
+    });
+  }
+}
+
 function finalizePenPath(commands: import('../../../../types/layer').PathCommand[]): void {
+  // Check if we're drawing a mask
+  const maskTargetId = (window as any).__maskTargetLayerId as string | undefined;
+  if (maskTargetId) {
+    delete (window as any).__maskTargetLayerId;
+    import('../../../../state/maskStore').then(({ useMaskStore }) => {
+      useMaskStore.getState().addPathMask(maskTargetId, commands);
+    });
+    // Switch back to select tool
+    import('../../../../state/toolStore').then(({ useToolStore }) => {
+      useToolStore.getState().setActiveTool('select' as any);
+    });
+    return;
+  }
+
+  // Original path layer creation
   const cs = useCompositionStore.getState();
   const compId = cs.activeCompositionId;
   if (!compId) return;
@@ -91,6 +141,15 @@ export function useViewportInput({
   const mtRef = useRef(modalTransform);
   const axisGuideRef = useRef<SVGSVGElement | null>(null);
   const mouseMoved = useRef(false);
+
+  // ── FLY MODE (3D: Right mouse + WASD) ──
+  const flyState = useRef({
+    active: false,
+    speed: 500,
+    keys: new Set<string>(),
+    animId: 0,
+  });
+  const flyLoopRef = useRef<() => void>(() => {});
 
   // Keep refs up to date without re-running the effect
   useEffect(() => { cmRef.current = cameraManager; }, [cameraManager]);
@@ -362,6 +421,21 @@ export function useViewportInput({
       // Axis constraints from gizmo
       if (gizmoAttr === 'move-x' || gizmoAttr === 'scale-x') mtRef.current.setAxisLock('x');
       else if (gizmoAttr === 'move-y' || gizmoAttr === 'scale-y') mtRef.current.setAxisLock('y');
+      else if (gizmoAttr === 'move-z') {
+        // Z arrow: start grab, route vertical delta to transform3D.position.z
+        mtRef.current.setAxisLock('y');
+        (window as any).__moveZActive = true;
+        (window as any).__3DAxisLock = 'z';
+        mtRef.current.setAxisLock('y');
+        mouseMoved.current = false;
+        lastMouse.current = { x: e.clientX, y: e.clientY };
+        attachDocListeners();
+        return;
+        mouseMoved.current = false;
+        lastMouse.current = { x: e.clientX, y: e.clientY };
+        attachDocListeners();
+        return;
+      }
 
       // Aspect lock for corner handles and uniform scale
       if (gizmoAttr === 'scale-uniform' ||
@@ -378,8 +452,6 @@ export function useViewportInput({
       lastMouse.current = { x: e.clientX, y: e.clientY };
       attachDocListeners();
     };
-
-    if (container) container.addEventListener('mousedown', gizmoMouseDown);
 
     // Document-level mouseup to reset cursor if released outside canvas during pan
     let panDocMouseup: ((e: MouseEvent) => void) | null = null;
@@ -400,6 +472,71 @@ export function useViewportInput({
         panDocMouseup = null;
       }
     }
+
+    // ── FLY MODE: Right mouse down → activate fly mode (only in 3D perspective) ──
+    const onRightMouseDown = (e: MouseEvent) => {
+      if (e.button !== 2) return;
+      const cs = useCompositionStore.getState();
+      const compId = cs.activeCompositionId;
+      const comp = compId ? cs.compositions.find(c => c.id === compId) : null;
+      if (!comp?.perspective3D) return;
+      // Don't fly if a modal transform is active
+      if (mtRef.current?.active) return;
+      // Block right-mouse fly in Active Camera unless "Move with View" is enabled
+      if (!(window as any).__freeViewMode && !(comp?.cameraMoveWithView ?? false)) {
+        e.preventDefault();
+        return; // Camera is locked in Active Camera view
+      }
+
+      e.preventDefault();
+      flyState.current.active = true;
+      flyState.current.speed = comp.flySpeed ?? 500;
+      document.body.style.cursor = 'crosshair';
+
+      // Reset keys on new fly session
+      flyState.current.keys.clear();
+
+      // Start the fly RAF loop if not already running
+      if (!flyState.current.animId) {
+        flyLoopRef.current();
+      }
+
+      const onMove = (ev: MouseEvent) => {
+        if (!flyState.current.active) return;
+        // Mouse look: rotate the free view camera
+        const sensitivity = 0.003;
+        const isFree = !!(window as any).__freeViewMode;
+        if (isFree) {
+          const curX = (window as any).__freeOrbitX ?? 0.3;
+          const curY = (window as any).__freeOrbitY ?? 0.5;
+          (window as any).__freeOrbitX = Math.max(-1.2, Math.min(1.2, curX - ev.movementY * sensitivity));
+          (window as any).__freeOrbitY = curY + ev.movementX * sensitivity;
+        } else {
+          // Active camera: orbit with mouse
+          const curRotX = comp.cameraRotationX ?? 0;
+          const curRotY = comp.cameraRotationY ?? 0;
+          cs.updateComposition(comp.id, {
+            cameraRotationX: Math.max(-1.2, Math.min(1.2, curRotX - ev.movementY * sensitivity)),
+            cameraRotationY: curRotY + ev.movementX * sensitivity,
+          });
+        }
+        requestRender?.();
+      };
+
+      const onUp = (ev: MouseEvent) => {
+        if (ev.button === 2) {
+          flyState.current.active = false;
+          flyState.current.keys.clear();
+          document.body.style.cursor = '';
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          // RAF loop will stop itself on next tick since active=false
+        }
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    };
 
     const onMouseDown = (e: MouseEvent) => {
       // Pen edit mode: Alt+click on path segment inserts anchor
@@ -457,12 +594,116 @@ export function useViewportInput({
         }
       }
 
-      // Middle mouse = pan
+      // Middle mouse = orbit/pan in perspective mode, pan in 2D
       if (e.button === 1) {
-        isPanning.current = true;
-        lastMouse.current = { x: e.clientX, y: e.clientY };
-        document.body.style.cursor = 'grabbing';
-        attachPanDocMouseup();
+        const cs = useCompositionStore.getState();
+        const compId = cs.activeCompositionId;
+        const comp = compId ? cs.compositions.find(c => c.id === compId) : null;
+        const is3D = comp?.perspective3D;
+
+        if (is3D) {
+          const isFree = !!(window as any).__freeViewMode;
+
+          if (isFree) {
+            // ── Free View: orbit the free camera around the scene ──
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const startOrbitX = (window as any).__freeOrbitX ?? 0.3;
+            const startOrbitY = (window as any).__freeOrbitY ?? 0.5;
+
+            document.body.style.cursor = 'crosshair';
+            const onMove = (ev: MouseEvent) => {
+              const dx = ev.clientX - startX;
+              const dy = ev.clientY - startY;
+              (window as any).__freeOrbitY = startOrbitY - dx * 0.005;
+              (window as any).__freeOrbitX = Math.max(-1.2, Math.min(1.2,
+                startOrbitX - dy * 0.005));
+              requestRender?.();
+            };
+            const onUp = () => {
+              document.body.style.cursor = '';
+              document.removeEventListener('mousemove', onMove);
+              document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+          } else {
+            // ── Active Camera: orbit/pan the comp camera with auto-keyframing ──
+            // Block camera movement unless "Move with View" is enabled
+            if (!(comp?.cameraMoveWithView ?? false)) {
+              e.preventDefault();
+              return; // Camera is locked in Active Camera view
+            }
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const startRotX = comp?.cameraRotationX ?? 0;
+            const startRotY = comp?.cameraRotationY ?? 0;
+            const startPosX = comp?.cameraPositionX ?? 0;
+            const startPosY = comp?.cameraPositionY ?? 0;
+            const startZ = comp?.cameraPositionZ ?? 1000;
+            const isPan = e.shiftKey;
+            const zoom = cmRef.current?.zoom ?? 1;
+
+            // Invert settings
+            const invOrbit = comp?.cameraInvertOrbit ?? false;
+            const invPan = comp?.cameraInvertPan ?? false;
+            const invZoom = comp?.cameraInvertZoom ?? false;
+
+            document.body.style.cursor = isPan ? 'grabbing' : 'crosshair';
+
+            const onMove = (ev: MouseEvent) => {
+              const dx = ev.clientX - startX;
+              const dy = ev.clientY - startY;
+              if (!compId) return;
+
+              const cs = useCompositionStore.getState();
+              const autoKey = useTimelineStore.getState().autoKey;
+
+              if (isPan) {
+                // Default: drag right = camera moves right, drag down = camera moves down (screen coords)
+                const panDir = invPan ? -1 : 1;
+                const newX = startPosX + (dx / zoom) * panDir;
+                const newY = startPosY + (dy / zoom) * panDir;
+                cs.updateComposition(compId, {
+                  cameraPositionX: newX,
+                  cameraPositionY: newY,
+                });
+                if (autoKey) {
+                  autoKeyCameraProp('camera.positionX', newX);
+                  autoKeyCameraProp('camera.positionY', newY);
+                }
+              } else {
+                // Orbit: drag right = camera rotates right (yaw+), drag up = camera tilts up (pitch+)
+                // Only invert Y-axis (pitch/up-down), not X-axis (yaw/left-right)
+                const invY = invOrbit ? -1 : 1;
+                const newRotY = startRotY + dx * 0.005;
+                const newRotX = Math.max(-1.2, Math.min(1.2, startRotX - (dy * 0.005) * invY));
+                cs.updateComposition(compId, {
+                  cameraRotationY: newRotY,
+                  cameraRotationX: newRotX,
+                });
+                if (autoKey) {
+                  autoKeyCameraProp('camera.rotationY', newRotY);
+                  autoKeyCameraProp('camera.rotationX', newRotX);
+                }
+              }
+              requestRender?.();
+            };
+            const onUp = () => {
+              document.body.style.cursor = '';
+              document.removeEventListener('mousemove', onMove);
+              document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+          }
+        } else {
+          // 2D pan
+          isPanning.current = true;
+          lastMouse.current = { x: e.clientX, y: e.clientY };
+          document.body.style.cursor = 'grabbing';
+          attachPanDocMouseup();
+        }
         e.preventDefault();
         return;
       }
@@ -503,6 +744,15 @@ export function useViewportInput({
         const world = cm.screenToWorld(mouseX, mouseY);
         const penStore = usePenToolStore.getState();
 
+        // *** ADD THIS BLOCK: Set mask target if a layer is selected ***
+        const selIds = useSelectionStore.getState().getSelectedIds();
+        if (selIds.length === 1) {
+          (window as any).__maskTargetLayerId = selIds[0];
+        } else {
+          delete (window as any).__maskTargetLayerId;
+        }
+        // *** END ADD ***
+
         // If not drawing, start a new path
         if (penStore.mode !== 'draw') {
           penStore.startDrawing();
@@ -525,7 +775,6 @@ export function useViewportInput({
         // Add anchor. If user drags, we'll set an out-handle in mousemove.
         const startClientX = e.clientX;
         const startClientY = e.clientY;
-        let hasHandle = false;
 
         penStore.addAnchor(world.x, world.y);
 
@@ -533,7 +782,64 @@ export function useViewportInput({
           const dx = ev.clientX - startClientX;
           const dy = ev.clientY - startClientY;
           if (Math.hypot(dx, dy) > 3) {
-            hasHandle = true;
+            const handleWorld = cm.screenToWorld(ev.clientX - el.getBoundingClientRect().left, ev.clientY - el.getBoundingClientRect().top);
+            usePenToolStore.getState().updateLastHandle(handleWorld.x, handleWorld.y);
+            requestRender?.();
+          }
+        };
+        const mu = () => {
+          document.removeEventListener('mousemove', mm);
+          document.removeEventListener('mouseup', mu);
+        };
+        document.addEventListener('mousemove', mm);
+        document.addEventListener('mouseup', mu);
+        return;
+      }
+
+      // MASK tool: treat same as PEN but always creates mask on selected layer
+      if (tool === (TOOLS.MASK as ToolId)) {
+        const cm = cmRef.current;
+        if (!cm) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const world = cm.screenToWorld(mouseX, mouseY);
+        const penStore = usePenToolStore.getState();
+
+        // Set mask target
+        const selIds = useSelectionStore.getState().getSelectedIds();
+        if (selIds.length === 1) {
+          (window as any).__maskTargetLayerId = selIds[0];
+        } else {
+          return; // No layer selected, can't create mask
+        }
+
+        if (penStore.mode !== 'draw') {
+          penStore.startDrawing();
+        }
+
+        // Check if clicking near the first anchor to close
+        const firstAnchor = penStore.drawingCommands.length > 0
+          ? penStore.drawingCommands[0].points
+          : null;
+        if (firstAnchor && penStore.drawingCommands.length > 2) {
+          const first = cm.worldToScreen(firstAnchor[0], firstAnchor[1]);
+          const dist = Math.hypot(first.x - mouseX, first.y - mouseY);
+          if (dist < 10) {
+            const cmds = penStore.closePath();
+            if (cmds) finalizePenPath(cmds);
+            return;
+          }
+        }
+
+        const startClientX = e.clientX;
+        const startClientY = e.clientY;
+
+        penStore.addAnchor(world.x, world.y);
+
+        const mm = (ev: MouseEvent) => {
+          const dx = ev.clientX - startClientX;
+          const dy = ev.clientY - startClientY;
+          if (Math.hypot(dx, dy) > 3) {
             const handleWorld = cm.screenToWorld(ev.clientX - el.getBoundingClientRect().left, ev.clientY - el.getBoundingClientRect().top);
             usePenToolStore.getState().updateLastHandle(handleWorld.x, handleWorld.y);
             requestRender?.();
@@ -917,6 +1223,60 @@ export function useViewportInput({
           centerWorld = { x: (startWorld.x + endWorld.x) / 2, y: (startWorld.y + endWorld.y) / 2 };
         }
 
+        // *** ADD: Create mask instead of shape if a layer is selected with MASK or shape tool ***
+        const isMaskTool = tool === (TOOLS.MASK as ToolId);
+        const selectedLayerIds = useSelectionStore.getState().getSelectedIds();
+        if (isMaskTool || (selectedLayerIds.length === 1 && (
+          tool === (TOOLS.SHAPE_RECT as ToolId) || 
+          tool === (TOOLS.SHAPE_ELLIPSE as ToolId)
+        ))) {
+          const targetLayerId = selectedLayerIds[0];
+          const targetLayer = comp.layers.find(l => l.id === targetLayerId);
+          if (targetLayer) {
+            // Convert world center to layer-local coords
+            const localX = centerWorld.x - targetLayer.transform.position.x;
+            const localY = centerWorld.y - targetLayer.transform.position.y;
+
+            const { useMaskStore } = await import('../../../../state/maskStore');
+
+            if (tool === (TOOLS.SHAPE_ELLIPSE as ToolId) || tool === (TOOLS.MASK as ToolId)) {
+              // For mask tool, still use rect for now (pen tool handles freeform)
+              useMaskStore.getState().addRectMask(targetLayerId, Math.round(worldW), Math.round(worldH));
+            } else {
+              useMaskStore.getState().addRectMask(targetLayerId, Math.round(worldW), Math.round(worldH));
+            }
+
+            // Update the mask's commands to be offset to the drawn location
+            const masks = useMaskStore.getState().getMasksForLayer(targetLayerId);
+            const newMask = masks[masks.length - 1];
+            if (newMask) {
+              const offsetCmds = newMask.commands.map(c => ({
+                ...c,
+                points: [...c.points]
+              }));
+              // Offset the first point's x,y by localX,localY
+              if (offsetCmds.length > 0 && offsetCmds[0].type === 'M') {
+                const dx = localX - 0;
+                const dy = localY - 0;
+                for (const cmd of offsetCmds) {
+                  for (let i = 0; i < cmd.points.length; i += 2) {
+                    cmd.points[i] += dx;
+                    cmd.points[i + 1] += dy;
+                  }
+                }
+              }
+              useMaskStore.getState().updateMaskCommands(targetLayerId, newMask.id, offsetCmds);
+            }
+
+            // Switch back to select tool if using MASK tool
+            if (isMaskTool) {
+              useToolStore.getState().setActiveTool('select' as any);
+            }
+            return;
+          }
+        }
+        // *** END ADD ***
+
         // Read active shape preset from tool store
         const presetId = useToolStore.getState().toolSettings.currentShapePresetId ?? 'rectangle';
         const { defaultShapeFill, defaultShapeStroke } = await import('../../../../types/layer');
@@ -964,6 +1324,29 @@ export function useViewportInput({
     const onWheel = (e: WheelEvent) => {
       if (!cmRef.current) return;
       e.preventDefault();
+
+      // Free View: scroll moves camera forward/backward along look direction
+      const isFree = !!(window as any).__freeViewMode;
+      if (isFree) {
+        const yaw = (window as any).__freeOrbitY ?? 0.5;
+        const pitch = (window as any).__freeOrbitX ?? 0.3;
+        const speed = 200; // pixels per scroll tick
+        const dir = e.deltaY < 0 ? 1 : -1;
+        // Move along the camera's forward direction
+        const fwdX = Math.sin(yaw) * Math.cos(pitch) * speed * dir;
+        const fwdY = Math.sin(pitch) * speed * dir;
+        const fwdZ = Math.cos(yaw) * Math.cos(pitch) * speed * dir;
+        (window as any).__freeCamX = ((window as any).__freeCamX ?? 0) + fwdX;
+        (window as any).__freeCamY = ((window as any).__freeCamY ?? 0) + fwdY;
+        (window as any).__freeCamZ = ((window as any).__freeCamZ ?? 0) + fwdZ;
+        requestRender?.();
+        return;
+      }
+
+      // ALL modes (2D, Active Camera in perspective, orthographic):
+      // scroll zooms the VIEWPORT (like 2D mode), not the camera position.
+      // This matches user expectation — scroll = zoom UI, camera only moves
+      // via camera panel controls or "Move with View" orbit/pan.
       const rect = el.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
@@ -971,7 +1354,7 @@ export function useViewportInput({
       const factor = e.deltaY < 0 ? VIEWPORT_CONFIG.ZOOM_FACTOR : 1 / VIEWPORT_CONFIG.ZOOM_FACTOR;
       cmRef.current.setZoom(cmRef.current.zoom * factor);
       const worldAfter = cmRef.current.screenToWorld(mouseX, mouseY);
-      // FIX: pan to keep the point under cursor stationary
+      // Pan to keep the point under cursor stationary
       cmRef.current.pan(worldBefore.x - worldAfter.x, worldBefore.y - worldAfter.y);
       requestRender?.();
     };
@@ -1002,6 +1385,130 @@ export function useViewportInput({
           e.preventDefault();
         }
       }
+
+      // Ctrl+Alt+T = Enable Time Remapping on selected video/comp layer
+      if (e.key === 't' && e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey) {
+        e.preventDefault();
+        const cs = useCompositionStore.getState();
+        const compId = cs.activeCompositionId;
+        if (!compId) return;
+        const comp = cs.compositions.find(c => c.id === compId);
+        if (!comp) return;
+        const selIds = useSelectionStore.getState().getSelectedIds();
+        if (selIds.length === 1) {
+          const layer = comp.layers.find(l => l.id === selIds[0]);
+          if (layer && (layer.type === 'video' || layer.type === 'comp')) {
+            const d = { ...((layer.data ?? {}) as any) };
+            d.timeRemap = !d.timeRemap;
+            if (d.timeRemap && !d.timeRemapKeyframes) {
+              d.timeRemapKeyframes = [
+                { time: 0, sourceFrame: 0 },
+                { time: layer.endFrame - layer.startFrame, sourceFrame: layer.endFrame - layer.startFrame },
+              ];
+            }
+            cs.updateLayer(compId, layer.id, { data: d });
+          }
+        }
+        return;
+      }
+
+      // ── Blender-style G/R/S + X/Y/Z shortcuts for 3D ──
+      // Only when not in a text input and a composition is active
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      const blenderKey = (window as any).__pendingBlenderKey as string | null;
+
+      if (!blenderKey) {
+        // No pending key — check for G/R/S to START a modal transform
+        const lower = e.key.toLowerCase();
+        if ((lower === 'g' || lower === 'r' || lower === 's') &&
+            !e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+
+          // Set tool to match the transform mode
+          const toolStore = useToolStore.getState();
+          if (lower === 'g') {
+            toolStore.setActiveTool('select' as any); // Grab = move/select
+          } else if (lower === 'r') {
+            toolStore.setActiveTool('rotate' as any);
+          } else if (lower === 's') {
+            toolStore.setActiveTool('scale' as any);
+          }
+
+          // Start the modal transform immediately
+          const mt = mtRef.current;
+          if (!mt) return;
+
+          // If no layer selected, select the topmost visible layer
+          const selStore = useSelectionStore.getState();
+          if (selStore.getSelectedIds().length === 0) {
+            const cs = useCompositionStore.getState();
+            const comp = cs.activeCompositionId
+              ? cs.compositions.find(c => c.id === cs.activeCompositionId)
+              : null;
+            if (comp && comp.layers.length > 0) {
+              const topmost = [...comp.layers]
+                .filter(l => l.visible && !l.locked)
+                .sort((a, b) => b.zIndex - a.zIndex)[0];
+              if (topmost) {
+                selStore.select({ type: 'layer', id: topmost.id, compositionId: comp.id });
+              }
+            }
+          }
+
+          // Dispatch transform event (handled by onTransformStart)
+          const eventName = lower === 'g' ? 'transform:grab'
+            : lower === 'r' ? 'transform:rotate'
+            : 'transform:scale';
+          document.dispatchEvent(new CustomEvent(eventName));
+
+          // Set pending Blender key so subsequent X/Y/Z press sets axis lock
+          (window as any).__pendingBlenderKey = lower;
+
+          // Clear pending after a timeout (in case user doesn't press an axis key)
+          // But the modal is already active, so X/Y/Z during modal is handled by docKeydown
+          return;
+        }
+      } else {
+        // We have a pending Blender key — the user pressed G/R/S and now X/Y/Z
+        // The modal transform is already active via the event above.
+        // The axis keys (X/Y/Z) during active modal are handled by docKeydown,
+        // but we also need to handle the Z-axis 3D case.
+        if (e.key === 'z' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          const mt = mtRef.current;
+          if (mt?.active) {
+            // For Z axis in 3D: route vertical mouse to transform3D.position.z
+            (window as any).__moveZActive = true;
+            (window as any).__3DAxisLock = 'z';
+            // Also lock Y axis so normal movement doesn't interfere
+            mt.setAxisLock('y');
+          }
+          (window as any).__pendingBlenderKey = null;
+          return;
+        }
+        if (e.key === 'x' && !e.shiftKey) {
+          // X axis lock — handled by docKeydown during active modal
+          // Just clear pending key
+          (window as any).__pendingBlenderKey = null;
+          return;
+        }
+        if (e.key === 'y' && !e.shiftKey) {
+          // Y axis lock — handled by docKeydown during active modal
+          (window as any).__pendingBlenderKey = null;
+          return;
+        }
+        // Escape cancels pending
+        if (e.key === 'Escape') {
+          (window as any).__pendingBlenderKey = null;
+          if (mtRef.current?.active) mtRef.current.cancel();
+          return;
+        }
+        // Any other key clears pending (but modal transform stays active)
+        if (e.key.length === 1) {
+          (window as any).__pendingBlenderKey = null;
+        }
+      }
     };
 
     const onKeyUp = (_e: KeyboardEvent) => { /* no-op */ };
@@ -1027,6 +1534,7 @@ export function useViewportInput({
     document.addEventListener('transform:scale', onTransformStart);
 
     el.addEventListener('mousedown', onMouseDown);
+    el.addEventListener('mousedown', onRightMouseDown);
     el.addEventListener('mousemove', onMouseMove);
     el.addEventListener('mouseup', onMouseUp);
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -1087,6 +1595,7 @@ export function useViewportInput({
       document.removeEventListener('transform:rotate', onTransformStart);
       document.removeEventListener('transform:scale', onTransformStart);
       el.removeEventListener('mousedown', onMouseDown);
+      el.removeEventListener('mousedown', onRightMouseDown);
       el.removeEventListener('mousemove', onMouseMove);
       el.removeEventListener('mouseup', onMouseUp);
       el.removeEventListener('wheel', onWheel);
@@ -1097,8 +1606,139 @@ export function useViewportInput({
       drawSvg?.parentElement?.removeChild(drawSvg);
       boxSvg?.parentElement?.removeChild(boxSvg);
       removeAxisGuide();
+      // Stop fly mode
+      flyState.current.active = false;
+      flyState.current.keys.clear();
+      cancelAnimationFrame(flyState.current.animId);
       // Reset cursor on cleanup
       document.body.style.cursor = '';
+    };
+  }, [canvas]);
+
+  // ── FLY MODE: WASD keyboard movement loop ──
+  useEffect(() => {
+    if (!canvas) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!flyState.current.active) return;
+
+      // Escape exits fly mode
+      if (e.key === 'Escape') {
+        flyState.current.active = false;
+        flyState.current.keys.clear();
+        document.body.style.cursor = '';
+        if (document.pointerLockElement) document.exitPointerLock();
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+      flyState.current.keys.add(key);
+
+      // Q/E adjust fly speed
+      if (key === 'q') flyState.current.speed = Math.max(50, flyState.current.speed * 0.7);
+      if (key === 'e') flyState.current.speed = Math.min(5000, flyState.current.speed * 1.4);
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      flyState.current.keys.delete(e.key.toLowerCase());
+    };
+
+    // Continuous movement loop at 60fps — only runs while fly mode is active
+    const flyLoop = () => {
+      // Stop the RAF loop when fly mode is not active (no CPU waste)
+      if (!flyState.current.active) {
+        flyState.current.animId = 0;
+        return;
+      }
+
+      if (flyState.current.keys.size > 0) {
+        const speed = flyState.current.speed * 0.016; // per frame at 60fps
+        const keys = flyState.current.keys;
+
+        // Determine camera angles
+        let pitch = 0, yaw = 0;
+        const isFree = !!(window as any).__freeViewMode;
+        const cs = useCompositionStore.getState();
+        const compId = cs.activeCompositionId;
+        const comp = compId ? cs.compositions.find(c => c.id === compId) : null;
+
+        if (isFree) {
+          pitch = (window as any).__freeOrbitX ?? 0.3;
+          yaw = (window as any).__freeOrbitY ?? 0.5;
+        } else if (comp) {
+          pitch = comp.cameraRotationX ?? 0;
+          yaw = comp.cameraRotationY ?? 0;
+        }
+
+        // Compute camera forward/right vectors from pitch and yaw
+        const cosP = Math.cos(pitch), sinP = Math.sin(pitch);
+        const cosY = Math.cos(yaw), sinY = Math.sin(yaw);
+        const forward = {
+          x: sinY * cosP,
+          y: sinP,
+          z: cosY * cosP,
+        };
+        const right = {
+          x: cosY,
+          y: 0,
+          z: -sinY,
+        };
+        const up = { x: 0, y: 1, z: 0 };
+
+        let moveX = 0, moveY = 0, moveZ = 0;
+        if (keys.has('w')) { moveX += forward.x * speed; moveY += forward.y * speed; moveZ += forward.z * speed; }
+        if (keys.has('s')) { moveX -= forward.x * speed; moveY -= forward.y * speed; moveZ -= forward.z * speed; }
+        if (keys.has('a')) { moveX -= right.x * speed; moveZ -= right.z * speed; }
+        if (keys.has('d')) { moveX += right.x * speed; moveZ += right.z * speed; }
+        if (keys.has(' ')) { moveY += up.y * speed; }
+        if (keys.has('shift')) { moveY -= up.y * speed; }
+
+        if (moveX !== 0 || moveY !== 0 || moveZ !== 0) {
+          if (compId && comp) {
+            const panX = (comp.cameraPositionX ?? 0) + moveX;
+            const panY = (comp.cameraPositionY ?? 0) + moveY;
+            const panZ = (comp.cameraPositionZ ?? 1000) + moveZ;
+
+            const store = useCompositionStore.getState();
+            store.updateComposition(compId, {
+              cameraPositionX: panX,
+              cameraPositionY: panY,
+              cameraPositionZ: Math.max(10, panZ),
+            });
+
+            const autoKey = useTimelineStore.getState().autoKey;
+            if (autoKey) {
+              autoKeyCameraProp('camera.positionX', panX);
+              autoKeyCameraProp('camera.positionY', panY);
+              autoKeyCameraProp('camera.positionZ', Math.max(10, panZ));
+            }
+          } else {
+            // Free view: move camera position directly via __freeCamX/Y/Z
+            const curCamX = (window as any).__freeCamX ?? 0;
+            const curCamY = (window as any).__freeCamY ?? 0;
+            const curCamZ = (window as any).__freeCamZ ?? 0;
+            (window as any).__freeCamX = curCamX + moveX;
+            (window as any).__freeCamY = curCamY + moveY;
+            (window as any).__freeCamZ = curCamZ + moveZ;
+          }
+          requestRender?.();
+        }
+      }
+      flyState.current.animId = requestAnimationFrame(flyLoop);
+    };
+    // Wire ref so onRightMouseDown can start the loop
+    flyLoopRef.current = flyLoop;
+
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+
+    return () => {
+      cancelAnimationFrame(flyState.current.animId);
+      flyState.current.active = false;
+      flyState.current.animId = 0;
+      flyState.current.keys.clear();
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('keyup', onKeyUp);
     };
   }, [canvas]);
 }

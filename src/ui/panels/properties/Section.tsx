@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, ChevronRight, Code2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Code2, Copy, ClipboardPaste } from 'lucide-react';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { useExpressionStore } from '../../../state/expressionStore';
 import { ExpressionEditor } from './ExpressionEditor';
@@ -8,6 +8,38 @@ import { ContextMenu } from '../../common/ContextMenu';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { buildPropertyContextMenu } from './propertyContextMenu';
 import type { Layer } from '../../../types/layer';
+import type { Keyframe } from '../../../types/keyframe';
+
+/** Module-level clipboard for animation copy/paste */
+interface AnimationClipboard {
+  keyframes: Keyframe[];
+  sourceProperty: string;
+  isArray: boolean; // true if keyframe values are number[]
+  relativeTimes: number[]; // times relative to first keyframe
+}
+
+let _animClipboard: AnimationClipboard | null = null;
+
+function copyAnimation(keyframes: Keyframe[], property: string): void {
+  if (keyframes.length === 0) return;
+  const sorted = [...keyframes].sort((a, b) => a.time - b.time);
+  const minTime = sorted[0].time;
+  
+  // Detect if values are arrays (vector2) or numbers
+  const firstVal = sorted[0].value;
+  const isArray = Array.isArray(firstVal);
+  
+  _animClipboard = {
+    keyframes: sorted.map(kf => ({ ...kf })),
+    sourceProperty: property,
+    isArray,
+    relativeTimes: sorted.map(kf => kf.time - minTime),
+  };
+}
+
+function getClipboard(): AnimationClipboard | null {
+  return _animClipboard;
+}
 
 interface SectionProps {
   label: string;
@@ -51,13 +83,16 @@ interface PropRowProps {
   layer?: Layer;
   currentFrame?: number;
   compId?: string;
+  /** If true, show copy/paste animation buttons on hover */
+  showAnimClipboard?: boolean;
+  /** Property path for lock support — shows a lock icon next to the label */
+  lockPath?: string;
 }
 
 export const PropRow: React.FC<PropRowProps> = ({
-  label, children, animatable, layer, currentFrame = 0, compId,
+  label, children, animatable, layer, currentFrame = 0, compId, showAnimClipboard = true, lockPath,
 }) => {
   const revision = useKeyframeStore(s => s.revision);
-  const exprRevision = useExpressionStore(s => s.revision);
   const ctxMenu = useContextMenu();
 
   const isAnimated = React.useMemo(() => {
@@ -78,9 +113,10 @@ export const PropRow: React.FC<PropRowProps> = ({
     const store = useKeyframeStore.getState();
     store.toggleAnimatedProperty(layer.id, animatable);
     if (!isAnimated) {
+      const val = getCurrentPropertyValue(animatable, layer);
       store.addKeyframe(layer.id, {
         id: `kf_${Date.now()}`, property: animatable, layerId: layer.id,
-        time: currentFrame, value: getCurrentPropertyValue(animatable, layer),
+        time: currentFrame, value: typeof val === 'number' || Array.isArray(val) ? val : 0,
         interpolation: 'linear',
       });
     }
@@ -94,11 +130,60 @@ export const PropRow: React.FC<PropRowProps> = ({
       const existing = store.engine.getKeyframesForProperty(layer.id, animatable).find(k => k.time === currentFrame);
       if (existing) store.removeKeyframe(existing.id);
     } else {
+      const val = getCurrentPropertyValue(animatable, layer);
       store.addKeyframe(layer.id, {
         id: `kf_${Date.now()}`, property: animatable, layerId: layer.id,
-        time: currentFrame, value: getCurrentPropertyValue(animatable, layer),
+        time: currentFrame, value: typeof val === 'number' || Array.isArray(val) ? val : 0,
         interpolation: 'linear',
       });
+    }
+  };
+
+  const handleCopyAnimation = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!animatable || !layer) return;
+    const kfs = useKeyframeStore.getState().engine.getKeyframesForProperty(layer.id, animatable);
+    if (kfs.length === 0) return;
+    copyAnimation(kfs, animatable);
+  };
+
+  const handlePasteAnimation = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!animatable || !layer || !compId) return;
+    const clip = getClipboard();
+    if (!clip) return;
+    
+    // Ensure target property is animated
+    const store = useKeyframeStore.getState();
+    if (!store.isPropertyAnimated(layer.id, animatable)) {
+      store.toggleAnimatedProperty(layer.id, animatable);
+    }
+    
+    // Get existing keyframes at target property
+    const existingKfs = store.engine.getKeyframesForProperty(layer.id, animatable);
+    
+    // Paste keyframes starting at current frame with relative timing
+    const baseTime = currentFrame;
+    for (let i = 0; i < clip.keyframes.length; i++) {
+      const srcKf = clip.keyframes[i];
+      const targetTime = baseTime + clip.relativeTimes[i];
+      
+      // Check if there's already a keyframe at this time
+      const existing = existingKfs.find(k => k.time === targetTime);
+      if (existing) {
+        store.updateKeyframe(existing.id, { value: srcKf.value, interpolation: srcKf.interpolation });
+      } else {
+        store.addKeyframe(layer.id, {
+          id: `kf_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+          property: animatable,
+          layerId: layer.id,
+          time: targetTime,
+          value: srcKf.value,
+          interpolation: srcKf.interpolation,
+          inTangent: srcKf.inTangent ? { ...srcKf.inTangent } : undefined,
+          outTangent: srcKf.outTangent ? { ...srcKf.outTangent } : undefined,
+        });
+      }
     }
   };
 
@@ -106,7 +191,7 @@ export const PropRow: React.FC<PropRowProps> = ({
     if (!animatable || !layer || !compId) return;
     const baseItems = buildPropertyContextMenu({
       layer, compId, basePath: animatable,
-      getValue: () => getCurrentPropertyValue(animatable, layer),
+      getValue: () => getCurrentPropertyValue(animatable, layer) as number | number[],
       applyReset: (val) => applyValueToLayer(compId, layer.id, animatable, val),
     });
     const hasExpr = useExpressionStore.getState().getExpression(layer.id, animatable);
@@ -120,6 +205,24 @@ export const PropRow: React.FC<PropRowProps> = ({
       { id: 'sep.expr', label: '', divider: true, onClick: () => {} },
       ...exprItems,
     ]);
+  };
+
+  const clip = getClipboard();
+  // Check if property is array-type by last segment name
+  // (position, scale, anchorPoint are always arrays; position.x is scalar)
+  const lastSegment = animatable?.split('.').pop() ?? '';
+  const targetIsArray = ['position', 'scale', 'anchorPoint'].includes(lastSegment);
+  const canPaste = clip && animatable && clip.isArray === targetIsArray;
+
+  const isLocked = layer && lockPath ? !!(layer.lockedProperties ?? {})[lockPath] : false;
+
+  const toggleLock = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!layer || !lockPath || !compId) return;
+    const current = layer.lockedProperties ?? {};
+    useCompositionStore.getState().updateLayer(compId, layer.id, {
+      lockedProperties: { ...current, [lockPath]: !current[lockPath] },
+    });
   };
 
   const rowBg = hasKfAtFrame
@@ -137,10 +240,33 @@ export const PropRow: React.FC<PropRowProps> = ({
         padding: '2px 4px',
         background: rowBg,
         transition: 'background var(--dur-fast) var(--ease-out)',
+        opacity: isLocked ? 0.6 : 1,
       }}
       onContextMenu={handleContext}
     >
       <div className="flex items-center gap-1.5 shrink-0" style={{ width: 88 }}>
+        {lockPath && layer && (
+          <button
+            className="flex items-center justify-center border-0 bg-transparent cursor-pointer transition-colors"
+            style={{
+              width: 14, height: 14, padding: 0,
+              color: isLocked ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+              opacity: isLocked ? 1 : 0.4,
+            }}
+            onClick={toggleLock}
+            title={isLocked ? 'Unlock property' : 'Lock property (prevent editing)'}
+          >
+            {isLocked ? (
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M4 7V5a4 4 0 118 0v2h1a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1V8a1 1 0 011-1h1zm2 0h4V5a2 2 0 10-4 0v2z"/>
+              </svg>
+            ) : (
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M4 7V5a4 4 0 118 0v2h1a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1V8a1 1 0 011-1h1zm2 0h4V5a2 2 0 11-4 0v2z" opacity="0.5"/>
+              </svg>
+            )}
+          </button>
+        )}
         {animatable && layer && useExpressionStore.getState().hasExpression(layer.id, animatable) && (
           <Code2 size={11} strokeWidth={2} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
         )}
@@ -175,6 +301,34 @@ export const PropRow: React.FC<PropRowProps> = ({
         </span>
       </div>
       <div className="flex-1 min-w-0">{children}</div>
+      {showAnimClipboard && animatable && layer && (
+        <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+          {isAnimated && (
+            <button
+              className="flex items-center justify-center border-0 bg-transparent cursor-pointer"
+              style={{ width: 14, height: 14, color: 'var(--color-text-disabled)' }}
+              onClick={handleCopyAnimation}
+              title="Copy animation from this property"
+              onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.color = 'var(--color-text-secondary)'}
+              onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.color = 'var(--color-text-disabled)'}
+            >
+              <Copy size={10} />
+            </button>
+          )}
+          {canPaste && (
+            <button
+              className="flex items-center justify-center border-0 bg-transparent cursor-pointer"
+              style={{ width: 14, height: 14, color: 'var(--color-text-disabled)' }}
+              onClick={handlePasteAnimation}
+              title={`Paste animation (copied from ${clip!.sourceProperty})`}
+              onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.color = 'var(--color-accent)'}
+              onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.color = 'var(--color-text-disabled)'}
+            >
+              <ClipboardPaste size={10} />
+            </button>
+          )}
+        </div>
+      )}
       {animatable && isAnimated && (
         <button
           className="flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0 ml-2 transition-colors"
@@ -220,6 +374,18 @@ function getCurrentPropertyValue(path: string, layer: Layer): number | number[] 
     if (field === 'anchorPoint.x') return t.anchorPoint.x;
     if (field === 'anchorPoint.y') return t.anchorPoint.y;
   }
+  if (path.startsWith('transform3D.')) {
+    const field = path.slice('transform3D.'.length);
+    const t3d = (layer as any).transform3D;
+    if (!t3d) return 0;
+    if (field === 'position.z') return t3d.position?.z ?? 0;
+    if (field === 'scale.z') return t3d.scale?.z ?? 100;
+    if (field === 'rotationX') return t3d.rotationX ?? 0;
+    if (field === 'rotationY') return t3d.rotationY ?? 0;
+    if (field === 'rotationZ') return t3d.rotationZ ?? 0;
+    if (field === 'anchorPoint.z') return t3d.anchorPoint?.z ?? 0;
+    return 0;
+  }
   if (path.startsWith('data.')) {
     const parts = path.slice('data.'.length).split('.');
     let cur: any = (layer as any).data;
@@ -228,6 +394,21 @@ function getCurrentPropertyValue(path: string, layer: Layer): number | number[] 
       cur = cur[p];
     }
     return cur ?? 0;
+  }
+  if (path.startsWith('camera.')) {
+    const field = path.slice('camera.'.length);
+    const comp = (layer as any);  // layer is actually a Composition
+    if (field === 'fov') return comp.cameraFOV ?? 50;
+    if (field === 'positionZ') return comp.cameraPositionZ ?? 1000;
+    if (field === 'orbitX') return comp.cameraOrbitX ?? 0;
+    if (field === 'orbitY') return comp.cameraOrbitY ?? 0;
+    if (field === 'panX') return comp.cameraPanX ?? 0;
+    if (field === 'panY') return comp.cameraPanY ?? 0;
+    if (field === 'dof') return comp.cameraDOF ?? false;
+    if (field === 'focusDistance') return comp.cameraFocusDistance ?? 500;
+    if (field === 'aperture') return comp.cameraAperture ?? 5;
+    if (field === 'exposure') return comp.cameraExposure ?? 0;
+    return 0;
   }
   return 0;
 }
@@ -277,10 +458,40 @@ function applyValueToLayer(compId: string, layerId: string, path: string, value:
     cs.updateLayer(compId, layerId, { transform: t });
     return;
   }
+  if (path.startsWith('transform3D.')) {
+    const field = path.slice('transform3D.'.length);
+    const layerData = cs.compositions.find(c=>c.id===compId)?.layers.find(l=>l.id===layerId);
+    if (!layerData?.transform3D) return;
+    const t3d = { ...layerData.transform3D };
+    if (field === 'position.z' && typeof value === 'number') t3d.position = { ...t3d.position, z: value };
+    else if (field === 'scale.z' && typeof value === 'number') t3d.scale = { ...t3d.scale, z: value };
+    else if (field === 'rotationX' && typeof value === 'number') t3d.rotationX = value;
+    else if (field === 'rotationY' && typeof value === 'number') t3d.rotationY = value;
+    else if (field === 'rotationZ' && typeof value === 'number') t3d.rotationZ = value;
+    else if (field === 'anchorPoint.z' && typeof value === 'number') t3d.anchorPoint = { ...t3d.anchorPoint, z: value };
+    cs.updateLayer(compId, layerId, { transform3D: t3d });
+    return;
+  }
   if (path.startsWith('data.')) {
     const parts = path.slice('data.'.length).split('.');
     const currentData: any = (layer as any).data ?? {};
     const newData: any = deepSetImmutable(currentData, parts, value);
     cs.updateLayer(compId, layerId, { data: newData });
+  }
+  if (path.startsWith('camera.')) {
+    const field = path.slice('camera.'.length);
+    const comp2 = cs.compositions.find(c => c.id === compId);
+    if (!comp2) return;
+    if (field === 'fov' && typeof value === 'number') cs.updateComposition(compId, { cameraFOV: value });
+    else if (field === 'positionZ' && typeof value === 'number') cs.updateComposition(compId, { cameraPositionZ: value });
+    else if (field === 'orbitX' && typeof value === 'number') cs.updateComposition(compId, { cameraOrbitX: value });
+    else if (field === 'orbitY' && typeof value === 'number') cs.updateComposition(compId, { cameraOrbitY: value });
+    else if (field === 'panX' && typeof value === 'number') cs.updateComposition(compId, { cameraPanX: value });
+    else if (field === 'panY' && typeof value === 'number') cs.updateComposition(compId, { cameraPanY: value });
+    else if (field === 'dof' && typeof value === 'boolean') cs.updateComposition(compId, { cameraDOF: value });
+    else if (field === 'focusDistance' && typeof value === 'number') cs.updateComposition(compId, { cameraFocusDistance: value });
+    else if (field === 'aperture' && typeof value === 'number') cs.updateComposition(compId, { cameraAperture: value });
+    else if (field === 'exposure' && typeof value === 'number') cs.updateComposition(compId, { cameraExposure: value });
+    return;
   }
 }

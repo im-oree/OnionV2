@@ -3,7 +3,7 @@ import type { Layer } from '../../../types/layer';
 import type { Keyframe } from '../../../types/keyframe';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { useCompositionStore } from '../../../state/compositionStore';
-import { useLayerBarDrag, type DragMode } from './useLayerBarDrag';
+import { useLayerBarDrag } from './useLayerBarDrag';
 import { useKeyframeDrag } from './useKeyframeDrag';
 import { useTimelineExpanded } from './useTimelineExpanded';
 import { useContextMenu } from '../../common/useContextMenu';
@@ -12,6 +12,8 @@ import { buildKeyframeContextMenu } from './keyframeContextMenu';
 import { LAYER_COLORS } from './layerColors';
 import { AudioWaveform } from './AudioWaveform';
 import { VolumeAutomationTrack } from './VolumeAutomationTrack';
+
+const CAMERA_ID = '__camera__';
 
 interface Props {
   layers: Layer[];
@@ -114,6 +116,9 @@ export const KeyframeArea: React.FC<Props> = ({ layers, zoom, totalFrames, compI
           )}
         </>
       )}
+
+      {/* Camera pseudo-track keyframes */}
+      <CameraKeyframeTrack zoom={zoom} kfDrag={kfDrag} />
 
       {sortedLayers.map((layer, li) => {
         const expanded = expandedSet.has(layer.id);
@@ -220,6 +225,60 @@ const LayerTrackBar: React.FC<{
           );
         })}
       </div>
+    </div>
+  );
+};
+
+/** Camera pseudo-track — renders keyframe diamonds for __camera__ properties */
+const CameraKeyframeTrack: React.FC<{
+  zoom: number;
+  kfDrag: { onDown: (id: string, time: number) => (e: React.MouseEvent) => void };
+}> = ({ zoom, kfDrag }) => {
+  const revision = useKeyframeStore(s => s.revision);
+  const engine = useKeyframeStore(s => s.engine);
+  void revision;
+
+  const camProps = engine.getAllAnimatedProperties(CAMERA_ID);
+  if (camProps.length === 0) return null;
+
+  // Get all camera keyframes, sorted by time
+  const allKfs = engine.getAllKeyframesForLayer(CAMERA_ID);
+  if (allKfs.length === 0) return null;
+
+  return (
+    <div>
+      {/* Summary bar */}
+      <div className="relative" style={{ height: LAYER_ROW_H, borderBottom: '1px solid var(--color-divider)' }}>
+        <div
+          className="absolute top-1/2 -translate-y-1/2"
+          style={{
+            left: 0, right: 0, height: 22,
+            borderRadius: 11,
+            background: 'linear-gradient(135deg, #4a9eff, #2d7ad6)',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.12)',
+            display: 'flex', alignItems: 'center', paddingLeft: 12,
+          }}
+        >
+          <span style={{ fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.92)', letterSpacing: '0.02em' }}>
+            🎬 Camera
+          </span>
+          {Array.from(new Set(allKfs.map(k => k.time))).sort((a, b) => a - b).map(f => {
+            const x = f * zoom;
+            return (
+              <svg key={f} width="7" height="7" className="absolute top-1/2 -translate-y-1/2 pointer-events-none"
+                style={{ left: x - 3 }}>
+                <polygon points="3.5,0 7,3.5 3.5,7 0,3.5" fill="rgba(255,255,255,0.7)" />
+              </svg>
+            );
+          })}
+        </div>
+      </div>
+      {/* Per-property keyframe tracks */}
+      {camProps.map(propPath => {
+        const propKfs = allKfs.filter(k => k.property === propPath);
+        return <PropertyKeyframeTrack key={propPath} keyframes={propKfs}
+          zoom={zoom} onKfDown={kfDrag.onDown} />;
+      })}
     </div>
   );
 };

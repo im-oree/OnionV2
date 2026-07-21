@@ -21,8 +21,10 @@ const FILL_TYPE_OPTS = [
 ];
 const CATEGORIES = ['basic','polygon','star','symbol','arrow','decorative','ui'] as const;
 
-const PathEditToggle: React.FC<{layerId:string}> = ({ layerId }) => {
+const PathEditToggle: React.FC<{layerId:string; layer:Layer; compId:string}> = ({ layerId, layer, compId }) => {
   const [inEdit, setInEdit] = React.useState(false);
+  const data = layer.data as any;
+
   React.useEffect(() => {
     let unsub: (()=>void)|null = null;
     import('../../../state/penToolStore').then(({usePenToolStore}) => {
@@ -32,21 +34,83 @@ const PathEditToggle: React.FC<{layerId:string}> = ({ layerId }) => {
     return () => { unsub?.(); };
   }, [layerId]);
 
+  // Convert parametric shape (rect/ellipse) to editable path commands
+  const convertToPath = () => {
+    const cs = useCompositionStore.getState();
+    let commands: any[];
+    if (data.type === 'ellipse') {
+      const rx = data.radiusX ?? 100;
+      const ry = data.radiusY ?? 100;
+      const k = 0.5522847498;
+      commands = [
+        {type:'M',points:[-rx,0]},
+        {type:'C',points:[-rx,-ry*k, -rx*k,-ry, 0,-ry]},
+        {type:'C',points:[rx*k,-ry, rx,-ry*k, rx,0]},
+        {type:'C',points:[rx,ry*k, rx*k,ry, 0,ry]},
+        {type:'C',points:[-rx*k,ry, -rx,ry*k, -rx,0]},
+        {type:'Z',points:[]},
+      ];
+    } else {
+      const w = data.width ?? 200;
+      const h = data.height ?? 150;
+      commands = [
+        {type:'M',points:[-w/2,-h/2]},
+        {type:'L',points:[w/2,-h/2]},
+        {type:'L',points:[w/2,h/2]},
+        {type:'L',points:[-w/2,h/2]},
+        {type:'Z',points:[]},
+      ];
+    }
+    const bounds = {minX:-9999,minY:-9999,maxX:9999,maxY:9999};
+    cs.updateLayer(compId, layerId, { data: { ...data, type: 'path', commands, bounds, fill: data.fill, stroke: data.stroke } });
+  };
+
   const toggle = async () => {
     const {usePenToolStore} = await import('../../../state/penToolStore');
     const {useToolStore} = await import('../../../state/toolStore');
+
+    // If shape is parametric (rect/ellipse), convert to path first
+    if (data.type !== 'path') {
+      convertToPath();
+      // Small delay for store update, then start editing
+      setTimeout(() => {
+        useToolStore.getState().setActiveTool('pen' as any);
+        usePenToolStore.getState().startEditing(layerId);
+      }, 50);
+      return;
+    }
+
     if (inEdit) usePenToolStore.getState().stopEditing();
     else { useToolStore.getState().setActiveTool('pen' as any); usePenToolStore.getState().startEditing(layerId); }
   };
 
   return (
-    <button onClick={toggle} style={{
-      padding:'3px 8px', fontSize:'var(--font-size-xs)', cursor:'pointer',
-      background: inEdit ? 'var(--color-accent-muted)' : 'var(--color-input-bg)',
-      color: inEdit ? 'var(--color-accent)' : 'var(--color-text-secondary)',
-      border: `1px solid ${inEdit ? 'var(--color-accent)' : 'var(--color-border)'}`,
-      borderRadius: 'var(--radius-sm)',
-    }}>{inEdit ? 'Editing…' : 'Edit Points'}</button>
+    <div style={{display:'flex',gap:4}}>
+      <button onClick={toggle} style={{
+        flex:1, padding:'3px 8px', fontSize:'var(--font-size-xs)', cursor:'pointer',
+        background: inEdit ? 'var(--color-accent-muted)' : 'var(--color-input-bg)',
+        color: inEdit ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+        border: `1px solid ${inEdit ? 'var(--color-accent)' : 'var(--color-border)'}`,
+        borderRadius:'var(--radius-sm)',
+      }}>{inEdit ? 'Editing...' : (data.type === 'path' ? 'Edit Points' : 'Convert & Edit')}</button>
+
+      {/* Convert Corner ↔ Smooth button (only in edit mode) */}
+      {inEdit && (
+        <button onClick={async () => {
+          const {usePenToolStore} = await import('../../../state/penToolStore');
+          const sel = Array.from(usePenToolStore.getState().selectedAnchors);
+          if (sel.length > 0) {
+            sel.forEach(idx => usePenToolStore.getState().convertAnchor(layerId, idx, true));
+          }
+        }} style={{
+          padding:'3px 6px', fontSize:'10px', cursor:'pointer',
+          background:'var(--color-input-bg)',
+          border:'1px solid var(--color-border)',
+          borderRadius:'var(--radius-sm)',
+          color:'var(--color-text-secondary)',
+        }} title="Convert selected anchors to smooth">↺ Smooth</button>
+      )}
+    </div>
   );
 };
 
@@ -187,13 +251,16 @@ export const ShapeSection: React.FC<Props> = ({ layer, compId }) => {
           </PropRow>
         ))}
 
+        <PropRow label="Edit Path">
+          <PathEditToggle layerId={layer.id} layer={layer} compId={compId}/>
+        </PropRow>
+
         {data.type === 'path' && <>
           <PropRow label="Commands">
             <span style={{fontSize:'var(--font-size-xs)',color:'var(--color-text-tertiary)',fontFamily:'var(--font-family-mono)'}}>
               {data.commands.length} cmds
             </span>
           </PropRow>
-          <PropRow label="Edit"><PathEditToggle layerId={layer.id}/></PropRow>
         </>}
       </Section>
 

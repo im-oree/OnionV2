@@ -98,6 +98,17 @@ export const MaskSection: React.FC<Props> = ({ layerId }) => {
         <button style={btnStyle} onClick={()=>store.addEllipseMask(layerId)}>
           <Plus size={11}/> Ellipse
         </button>
+        <button style={btnStyle} onClick={async () => {
+          const { useToolStore } = await import('../../../state/toolStore');
+          const { usePenToolStore } = await import('../../../state/penToolStore');
+          // Switch to pen tool, set a flag that the result goes into a mask
+          useToolStore.getState().setActiveTool('pen' as any);
+          // Store which layer will receive the mask
+          (window as any).__maskTargetLayerId = layerId;
+          usePenToolStore.getState().startDrawing();
+        }}>
+          <Plus size={11}/> Path Mask
+        </button>
       </div>
       {masks.length===0&&(
         <div style={{fontSize:'var(--font-size-xs)',color:'var(--color-text-disabled)',textAlign:'center',padding:'8px 0',fontStyle:'italic'}}>

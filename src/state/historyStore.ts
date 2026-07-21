@@ -310,7 +310,7 @@ let _pendingName: string = '';
  * Call `flushDebouncedSnapshot()` when the interaction ends (e.g., mouseup).
  */
 export function debouncedCapture(name: string): void {
-  if (get().isApplying) return;
+  if (useHistoryStore.getState().isApplying) return;
   _pendingSnapshot = captureSnapshot();
   _pendingName = name;
   if (_debounceTimer) clearTimeout(_debounceTimer);

@@ -1,11 +1,15 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Eye, EyeOff, Lock, Unlock, Circle, ChevronUp, ChevronDown } from 'lucide-react';
+import { Eye, EyeOff, Lock, Unlock, Circle, ChevronUp, ChevronDown, Timer, Box } from 'lucide-react';
 import type { Layer } from '../../../types/layer';
+import { defaultTransform3D } from '../../../types/layer';
 import { Icon } from '../../common/Icon';
+import { useCompositionStore } from '../../../state/compositionStore';
 
 const LAYER_ICONS: Record<string, string> = {
   solid: 'rectangle', shape: 'polygon', text: 'text',
   image: 'image', video: 'video', null: 'ellipse', comp: 'grid',
+  adjustment: 'effect', audio: 'audio', spline: 'pen', chart: 'diamond',
+  model3d: 'collection',
 };
 
 interface LayerRowProps {
@@ -16,6 +20,7 @@ interface LayerRowProps {
   onToggleVisibility: (id: string) => void;
   onToggleLock: (id: string) => void;
   onToggleSolo: (id: string) => void;
+  onToggleMotionBlur?: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onDragStart: (id: string) => void;
   onDrop: (targetId: string, draggedId: string, position: 'above' | 'below' | 'child') => void;
@@ -31,7 +36,7 @@ interface LayerRowProps {
 
 export const LayerRow: React.FC<LayerRowProps> = ({
   layer, depth, isSelected,
-  onSelect, onToggleVisibility, onToggleLock, onToggleSolo,
+  onSelect, onToggleVisibility, onToggleLock, onToggleSolo, onToggleMotionBlur,
   onRename, onDragStart, onDrop,  onDuplicate, onDelete, forceRename, onDoubleClick,
   canMoveUp, canMoveDown, onMoveUp, onMoveDown,
 }) => {
@@ -172,6 +177,34 @@ export const LayerRow: React.FC<LayerRowProps> = ({
             <IconBtn active={layer.soloed} accent onClick={(e)=>{ e.stopPropagation(); onToggleSolo(layer.id); }} title="Solo">
               <Circle size={12} strokeWidth={2} fill={layer.soloed ? 'currentColor' : 'none'} />
             </IconBtn>
+            {/* 3D Cube Toggle */}
+            <IconBtn
+              active={!!layer.is3D}
+              accent
+              onClick={(e) => {
+                e.stopPropagation();
+                const cs = useCompositionStore.getState();
+                const activeCompId = cs.activeCompositionId;
+                if (!activeCompId) return;
+                cs.updateLayer(activeCompId, layer.id, { 
+                  is3D: !layer.is3D,
+                  transform3D: layer.transform3D || defaultTransform3D(),
+                });
+              }}
+              title={layer.is3D ? '3D Layer: ON' : '3D Layer: OFF'}
+            >
+              <Box size={12} strokeWidth={2} />
+            </IconBtn>
+            {onToggleMotionBlur && (
+              <IconBtn
+                active={!!layer.motionBlur}
+                accent
+                onClick={(e) => { e.stopPropagation(); onToggleMotionBlur(layer.id); }}
+                title={layer.motionBlur ? 'Motion Blur: ON (composition must also have it enabled)' : 'Motion Blur: OFF'}
+              >
+                <Timer size={12} strokeWidth={2} />
+              </IconBtn>
+            )}
           </div>
         )}
       </div>
@@ -197,8 +230,27 @@ export const LayerRow: React.FC<LayerRowProps> = ({
           {[
             { label: 'Rename', onClick: () => setEditing(true) },
             { label: 'Duplicate', onClick: () => onDuplicate?.(layer.id) },
+            { label: 'Pre-compose', onClick: () => {
+              import('../../../utils/precomp').then(m => m.precomposeSelectedLayers());
+            }},
             { label: layer.soloed ? 'Unsolo' : 'Solo', onClick: () => onToggleSolo(layer.id) },
             { label: layer.visible ? 'Hide' : 'Show', onClick: () => onToggleVisibility(layer.id) },
+            { label: layer.is3D ? 'Disable 3D' : 'Enable 3D', onClick: () => {
+              const cs = useCompositionStore.getState();
+              const activeCompId = cs.activeCompositionId;
+              if (!activeCompId) return;
+              cs.updateLayer(activeCompId, layer.id, { 
+                is3D: !layer.is3D,
+                transform3D: layer.transform3D || defaultTransform3D(),
+              });
+            }},
+            { label: 'Add Mask', onClick: () => {
+              const cs = useCompositionStore.getState();
+              const activeCompId = cs.activeCompositionId;
+              if (!activeCompId) return;
+              import('../../../state/maskStore').then(m =>
+                m.useMaskStore.getState().addRectMask(layer.id, 200, 150));
+            }},
           ].map((it, i) => (
             <button key={i} onClick={() => contextAction(it.onClick)}
               className="w-full text-left border-0 bg-transparent cursor-pointer transition-colors"
@@ -207,6 +259,50 @@ export const LayerRow: React.FC<LayerRowProps> = ({
               onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
             >{it.label}</button>
           ))}
+          {/* Time Remapping (video/comp/image layers) */}
+          {(layer.type === 'video' || layer.type === 'comp' || layer.type === 'image') && (
+            <>
+              <div className="h-px my-1.5 mx-2" style={{ background: 'var(--color-divider)' }} />
+              <button onClick={() => contextAction(() => {
+                const cs = useCompositionStore.getState();
+                const activeCompId = cs.activeCompositionId;
+                if (!activeCompId) return;
+                const d = { ...((layer.data ?? {}) as any) };
+                d.timeRemap = !d.timeRemap;
+                if (d.timeRemap && !d.timeRemapKeyframes) {
+                  d.timeRemapKeyframes = [
+                    { time: 0, sourceFrame: 0 },
+                    { time: Math.round(((layer.endFrame ?? 300) - (layer.startFrame ?? 0))), sourceFrame: Math.round(((layer.endFrame ?? 300) - (layer.startFrame ?? 0))) },
+                  ];
+                }
+                cs.updateLayer(activeCompId, layer.id, { data: d });
+              })}
+                className="w-full text-left border-0 bg-transparent cursor-pointer transition-colors"
+                style={{ height: 30, padding: '0 14px', fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}
+                onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'}
+                onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+              >{(layer.data as any)?.timeRemap ? 'Disable Time Remapping' : 'Enable Time Remapping'}</button>
+              <button onClick={() => contextAction(() => {
+                const cs = useCompositionStore.getState();
+                const activeCompId = cs.activeCompositionId;
+                if (!activeCompId) return;
+                const d = { ...((layer.data ?? {}) as any) };
+                if (d.frameBlending) {
+                  d.frameBlending = false;
+                  delete d.frameBlendingType;
+                } else {
+                  d.frameBlending = true;
+                  d.frameBlendingType = 'frameMix';
+                }
+                cs.updateLayer(activeCompId, layer.id, { data: d });
+              })}
+                className="w-full text-left border-0 bg-transparent cursor-pointer transition-colors"
+                style={{ height: 30, padding: '0 14px', fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}
+                onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'}
+                onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+              >{(layer.data as any)?.frameBlending ? 'Disable Frame Blending' : 'Enable Frame Blending'}</button>
+            </>
+          )}
           <div className="h-px my-1.5 mx-2" style={{ background: 'var(--color-divider)' }} />
           <button onClick={() => contextAction(() => onDelete?.(layer.id))}
             className="w-full text-left border-0 bg-transparent cursor-pointer transition-colors"

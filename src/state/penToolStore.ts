@@ -23,6 +23,7 @@ export interface PenState {
   updateLastHandle: (x: number, y: number) => void;
   closePath: () => PathCommand[] | null;
   finishPath: () => PathCommand[] | null;
+  finishAsMask: (layerId: string) => Promise<void>;
   cancelDrawing: () => void;
 
   startEditing: (layerId: string) => void;
@@ -97,6 +98,23 @@ export const usePenToolStore = create<PenState>((set, get) => ({
     const cmds = [...s.drawingCommands];
     set({ mode: null, drawingCommands: [], lastAnchor: null, lastOutHandle: null });
     return cmds;
+  },
+
+  /** Finish the path and add it as a MASK on the selected layer. Calls maskStore.addPathMask */
+  finishAsMask: async (layerId: string) => {
+    const s = get();
+    if (s.drawingCommands.length === 0) return;
+    const cmds = [...s.drawingCommands];
+    // Auto-close
+    const lastCmd = cmds[cmds.length - 1];
+    if (lastCmd?.type !== 'Z') {
+      cmds.push({ type: 'Z' as const, points: [] });
+    }
+    // Reset pen state
+    set({ mode: null, drawingCommands: [], lastAnchor: null, lastOutHandle: null });
+    // Add mask via maskStore
+    const { useMaskStore } = await import('./maskStore');
+    useMaskStore.getState().addPathMask(layerId, cmds);
   },
 
   cancelDrawing: () => set({

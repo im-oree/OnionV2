@@ -1,6 +1,7 @@
 import type { MenuItemDefinition } from '../MenuDropdown';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useSelectionStore } from '../../../state/selectionStore';
+import { useNotificationStore } from '../../../state/notificationStore';
 
 export const editMenu: MenuItemDefinition[] = [
   {
@@ -26,6 +27,27 @@ export const editMenu: MenuItemDefinition[] = [
       import('../../../utils/duplicateLayer').then(({ duplicateLayers }) => {
         const dups = duplicateLayers(compId, originals as any);
         useSelectionStore.getState().replaceSelection(dups.map(d => d.id), compId);
+      });
+    },
+  },
+  {
+    id: 'edit.precompose', label: 'Pre-compose...', shortcut: 'Ctrl+Shift+C',
+    onClick: () => {
+      import('../../../utils/precomp').then(({ precomposeSelectedLayers }) => {
+        const r = precomposeSelectedLayers();
+        if (!r.ok) {
+          useNotificationStore.getState().addNotification({
+            type: 'warning',
+            message: r.reason ?? 'Cannot pre-compose',
+            autoDismiss: 3000,
+          });
+        } else {
+          useNotificationStore.getState().addNotification({
+            type: 'success',
+            message: `Pre-composed to "${r.newComp?.name}"`,
+            autoDismiss: 3000,
+          });
+        }
       });
     },
   },

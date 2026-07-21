@@ -8,6 +8,7 @@
  */
 import { effectRegistry } from '../EffectRegistry';
 import { effectShaderRegistry } from '../EffectShaderRegistry';
+import { timeControlParams } from './types';
 import type { EffectModule } from './types';
 
 // Blur & Sharpen
@@ -59,8 +60,23 @@ import { crossHatchEffect } from './crossHatch';
 import { halftoneEffect } from './halftone';
 import { asciiArtEffect } from './asciiArt';
 import { embossEffect } from './emboss';
+import { deepGlowEffect } from './deepGlow';
+import { bloomEffect } from './bloom';
+import { mosaicEffect } from './mosaic';
+import { roughenEdgesEffect } from './roughenEdges';
+import { unsharpMaskEffect } from './unsharpMask';
+import { ccLightSweepEffect } from './ccLightSweep';
+import { lensFlareEffect } from './lensFlare';
+import { radioWavesEffect } from './radioWaves';
+import { cameraLensBlurEffect } from './cameraLensBlur';
+
+// Stylize (additional)
+import { echoEffect } from './echoEffect';
+import { posterizeTimeEffect } from './posterizeTime';
 
 // Distort
+import { liquifyEffect } from './liquify';
+import { meshWarpEffect } from './meshWarp';
 import { waveEffect } from './wave';
 import { bulgeEffect } from './bulge';
 import { twirlEffect } from './twirl';
@@ -72,20 +88,31 @@ import { mirrorEffect } from './mirror';
 import { kaleidoscopeEffect } from './kaleidoscope';
 import { ccSphereEffect } from './ccSphere';
 import { displacementMapEffect } from './displacementMap';
+import { displacementMap2Effect } from './displacementMap2';
 
 // Generate
 import { gradientEffect } from './gradient';
 import { noiseEffect } from './noise';
 import { fractalNoiseEffect } from './fractalNoise';
 import { motionTileEffect } from './motionTile';
+import { ccParticleWorldEffect } from './ccParticleWorld';
 
 // Transition
 import { radialWipeEffect } from './radialWipe';
+import { radialRevealEffect } from './radialReveal';
+import { irisRevealEffect } from './irisReveal';
+
+// Keying
+import { autoCutoutEffect } from './autoCutout';
+
+// Blend Mode
+import { blendModeEffect } from './blendMode';
 
 export const ALL_EFFECTS: EffectModule[] = [
   // Blur & Sharpen
   gaussianBlurEffect, boxBlurEffect, directionalBlurEffect,
   radialBlurEffect, sharpenEffect, motionBlurEffect, lensBlurEffect,
+  unsharpMaskEffect, cameraLensBlurEffect,
   // Color
   colorCorrectionEffect, levelsEffect, hueSaturationEffect,
   tintEffect, invertEffect, thresholdEffect, fillEffect,
@@ -93,21 +120,28 @@ export const ALL_EFFECTS: EffectModule[] = [
   exposureEffect, vibranceEffect, curvesEffect, posterizeEffect,
   duotoneEffect, sepiaEffect, solarizeEffect,
   // Stylize
-  glowEffect, dropShadowEffect, vignetteEffect,
+  glowEffect, dropShadowEffect, vignetteEffect, echoEffect,
   chromaticAberrationEffect, bevelAlphaEffect,
   cartoonEffect, glitchEffect, edgeDetectEffect,
   innerGlowEffect, outerGlowEffect, strokeEffect,
   filmGrainEffect, feedbackEffect, scanLinesEffect, badTvEffect, timeEchoEffect,
-  crossHatchEffect, halftoneEffect, asciiArtEffect, embossEffect,
+  crossHatchEffect, halftoneEffect, asciiArtEffect, embossEffect, deepGlowEffect, bloomEffect,
+  mosaicEffect, roughenEdgesEffect, posterizeTimeEffect,
   // Distort
+  liquifyEffect, meshWarpEffect,
   waveEffect, bulgeEffect, twirlEffect, rippleEffect,
   turbulentDisplaceEffect, lensDistortionEffect,
   pixelateEffect, mirrorEffect, kaleidoscopeEffect,
-  ccSphereEffect, displacementMapEffect,
+  ccSphereEffect, displacementMapEffect, displacementMap2Effect,
   // Generate
-  gradientEffect, noiseEffect, fractalNoiseEffect, motionTileEffect,
+  gradientEffect, noiseEffect, fractalNoiseEffect, motionTileEffect, ccParticleWorldEffect,
+  ccLightSweepEffect, lensFlareEffect, radioWavesEffect,
   // Transition
-  radialWipeEffect,
+  radialWipeEffect, radialRevealEffect, irisRevealEffect,
+  // Keying
+  autoCutoutEffect,
+  // Blend Mode
+  blendModeEffect,
 ];
 
 let _registered = false;
@@ -119,7 +153,6 @@ export function registerAllEffects(): void {
     let definition = module.definition;
     if (module.usesTime) {
       const originalCreate = definition.createDefaultParameters;
-      const { timeControlParams } = require('./types');
       const extraParams = timeControlParams();
       definition = {
         ...definition,

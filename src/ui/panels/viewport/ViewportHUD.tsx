@@ -21,6 +21,7 @@ export const ViewportHUD: React.FC<ViewportHUDProps> = ({
 }) => {
   const comp = useCompositionStore((s) => s.activeCompositionId ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null : null);
   const showGrid = useViewportStore(s => s.settings.showGrid);
+  const showRuleOfThirds = useViewportStore(s => s.settings.showRuleOfThirds);
   const snapEnabled = useViewportStore(s => s.settings.snappingEnabled);
 
   if (!comp) return null;
@@ -49,6 +50,15 @@ export const ViewportHUD: React.FC<ViewportHUDProps> = ({
       <div className="absolute top-3 left-3 flex items-center gap-1.5 pointer-events-auto">
         <button style={showGrid ? activeChip : chipBtn} onClick={() => useViewportStore.getState().toggleGrid()} title="Toggle Grid">
           <Grid3X3 size={13} strokeWidth={1.75} />
+        </button>
+        <button style={showRuleOfThirds ? activeChip : chipBtn} onClick={() => useViewportStore.getState().toggleRuleOfThirds()} title="Toggle Rule-of-Thirds Overlay">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square">
+            <rect x="1" y="1" width="11" height="11" rx="1" />
+            <line x1="1" y1="4.67" x2="12" y2="4.67" />
+            <line x1="1" y1="8.33" x2="12" y2="8.33" />
+            <line x1="4.67" y1="1" x2="4.67" y2="12" />
+            <line x1="8.33" y1="1" x2="8.33" y2="12" />
+          </svg>
         </button>
         <button style={snapEnabled ? activeChip : chipBtn} onClick={() => useViewportStore.getState().toggleSnapping()} title="Toggle Snapping">
           <Magnet size={13} strokeWidth={1.75} />

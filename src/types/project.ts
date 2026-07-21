@@ -13,6 +13,21 @@ export interface ProjectAsset {
   path:string; size:number; originalName:string;
   mimeType:string; importedAt:number;
   naturalWidth?:number; naturalHeight?:number; duration?:number;
+  /** Nested folder id (from Project.folders). null/undefined = root. */
+  folderId?: string | null;
+}
+
+/**
+ * Nested folder in the project browser tree.
+ * `parentId=null` → root folder.
+ */
+export interface ProjectFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+  expanded?: boolean;
+  color?: string;
+  createdAt: number;
 }
 
 export interface Project {
@@ -20,5 +35,7 @@ export interface Project {
   created:number; modified:number;
   compositions:Composition[];
   assets:ProjectAsset[];
+  /** Nested folder tree. Precomps and assets can be assigned to folders. */
+  folders?: ProjectFolder[];
   settings:ProjectSettings;
 }

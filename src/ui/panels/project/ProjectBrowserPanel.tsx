@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Plus, Search, X, Film, Folder, Image, Music, FileCode, Eye, Trash2, Edit3, Filter } from 'lucide-react';
+import { Plus, Search, X, Film, Folder as FolderIcon, FolderOpen, Image, Music, FileCode, Eye, Trash2, Edit3, Filter, ChevronRight, ChevronDown as ChevronDownI, FolderPlus } from 'lucide-react';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useProjectStore } from '../../../state/projectStore';
 import { openNewCompositionDialog } from '../../dialogs/DialogManager';
@@ -12,6 +12,7 @@ import { confirm } from '../../common/ConfirmDialog';
 import { useContextMenu } from '../../common/useContextMenu';
 import { ContextMenu } from '../../common/ContextMenu';
 import type { ContextMenuItem } from '../../common/ContextMenu';
+import { buildProjectTree, type TreeItem } from '../../../utils/projectTree';
 
 const DOT_COLORS = ['#ff6b8a', '#ff9a5c', '#f0d060', '#6ad588', '#4dd4d1', '#5b8fff', '#8b6aff'];
 
@@ -29,6 +30,14 @@ export const ProjectBrowserPanel: React.FC = () => {
   const setActive = useCompositionStore((s) => s.setActiveComposition);
   const removeComp = useCompositionStore((s) => s.removeComposition);
   const project = useProjectStore((s) => s.project);
+  const folders = useProjectStore((s) => s.project.folders ?? []);
+  const addFolder = useProjectStore((s) => s.addFolder);
+  const removeFolder = useProjectStore((s) => s.removeFolder);
+  const renameFolder = useProjectStore((s) => s.renameFolder);
+  const moveFolder = useProjectStore((s) => s.moveFolder);
+  const toggleFolder = useProjectStore((s) => s.toggleFolder);
+  const moveAssetToFolder = useProjectStore((s) => s.moveAssetToFolder);
+  const moveCompToFolder = useProjectStore((s) => s.moveCompToFolder);
   const [search, setSearch] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const addNotif = useNotificationStore((s) => s.addNotification);
@@ -193,6 +202,12 @@ export const ProjectBrowserPanel: React.FC = () => {
     return matchesSearch && matchesType;
   });
 
+  // Build the project tree from folders, comps, and assets
+  const tree = React.useMemo(
+    () => buildProjectTree(folders, filteredComps, filteredAssets),
+    [folders, filteredComps, filteredAssets],
+  );
+
   // Check if an asset is referenced by any layer in any composition
   const isAssetUsed = useCallback((assetId: string): boolean => {
     for (const comp of useCompositionStore.getState().compositions) {
@@ -352,6 +367,10 @@ export const ProjectBrowserPanel: React.FC = () => {
       { id: 'pm.importSvg', label: 'Import SVG...', onClick: importSvgClick },
       { id: 'pm.d1', divider: true },
       { id: 'pm.addComp', label: 'New Composition', onClick: openNewCompositionDialog },
+      { id: 'pm.newFolder', label: 'New Folder', onClick: () => {
+        const name = prompt('Folder name:', 'New Folder');
+        if (name?.trim()) addFolder(name.trim(), null);
+      }},
       { id: 'pm.d2', divider: true },
       { id: 'pm.selectAll', label: 'Select All', shortcut: 'Ctrl+A', onClick: () => {
         setSelectedAssets(new Set(filteredAssets.map(a => a.id)));
@@ -385,6 +404,24 @@ export const ProjectBrowserPanel: React.FC = () => {
       { id: 'ac.rename', label: 'Rename', shortcut: 'F2', onClick: () => renameAssetById(assetId) },
       { id: 'ac.copyId', label: 'Copy Asset ID', onClick: () => copyToClipboard(assetId) },
       { id: 'ac.copyPath', label: 'Copy Name', onClick: () => copyToClipboard(asset.name) },
+      { id: 'ac.moveToFolder', label: 'Move to Folder',
+        children: [
+          { id: 'ac.mtf.root', label: '(Root)', onClick: () => moveAssetToFolder(assetId, null) },
+          ...folders.map(f => ({
+            id: `ac.mtf.${f.id}`,
+            label: f.name,
+            onClick: () => moveAssetToFolder(assetId, f.id),
+          })),
+          { id: 'ac.mtf.d', divider: true },
+          { id: 'ac.mtf.new', label: '+ New Folder...', onClick: () => {
+            const n = prompt('Folder name:', 'New Folder');
+            if (n?.trim()) {
+              const f = addFolder(n.trim(), null);
+              moveAssetToFolder(assetId, f.id);
+            }
+          }},
+        ],
+      },
       { id: 'ac.d2', divider: true },
       ...(selectedAssets.size > 1 ? [
         { id: 'ac.delSel', label: `Delete ${selectedAssets.size} Selected`, shortcut: 'Del', onClick: deleteSelected },
@@ -393,7 +430,7 @@ export const ProjectBrowserPanel: React.FC = () => {
       ]),
     ];
     panelCtx.open(e, items);
-  }, [project.assets, selectedAssets, isAssetUsed, handleAssetDoubleClick, renameAssetById, copyToClipboard, deleteAssetById, deleteSelected, panelCtx]);
+  }, [project.assets, selectedAssets, folders, isAssetUsed, handleAssetDoubleClick, renameAssetById, copyToClipboard, deleteAssetById, deleteSelected, moveAssetToFolder, addFolder, panelCtx]);
 
   // Context menu: right-click on a composition
   const handleCompContextMenu = useCallback((e: React.MouseEvent, compId: string, compName: string) => {
@@ -413,6 +450,24 @@ export const ProjectBrowserPanel: React.FC = () => {
           useCompositionStore.getState().renameComposition(compId, newName.trim());
         }
       }},
+      { id: 'cc.moveToFolder', label: 'Move to Folder',
+        children: [
+          { id: 'cc.mtf.root', label: '(Root)', onClick: () => moveCompToFolder(compId, null) },
+          ...folders.map(f => ({
+            id: `cc.mtf.${f.id}`,
+            label: f.name,
+            onClick: () => moveCompToFolder(compId, f.id),
+          })),
+          { id: 'cc.mtf.d', divider: true },
+          { id: 'cc.mtf.new', label: '+ New Folder...', onClick: () => {
+            const n = prompt('Folder name:', 'New Folder');
+            if (n?.trim()) {
+              const f = addFolder(n.trim(), null);
+              moveCompToFolder(compId, f.id);
+            }
+          }},
+        ],
+      },
       { id: 'cc.d2', divider: true },
       { id: 'cc.delete', label: 'Delete', shortcut: 'Del', onClick: async () => {
         const yes = await confirm(`Delete composition "${compName}"?`, 'Delete Composition', { confirmLabel: 'Delete' });
@@ -420,7 +475,7 @@ export const ProjectBrowserPanel: React.FC = () => {
       }},
     ];
     panelCtx.open(e, items);
-  }, [activeCompId, setActive, removeComp, addNotif, panelCtx]);
+  }, [activeCompId, setActive, removeComp, addNotif, folders, moveCompToFolder, addFolder, panelCtx]);
 
   // Batch rename
   const batchRename = useCallback(() => {
@@ -455,6 +510,10 @@ export const ProjectBrowserPanel: React.FC = () => {
         <IconBtn onClick={() => setShowSearch(!showSearch)} title="Search"><Search size={14} strokeWidth={1.75} /></IconBtn>
         <IconBtn onClick={importSvgClick} title="Import SVG"><FileCode size={14} strokeWidth={1.75} /></IconBtn>
         <IconBtn onClick={openNewCompositionDialog} title="New Composition"><Plus size={15} strokeWidth={2} /></IconBtn>
+        <IconBtn onClick={() => {
+          const name = prompt('Folder name:', 'New Folder');
+          if (name?.trim()) addFolder(name.trim(), null);
+        }} title="New Folder"><FolderPlus size={14} strokeWidth={1.75} /></IconBtn>
       </div>
 
       {activeComp && (
@@ -536,79 +595,7 @@ export const ProjectBrowserPanel: React.FC = () => {
       )}
 
       <div className="flex-1 overflow-y-auto py-2 min-h-0" onContextMenu={handlePanelContextMenu}>
-        {filteredComps.map((comp, i) => (
-          <ProjectItem
-            key={comp.id}
-            icon={<Film size={18} strokeWidth={1.5} />}
-            iconBg={comp.backgroundColor || '#2a2e38'}
-            name={comp.name}
-            info={comp.width + ' x ' + comp.height + ' px'}
-            dotColor={DOT_COLORS[i % DOT_COLORS.length]}
-            isActive={comp.id === activeCompId}
-            onClick={() => setActive(comp.id)}
-            onDoubleClick={() => {
-              if (activeCompId && activeCompId !== comp.id) {
-                const r = useCompositionStore.getState().addCompLayer(activeCompId, comp.id);
-                if (!r.ok) alert(r.reason ?? 'Could not add');
-              }
-            }}
-            onDelete={async () => {
-              const yes = await confirm(
-                `Delete composition "${comp.name}"?`,
-                'Delete Composition',
-                { confirmLabel: 'Delete' },
-              );
-              if (yes) {
-                const r = removeComp(comp.id);
-                if (!r.ok) alert(r.reason ?? 'Cannot delete');
-              }
-            }}
-            onContextMenu={(e) => handleCompContextMenu(e, comp.id, comp.name)}
-            draggable
-            data-comp-id={comp.id}
-            onDragStart={(e) => { e.dataTransfer.setData('text/plain', 'comp:' + comp.id); e.dataTransfer.effectAllowed = 'copy'; }}
-          />
-        ))}
-
-        {filteredAssets.length > 0 && (
-          <>
-            <div className="my-2 mx-4" style={{ height: 1, background: 'var(--color-divider)' }} />
-            <div className="px-4 py-1" style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Assets ({filteredAssets.length})
-            </div>
-            {filteredAssets.map((a, i) => (
-              <AssetItem
-                key={a.id}
-                asset={a}
-                index={i}
-                dotColor={DOT_COLORS[(filteredComps.length + i) % DOT_COLORS.length]}
-                isSelected={selectedAssets.has(a.id)}
-                onClick={(e: React.MouseEvent) => handleAssetClick(a.id, i, e.ctrlKey || e.metaKey, e.shiftKey)}
-                onDoubleClick={() => handleAssetDoubleClick(a.id)}
-                onDragStart={(e) => handleAssetDragStart(e, a.id)}
-                onContextMenu={(e: React.MouseEvent) => handleAssetContextMenu(e, a.id)}
-                isHighlighted={highlightedAsset === a.id}
-                onPreview={() => {
-                  // Try assetManager first, fall back to projectStore
-                  const fullAsset = assetManager.getAsset(a.id);
-                  if (fullAsset) {
-                    setPreviewAsset(fullAsset);
-                  } else {
-                    setPreviewAsset({
-                      id: a.id, name: a.name, type: a.type as any,
-                      url: a.path, size: a.size, mimeType: a.mimeType,
-                      importedAt: a.importedAt, missing: false,
-                      naturalWidth: a.naturalWidth ?? 100, naturalHeight: a.naturalHeight ?? 100,
-                      duration: a.duration,
-                    } as any);
-                  }
-                }}
-              />
-            ))}
-          </>
-        )}
-
-        {filteredComps.length === 0 && filteredAssets.length === 0 && (
+        {tree.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-32 gap-3">
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-disabled)' }}>
               {search ? 'No results' : 'Empty project'}
@@ -620,6 +607,87 @@ export const ProjectBrowserPanel: React.FC = () => {
               </button>
             )}
           </div>
+        ) : (
+          tree.map((item, i) => {
+            if (item.kind === 'folder') {
+              return (
+                <FolderRow
+                  key={item.folder.id}
+                  folder={item.folder}
+                  depth={item.depth}
+                  hasChildren={item.hasChildren}
+                  onToggle={() => toggleFolder(item.folder.id)}
+                  onRename={(newName) => renameFolder(item.folder.id, newName)}
+                  onDelete={async () => {
+                    const yes = await confirm(`Delete folder "${item.folder.name}"? Contents will move to root.`, 'Delete Folder', { confirmLabel: 'Delete' });
+                    if (yes) removeFolder(item.folder.id);
+                  }}
+                  onDrop={(payload) => {
+                    if (payload.kind === 'asset') moveAssetToFolder(payload.id, item.folder.id);
+                    else if (payload.kind === 'comp') moveCompToFolder(payload.id, item.folder.id);
+                    else if (payload.kind === 'folder' && payload.id !== item.folder.id) moveFolder(payload.id, item.folder.id);
+                  }}
+                />
+              );
+            }
+            if (item.kind === 'comp') {
+              const comp = item.comp;
+              return (
+                <div key={comp.id} style={{ marginLeft: item.depth * 16 }}>
+                  <ProjectItem
+                    icon={<Film size={18} strokeWidth={1.5} />}
+                    iconBg={comp.backgroundColor || '#2a2e38'}
+                    name={comp.name}
+                    info={`${comp.width} x ${comp.height} px`}
+                    dotColor={DOT_COLORS[i % DOT_COLORS.length]}
+                    isActive={comp.id === activeCompId}
+                    onClick={() => setActive(comp.id)}
+                    onDoubleClick={() => {
+                      if (activeCompId && activeCompId !== comp.id) {
+                        const r = useCompositionStore.getState().addCompLayer(activeCompId, comp.id);
+                        if (!r.ok) alert(r.reason ?? 'Could not add');
+                      }
+                    }}
+                    onDelete={async () => {
+                      const yes = await confirm(`Delete composition "${comp.name}"?`, 'Delete Composition', { confirmLabel: 'Delete' });
+                      if (yes) { const r = removeComp(comp.id); if (!r.ok) alert(r.reason ?? 'Cannot delete'); }
+                    }}
+                    onContextMenu={(e) => handleCompContextMenu(e, comp.id, comp.name)}
+                    draggable
+                    data-comp-id={comp.id}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('application/onion-tree', JSON.stringify({ kind: 'comp', id: comp.id }));
+                      e.dataTransfer.effectAllowed = 'copy';
+                    }}
+                  />
+                </div>
+              );
+            }
+            // asset
+            const a = item.asset;
+            return (
+              <div key={a.id} style={{ marginLeft: item.depth * 16 }}>
+                <AssetItem
+                  asset={a}
+                  index={i}
+                  dotColor={DOT_COLORS[i % DOT_COLORS.length]}
+                  isSelected={selectedAssets.has(a.id)}
+                  onClick={(e: React.MouseEvent) => handleAssetClick(a.id, i, e.ctrlKey || e.metaKey, e.shiftKey)}
+                  onDoubleClick={() => handleAssetDoubleClick(a.id)}
+                  onDragStart={(e) => {
+                    handleAssetDragStart(e, a.id);
+                    e.dataTransfer.setData('application/onion-tree', JSON.stringify({ kind: 'asset', id: a.id }));
+                  }}
+                  onContextMenu={(e: React.MouseEvent) => handleAssetContextMenu(e, a.id)}
+                  isHighlighted={highlightedAsset === a.id}
+                  onPreview={() => {
+                    const fullAsset = assetManager.getAsset(a.id);
+                    if (fullAsset) setPreviewAsset(fullAsset);
+                  }}
+                />
+              </div>
+            );
+          })
         )}
       </div>
 
@@ -885,6 +953,100 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
     )}
   </div>
 );
+
+/** ── Folder Row (nested, drag-drop target) ── */
+const FolderRow: React.FC<{
+  folder: import('../../../types/project').ProjectFolder;
+  depth: number;
+  hasChildren: boolean;
+  onToggle: () => void;
+  onRename: (newName: string) => void;
+  onDelete: () => void;
+  onDrop: (payload: { kind: 'asset' | 'comp' | 'folder'; id: string }) => void;
+}> = ({ folder, depth, hasChildren, onToggle, onRename, onDelete, onDrop }) => {
+  const [editing, setEditing] = React.useState(false);
+  const [name, setName] = React.useState(folder.name);
+  const [dragOver, setDragOver] = React.useState(false);
+  const expanded = folder.expanded ?? true;
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const treeJson = e.dataTransfer.getData('application/onion-tree');
+    if (treeJson) {
+      try {
+        const payload = JSON.parse(treeJson);
+        if (payload?.kind && payload?.id) onDrop(payload);
+        return;
+      } catch { /* fall through */ }
+    }
+    const assetId = e.dataTransfer.getData('application/onion-asset');
+    if (assetId) { onDrop({ kind: 'asset', id: assetId }); return; }
+    const plain = e.dataTransfer.getData('text/plain');
+    if (plain?.startsWith('comp:')) { onDrop({ kind: 'comp', id: plain.slice(5) }); return; }
+  };
+
+  return (
+    <div
+      className="group flex items-center gap-2 cursor-pointer mx-2 px-2 select-none"
+      style={{
+        height: 30,
+        marginLeft: depth * 16,
+        borderRadius: 'var(--radius-sm)',
+        background: dragOver ? 'var(--color-accent-muted)' : 'transparent',
+        outline: dragOver ? '1px dashed var(--color-accent)' : 'none',
+      }}
+      onClick={onToggle}
+      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData('application/onion-tree', JSON.stringify({ kind: 'folder', id: folder.id }));
+        e.dataTransfer.effectAllowed = 'move';
+      }}
+      onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}
+    >
+      {hasChildren ? (
+        expanded ? <ChevronDownI size={12} /> : <ChevronRight size={12} />
+      ) : (
+        <span style={{ width: 12 }} />
+      )}
+      {expanded ? <FolderOpen size={14} style={{ color: 'var(--color-accent)' }} /> : <FolderIcon size={14} style={{ color: 'var(--color-text-secondary)' }} />}
+      {editing ? (
+        <input
+          type="text" value={name} autoFocus
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => { if (name.trim() && name !== folder.name) onRename(name.trim()); setEditing(false); }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); }
+            if (e.key === 'Escape') { setName(folder.name); setEditing(false); }
+          }}
+          onClick={(e) => e.stopPropagation()}
+          className="flex-1 outline-none"
+          style={{
+            height: 22, padding: '0 6px',
+            background: 'var(--color-input-bg)',
+            border: '1px solid var(--color-accent)',
+            borderRadius: 'var(--radius-xs)',
+            color: 'var(--color-text-primary)',
+            fontSize: 'var(--font-size-sm)',
+          }}
+        />
+      ) : (
+        <span className="flex-1 truncate" style={{ fontSize: 'var(--font-size-sm)', fontWeight: 500, color: 'var(--color-text-primary)' }}>{folder.name}</span>
+      )}
+      <button
+        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        className="border-0 bg-transparent cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+        style={{ color: 'var(--color-text-disabled)' }}
+        title="Delete folder"
+      >
+        <X size={12} strokeWidth={2} />
+      </button>
+    </div>
+  );
+};
 
 function formatDuration(s: number): string {
   const h = Math.floor(s / 3600);

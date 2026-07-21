@@ -15,6 +15,7 @@ import * as THREE from 'three';
 import { EffectChain } from './EffectChain';
 import { fboPool } from './FBOPool';
 import { useEffectsStore } from '../../state/effectsStore';
+import { useCompositionStore } from '../../state/compositionStore';
 
 export class EffectsRenderer {
   private renderer: THREE.WebGLRenderer;
@@ -23,6 +24,8 @@ export class EffectsRenderer {
   private privateScene: THREE.Scene;
   private layerCam: THREE.OrthographicCamera;
   private enabledEffects = new Set<string>();
+  /** Layers where effectsEnabled === false — cached per frame by prepareFrame. */
+  private _effectsDisabled = new Set<string>();
   private _currentTime = 0;
 
   /** Called by Renderer.beforeRender once per frame before any renderLayer calls. */
@@ -41,7 +44,30 @@ export class EffectsRenderer {
     const store = useEffectsStore.getState();
     this.enabledEffects.clear();
 
+    // Build a quick lookup of per-layer effectsEnabled flags.
+    // A missing layer or an explicitly-true/undefined flag means effects run.
+    const cs = useCompositionStore.getState();
+    const activeComp = cs.activeCompositionId
+      ? cs.compositions.find((c) => c.id === cs.activeCompositionId) ?? null
+      : null;
+    this._effectsDisabled.clear();
+    if (activeComp) {
+      for (const l of activeComp.layers) {
+        if (l.effectsEnabled === false) this._effectsDisabled.add(l.id);
+      }
+    }
+
+    // Dispose stale chains for layers that just got effects-disabled.
+    for (const id of this._effectsDisabled) {
+      if (this.effectChains.has(id)) {
+        this.removeLayerEffects(id);
+      }
+    }
+
     for (const id of layerIds) {
+      // Skip layers whose effects are explicitly disabled.
+      if (this._effectsDisabled.has(id)) continue;
+
       const effects = store.effectsByLayer[id] ?? [];
       const active = effects.filter((e) => e.enabled);
 
@@ -144,11 +170,17 @@ export class EffectsRenderer {
 
       let quad = this.effectQuads.get(layerId);
 
-      // Use the ORIGINAL mesh's geometry size so the effect quad
-      // occupies exactly the same rectangle as the source layer.
+      // Use the SOURCE mesh's geometry size as the quad size. The quad then
+      // inherits the SAME local transform (position/rotation/scale) as the
+      // source mesh. This guarantees the effect output occupies the exact
+      // same world-space rectangle as the original layer.
+      //
+      // We READ the geometry.parameters here rather than the `w`/`h` args so
+      // that if the layer's natural size changed since renderLayer was
+      // called (async image load, dynamic text), the quad matches.
       const meshGeo = layerMesh.geometry as THREE.PlaneGeometry;
-      const geoW = (meshGeo.parameters?.width || w);
-      const geoH = (meshGeo.parameters?.height || h);
+      const geoW = meshGeo.parameters?.width  ?? w;
+      const geoH = meshGeo.parameters?.height ?? h;
 
       if (!quad) {
         const geo = new THREE.PlaneGeometry(geoW, geoH);
@@ -159,39 +191,40 @@ export class EffectsRenderer {
           depthTest: false,
           premultipliedAlpha: false,
         });
-
         quad = new THREE.Mesh(geo, mat);
         quad.name = `${layerId}_effect_result`;
         quad.frustumCulled = false;
-        quad.renderOrder = layerMesh.renderOrder + 0.01;
-
         this.effectQuads.set(layerId, quad);
         parentGroup.add(quad);
       } else {
+        // Resize geometry if the layer's natural dimensions changed.
         const qgeo = quad.geometry as THREE.PlaneGeometry;
-        if (
-          Math.abs((qgeo.parameters?.width ?? 0) - geoW) > 0.5 ||
-          Math.abs((qgeo.parameters?.height ?? 0) - geoH) > 0.5
-        ) {
+        const qw = qgeo.parameters?.width  ?? 0;
+        const qh = qgeo.parameters?.height ?? 0;
+        if (Math.abs(qw - geoW) > 0.5 || Math.abs(qh - geoH) > 0.5) {
           quad.geometry.dispose();
           quad.geometry = new THREE.PlaneGeometry(geoW, geoH);
         }
-
+        // Reparent if the quad has drifted from this group (shouldn't happen
+        // but defends against edge cases where the layer was rebuilt).
+        if (quad.parent !== parentGroup) {
+          quad.parent?.remove(quad);
+          parentGroup.add(quad);
+        }
+        // Always refresh the material's texture — the persistent effect
+        // targets may have been recreated on resolution change.
         const mat = quad.material as THREE.MeshBasicMaterial;
-        mat.map = resultTexture;
-        mat.needsUpdate = true;
+        if (mat.map !== resultTexture) {
+          mat.map = resultTexture;
+          mat.needsUpdate = true;
+        }
       }
 
-      /**
-       * Match the original mesh's local transform.
-       *
-       * BaseLayerRenderer stores:
-       * - group.position/group.rotation = layer position/rotation
-       * - mesh.position = anchor offset
-       * - mesh.scale = layer scale
-       *
-       * So the effect quad must copy mesh local position/scale/rotation.
-       */
+      // Mirror the source mesh's local transform exactly. Because both the
+      // source mesh and the effect quad live in the SAME parent group, this
+      // gives them identical world transforms, so the effect quad always
+      // overlaps the original mesh perfectly regardless of parent transforms
+      // or interactive-mode pixel-ratio changes.
       quad.position.copy(layerMesh.position);
       quad.rotation.copy(layerMesh.rotation);
       quad.scale.copy(layerMesh.scale);
@@ -232,8 +265,19 @@ export class EffectsRenderer {
 
   /** Get effects for a layer that should run AFTER the layer is composited (screen space). */
   getScreenSpaceEffects(layerId: string) {
+    // Skip effects on layers where effectsEnabled is false (uses cached set from prepareFrame).
+    if (this._effectsDisabled.has(layerId)) return [];
     const effects = useEffectsStore.getState().effectsByLayer[layerId] ?? [];
     return effects.filter((e) => e.enabled && (e.space ?? 'local') === 'screen');
+  }
+
+  /** Returns the post-effect result texture for a layer, or null if the
+   *  layer has no active effect chain. Used by effects like Displacement
+   *  Map that sample another layer's rendered pixels. */
+  getLayerResultTexture(layerId: string): THREE.Texture | null {
+    const chain = this.effectChains.get(layerId);
+    if (!chain) return null;
+    return chain.lastResultTexture ?? null;
   }
 
   /** True if the layer has any active screen-space effects. */

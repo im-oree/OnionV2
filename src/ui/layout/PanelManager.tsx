@@ -10,6 +10,7 @@ const PANEL_CONTENT:Record<string,React.LazyExoticComponent<React.ComponentType<
   [PANEL_TYPES.PROPERTIES]: React.lazy(()=>import('../panels/properties/PropertiesPanel')),
   [PANEL_TYPES.TIMELINE]: React.lazy(()=>import('../panels/timeline/TimelinePanel')),
   [PANEL_TYPES.GRAPH_EDITOR]: React.lazy(()=>import('../panels/grapheditor/GraphEditorPanel')),
+  [PANEL_TYPES.CAMERA]: React.lazy(()=>import('../panels/camera/CameraPanel').then(m=>({default:m.CameraPanel}))),
 };
 
 const EmptyPanel:React.FC<{label:string}> = ({label})=><div className="panel-empty">{label}</div>;

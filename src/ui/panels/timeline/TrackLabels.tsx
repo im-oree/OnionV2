@@ -1,6 +1,8 @@
 import React, { useCallback } from 'react';
+import { Zap } from 'lucide-react';
 import type { Layer } from '../../../types/layer';
 import { useSelectionStore } from '../../../state/selectionStore';
+import { useCompositionStore } from '../../../state/compositionStore';
 import { Icon } from '../../common/Icon';
 
 interface TrackLabelsProps {
@@ -14,7 +16,9 @@ interface TrackLabelsProps {
 
 const LAYER_ICONS: Record<string, string> = {
   solid: 'rectangle', shape: 'polygon', text: 'text',
-  image: 'image', video: 'video',
+  image: 'image', video: 'video', audio: 'audio',
+  null: 'ellipse', adjustment: 'effect', comp: 'grid',
+  spline: 'pen', chart: 'diamond', model3d: 'collection',
 };
 
 export const TrackLabels: React.FC<TrackLabelsProps> = ({
@@ -22,10 +26,19 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
 }) => {
   const selectedIds = useSelectionStore((s) => s.selected.filter((x) => x.type === 'layer').map((x) => x.id));
   const selectedPropKeys = useSelectionStore((s) => s.selectedPropertyKeys);
+  const comp = useCompositionStore((s) => s.compositions.find(c => c.id === compId));
+  const compMbEnabled = !!comp?.motionBlur?.enabled;
 
   const handleSelect = useCallback((layerId: string) => {
     useSelectionStore.getState().select({ type: 'layer', id: layerId, compositionId: compId });
   }, [compId]);
+
+  const toggleLayerMB = useCallback((e: React.MouseEvent, layerId: string) => {
+    e.stopPropagation();
+    const layer = comp?.layers.find(l => l.id === layerId);
+    if (!layer) return;
+    useCompositionStore.getState().updateLayer(compId, layerId, { motionBlur: !layer.motionBlur });
+  }, [comp, compId]);
 
   // Build ordered list of property keys for range selection — only expanded layers
   const allPropertyKeys = React.useMemo(() => {
@@ -49,7 +62,6 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
     } else {
       store.selectPropertyKey(key);
     }
-    // Ensure the parent layer is also selected (additive) so the graph editor shows it
     store.select({ type: 'layer', id: layerId, compositionId: compId }, true);
   }, [allPropertyKeys, compId]);
 
@@ -58,8 +70,7 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
       <div
         className="flex items-center px-3"
         style={{
-          height: 32,
-          background: 'transparent',
+          height: 32, background: 'transparent',
           borderBottom: '1px solid var(--color-border)',
           fontSize: 'var(--font-size-sm)',
           color: 'var(--color-text-secondary)',
@@ -71,10 +82,8 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
 
       <div className="overflow-auto">
         {layers.length === 0 && (
-          <div
-            className="text-center py-6 px-2"
-            style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-disabled)' }}
-          >
+          <div className="text-center py-6 px-2"
+            style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-disabled)' }}>
             No layers
           </div>
         )}
@@ -82,14 +91,17 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
         {layers.map((layer) => {
           const isExpanded = expandedLayers.has(layer.id);
           const isSelected = selectedIds.includes(layer.id);
+          const layerMbOn = !!layer.motionBlur;
+          const mbActive = layerMbOn && compMbEnabled;
+          const mbDimmed = layerMbOn && !compMbEnabled;
+
           return (
             <div key={layer.id}>
               <div
-                className="flex items-center gap-1.5 cursor-pointer select-none transition-colors"
+                className="flex items-center gap-1.5 cursor-pointer select-none transition-colors group"
                 onClick={() => handleSelect(layer.id)}
                 style={{
-                  height: 28,
-                  padding: '0 8px',
+                  height: 28, padding: '0 8px',
                   fontSize: 'var(--font-size-sm)',
                   background: isSelected ? 'var(--color-accent-muted)' : 'transparent',
                   color: isSelected ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
@@ -109,12 +121,43 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
 
                 <Icon
                   name={(LAYER_ICONS[layer.type] ?? 'ellipse') as any}
-                  size={13}
-                  strokeWidth={1.75}
-                  className="shrink-0"
+                  size={13} strokeWidth={1.75} className="shrink-0"
                 />
 
+                {/* 3D badge */}
+                {layer.is3D && (
+                  <span className="shrink-0" style={{
+                    fontSize: 8, padding: '1px 5px', fontWeight: 700, letterSpacing: '0.04em',
+                    color: '#4a9eff', background: 'rgba(74,158,255,0.12)',
+                    borderRadius: 999, fontFamily: 'var(--font-family-mono)',
+                  }} title="3D Layer">
+                    3D
+                  </span>
+                )}
+
                 <span className="truncate flex-1">{layer.name}</span>
+
+                {/* Motion Blur toggle */}
+                <button
+                  onClick={(e) => toggleLayerMB(e, layer.id)}
+                  title={
+                    mbActive ? 'Motion Blur: ON'
+                    : mbDimmed ? 'Motion Blur enabled on layer, but composition MB is OFF — click the MB button in timeline header'
+                    : 'Motion Blur: OFF (click to enable for this layer)'
+                  }
+                  className="flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0 transition-opacity"
+                  style={{
+                    width: 18, height: 18, marginRight: 2,
+                    color: mbActive ? 'var(--color-accent)'
+                      : mbDimmed ? 'var(--color-text-secondary)'
+                      : 'var(--color-text-disabled)',
+                    opacity: layerMbOn ? (mbActive ? 1 : 0.55) : 0.35,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.opacity = '1'}
+                  onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.opacity = layerMbOn ? (mbActive ? '1' : '0.55') : '0.35'}
+                >
+                  <Zap size={11} strokeWidth={2} fill={layerMbOn ? 'currentColor' : 'none'} />
+                </button>
 
                 <div className="mr-1 w-[10px] flex items-center justify-center">
                   <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" style={{ color: 'var(--color-accent)' }}>
@@ -127,33 +170,32 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
                 const propKey = `${layer.id}::${prop.path}`;
                 const propSelected = selectedPropKeys.has(propKey);
                 return (
-                <div
-                  key={prop.path}
-                  className="flex items-center cursor-pointer transition-colors"
-                  onClick={(e) => handlePropertySelect(layer.id, prop.path, e)}
-                  title={prop.path}
-                  style={{
-                    height: 22,
-                    paddingLeft: 34, paddingRight: 8,
-                    fontSize: 'var(--font-size-sm)',
-                    background: propSelected ? 'rgba(74,142,255,0.15)' : 'transparent',
-                    color: propSelected ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
-                    borderBottom: '1px solid var(--color-divider)',
-                  }}
-                  onMouseEnter={(e) => { if (!propSelected) (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; }}
-                  onMouseLeave={(e) => { if (!propSelected) (e.currentTarget as HTMLElement).style.background = propSelected ? 'rgba(74,142,255,0.15)' : 'transparent'; }}
-                >
-                  <span className="truncate flex-1">{prop.label}</span>
-                  <button
-                    className="w-[14px] h-[14px] flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
-                    style={{ color: 'var(--color-text-disabled)' }}
-                    title="Add/remove keyframe"
+                  <div
+                    key={prop.path}
+                    className="flex items-center cursor-pointer transition-colors"
+                    onClick={(e) => handlePropertySelect(layer.id, prop.path, e)}
+                    title={prop.path}
+                    style={{
+                      height: 22, paddingLeft: 34, paddingRight: 8,
+                      fontSize: 'var(--font-size-sm)',
+                      background: propSelected ? 'rgba(74,142,255,0.15)' : 'transparent',
+                      color: propSelected ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
+                      borderBottom: '1px solid var(--color-divider)',
+                    }}
+                    onMouseEnter={(e) => { if (!propSelected) (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'; }}
+                    onMouseLeave={(e) => { if (!propSelected) (e.currentTarget as HTMLElement).style.background = propSelected ? 'rgba(74,142,255,0.15)' : 'transparent'; }}
                   >
-                    <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1">
-                      <polygon points="4,0 8,4 4,8 0,4" />
-                    </svg>
-                  </button>
-                </div>
+                    <span className="truncate flex-1">{prop.label}</span>
+                    <button
+                      className="w-[14px] h-[14px] flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
+                      style={{ color: 'var(--color-text-disabled)' }}
+                      title="Add/remove keyframe"
+                    >
+                      <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1">
+                        <polygon points="4,0 8,4 4,8 0,4" />
+                      </svg>
+                    </button>
+                  </div>
                 );
               })}
             </div>

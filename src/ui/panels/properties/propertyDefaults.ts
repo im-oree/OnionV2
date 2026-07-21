@@ -11,6 +11,14 @@ export const PROPERTY_DEFAULTS: Record<string, number | number[]> = {
   'transform.anchorPoint.x': 0,
   'transform.anchorPoint.y': 0,
   'opacity': 100,
+
+  // 3D defaults
+  'transform3D.position.z': 0,
+  'transform3D.scale.z': 100,
+  'transform3D.rotationX': 0,
+  'transform3D.rotationY': 0,
+  'transform3D.rotationZ': 0,
+  'transform3D.anchorPoint.z': 0,
 };
 
 export function getPropertyDefault(path: string): number | number[] | undefined {

@@ -1,5 +1,5 @@
 import type { MenuItemDefinition } from '../MenuDropdown';
-import { openNewCompositionDialog, openNewProjectDialog, openProjectSettings } from '../../dialogs/DialogManager';
+import { openNewCompositionDialog, openPreferencesDialog, openProjectSettings } from '../../dialogs/DialogManager';
 import { assetManager } from '../../../storage/AssetManager';
 import { StorageManager } from '../../../storage/StorageManager';
 import { useCompositionStore } from '../../../state/compositionStore';
@@ -78,7 +78,18 @@ export const fileMenu: MenuItemDefinition[] = [
     id: 'file.newProject',
     label: 'New Project...',
     shortcut: 'Ctrl+Alt+N',
-    onClick: () => openNewProjectDialog(),
+    onClick: () => {
+      // Clear everything and create a fresh blank project
+      useCompositionStore.getState().clearAll();
+      useProjectStore.getState().newProject();
+      assetManager.dispose();
+      (window as any).__frameCache?.invalidateAllCompositions();
+      useSelectionStore.getState().clearSelection();
+      StorageManager.getInstance().closeProject();
+      useNotificationStore.getState().addNotification({
+        type: 'info', message: 'New project created.', autoDismiss: 2000,
+      });
+    },
   },
   {
     id: 'file.newComposition',
@@ -315,6 +326,12 @@ export const fileMenu: MenuItemDefinition[] = [
         autoDismiss: 3000,
       });
     },
+  },
+  {
+    id: 'file.preferences',
+    label: 'Preferences...',
+    shortcut: 'Ctrl+,',
+    onClick: () => openPreferencesDialog(),
   },
   {
     id: 'file.projectSettings',

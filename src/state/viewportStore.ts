@@ -16,6 +16,7 @@ export interface ViewportSettings {
   showGuides: boolean;
   showSafeZones: boolean;
   showStats: boolean;
+  showRuleOfThirds: boolean;
   guidesLocked: boolean;
   snappingEnabled: boolean;
   guides: Guide[];
@@ -36,6 +37,8 @@ export interface ViewportStoreState {
   toggleSafeZones: () => void;
   setShowStats: (v: boolean) => void;
   toggleStats: () => void;
+  setShowRuleOfThirds: (v: boolean) => void;
+  toggleRuleOfThirds: () => void;
   setGuidesLocked: (v: boolean) => void;
   setSnappingEnabled: (v: boolean) => void;
   toggleSnapping: () => void;
@@ -57,6 +60,7 @@ const DEFAULT_SETTINGS: ViewportSettings = {
   showGuides: true,
   showSafeZones: false,
   showStats: false,
+  showRuleOfThirds: false,
   guidesLocked: false,
   snappingEnabled: true,
   guides: [],
@@ -78,6 +82,8 @@ export const useViewportStore = create<ViewportStoreState>((set) => ({
   toggleSafeZones: () => set((s) => ({ settings: { ...s.settings, showSafeZones: !s.settings.showSafeZones } })),
   setShowStats: (v) => set((s) => ({ settings: { ...s.settings, showStats: v } })),
   toggleStats: () => set((s) => ({ settings: { ...s.settings, showStats: !s.settings.showStats } })),
+  setShowRuleOfThirds: (v) => set((s) => ({ settings: { ...s.settings, showRuleOfThirds: v } })),
+  toggleRuleOfThirds: () => set((s) => ({ settings: { ...s.settings, showRuleOfThirds: !s.settings.showRuleOfThirds } })),
   setGuidesLocked: (v) => set((s) => ({ settings: { ...s.settings, guidesLocked: v } })),
   setSnappingEnabled: (v) => set((s) => ({ settings: { ...s.settings, snappingEnabled: v } })),
   toggleSnapping: () => set((s) => ({ settings: { ...s.settings, snappingEnabled: !s.settings.snappingEnabled } })),

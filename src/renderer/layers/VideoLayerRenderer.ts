@@ -83,12 +83,13 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     const w = v.videoWidth || this.naturalW;
     const h = v.videoHeight || this.naturalH;
     if (w === 0 || h === 0) return null;
-    // Primary path: createImageBitmap(video). It respects the video's
-    // native orientation and does not go through a 2D canvas (which can
-    // introduce driver-dependent horizontal mirroring on some GPUs).
+    // Use 'flipY' to match the live VideoTexture's flipY=true behavior.
+    // 'from-image' preserves native orientation, but the live texture uses
+    // flipY=true, so we need 'flipY' here to produce the same orientation
+    // as the playing video — otherwise paused/scrubbed frames appear upside-down.
     try {
       const bitmap = await createImageBitmap(v, {
-        imageOrientation: 'from-image',
+        imageOrientation: 'flipY',
         premultiplyAlpha: 'none',
       });
       if (bitmap.width > 0 && bitmap.height > 0) return bitmap;
@@ -96,12 +97,12 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     } catch {
       // Fall through to canvas fallback below.
     }
-    // Fallback: draw the video into an OffscreenCanvas. Only reached when
-    // createImageBitmap(video) is unsupported. This path can mirror on
-    // some GPU drivers — accept it as the last resort.
+    // Fallback: draw the video into an OffscreenCanvas with manual flip.
     try {
       const oc = new OffscreenCanvas(w, h);
       const ctx = oc.getContext('2d')!;
+      ctx.translate(0, h);
+      ctx.scale(1, -1);
       ctx.drawImage(v, 0, 0, w, h);
       const bitmap = oc.transferToImageBitmap();
       if (bitmap.width === 0 || bitmap.height === 0) return null;
@@ -111,17 +112,21 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     }
   }
 
+  /**
+   * Apply a freshly captured frame as the displayed texture.
+   * Called every time a new frame is captured (e.g. on each scrub step),
+   * not just the first time — otherwise the paused frame freezes on
+   * whichever frame happened to be cached first.
+   *
+   * flipY must match the live VideoTexture (true). ImageBitmap row order
+   * from createImageBitmap(video) is the same top-down orientation as any
+   * other image source and needs the same flip as video frames do — using
+   * false here is what causes the upside-down paused/scrub frame.
+   */
   setCachedBitmap(bitmap: ImageBitmap): void {
-    if (this._usingCachedFrame) return;  // Already showing cached frame
     const mat = this.material as THREE.MeshBasicMaterial;
-    // Create texture directly from ImageBitmap.
-    // NOTE: ImageBitmaps from OffscreenCanvas.transferToImageBitmap() are
-    // already in top-left origin (same as a normal <img>). VideoTexture
-    // needs flipY:true because video frames are bottom-up, but plain
-    // ImageBitmaps do NOT — flipping them causes upside-down + mirrored
-    // frames (visible when scrubbing / paused).
     const tex = new THREE.Texture(bitmap);
-    tex.flipY = false;
+    tex.flipY = true;
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
     tex.colorSpace = THREE.SRGBColorSpace;

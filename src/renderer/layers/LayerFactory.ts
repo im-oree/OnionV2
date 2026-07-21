@@ -9,6 +9,15 @@ import { ImageLayerRenderer } from './ImageLayerRenderer';
 import { VideoLayerRenderer } from './VideoLayerRenderer';
 import { CompLayerRenderer } from './CompLayerRenderer';
 import { AdjustmentLayerRenderer } from './AdjustmentLayerRenderer';
+import { SplineLayerRenderer } from './SplineLayerRenderer';
+import type { SplineData } from '../../types/spline';
+import { defaultSplineData } from '../../types/spline';
+import { ChartLayerRenderer } from './ChartLayerRenderer';
+import type { ChartData } from '../../types/dataViz';
+import { defaultChartData } from '../../types/dataViz';
+import { Model3DLayerRenderer } from './Model3DLayerRenderer';
+import type { Model3DData } from '../../types/model3d';
+import { defaultModel3DData } from '../../types/model3d';
 
 export class LayerFactory {
   private sceneManager: SceneManager;
@@ -60,6 +69,24 @@ export class LayerFactory {
           this.sceneManager.compWidth ?? 1920,
           this.sceneManager.compHeight ?? 1080,
         );
+        break;
+      }
+      case 'spline': {
+        const raw = layer.data;
+        const data: SplineData = raw ? (raw as unknown as SplineData) : defaultSplineData();
+        renderer = new SplineLayerRenderer(layer.id, data);
+        break;
+      }
+      case 'chart': {
+        const raw = layer.data;
+        const data: ChartData = raw ? (raw as unknown as ChartData) : defaultChartData();
+        renderer = new ChartLayerRenderer(layer.id, data);
+        break;
+      }
+      case 'model3d': {
+        const raw = layer.data;
+        const data: Model3DData = raw ? (raw as unknown as Model3DData) : defaultModel3DData();
+        renderer = new Model3DLayerRenderer(layer.id, data);
         break;
       }
       case 'comp': {

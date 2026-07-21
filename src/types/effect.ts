@@ -7,7 +7,8 @@
 export type EffectType =
   // Blur
   | 'gaussianBlur' | 'boxBlur' | 'directionalBlur' | 'radialBlur' | 'sharpen'
-  | 'motionBlur' | 'lensBlur'
+  | 'motionBlur' | 'lensBlur' | 'cameraLensBlur'
+  | 'unsharpMask'
   // Color
   | 'colorCorrection' | 'levels' | 'hueSaturation' | 'tint' | 'invert'
   | 'threshold' | 'fill' | 'chromaKey' | 'tritone' | 'colorBalance'
@@ -17,29 +18,37 @@ export type EffectType =
   | 'glow' | 'dropShadow' | 'vignette' | 'chromaticAberration' | 'bevelAlpha'
   | 'cartoon' | 'glitch' | 'edgeDetect' | 'innerGlow' | 'outerGlow' | 'stroke'
   | 'filmGrain' | 'feedback' | 'scanLines' | 'badTv' | 'timeEcho'
-  | 'crossHatch' | 'halftone' | 'asciiArt' | 'emboss'
+  | 'crossHatch' | 'halftone' | 'asciiArt'  | 'emboss'
+  | 'deepGlow' | 'bloom'
+  | 'mosaic' | 'roughenEdges' | 'echo' | 'posterizeTime'
   // Distort
+  | 'liquify' | 'meshWarp'
   | 'wave' | 'bulge' | 'twirl' | 'ripple' | 'turbulentDisplace'
   | 'lensDistortion' | 'pixelate' | 'mirror' | 'kaleidoscope'
-  | 'ccSphere' | 'displacementMap'
+  | 'ccSphere' | 'displacementMap' | 'displacementMap2'
   // Generate
   | 'gradient' | 'noise' | 'fractalNoise' | 'motionTile'
+  | 'ccLightSweep' | 'lensFlare' | 'radioWaves' | 'ccParticleWorld'
   // Transition
-  | 'radialWipe';
+  | 'radialWipe' | 'radialReveal' | 'irisReveal'
+  // Keying
+  | 'autoCutout'
+  // Blend Mode
+  | 'blendMode';
 
-export type EffectCategory = 'blur' | 'color' | 'stylize' | 'distort' | 'generate' | 'transition';
+export type EffectCategory = 'blur' | 'color' | 'stylize' | 'distort' | 'generate' | 'transition' | 'blend' | 'blurSharpen' | 'keying';
 
 /** Runtime parameter value for a single effect parameter */
 export interface EffectParameter {
   id: string;
   name: string;
-  type: 'number' | 'color' | 'boolean' | 'select' | 'vector2' | 'percent' | 'angle';
+  type: 'number' | 'color' | 'boolean' | 'select' | 'vector2' | 'percent' | 'angle' | 'layerRef';
   value: number | string | boolean | [number, number];
   defaultValue: number | string | boolean | [number, number];
   min?: number;
   max?: number;
   step?: number;
-  options?: { label: string; value: string }[];
+  options?: { label: string; value: string | number }[];
   /** GLSL uniform name in the fragment shader */
   uniform: string;
 }

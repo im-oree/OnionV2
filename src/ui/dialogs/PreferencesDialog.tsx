@@ -11,6 +11,59 @@ import { autoSave } from '../../storage/AutoSave';
 import { themeManager } from '../../styles/ThemeManager';
 import { alertConfirm, alertPrompt } from '../../state/alertModalStore';
 
+// ─── Color Utility Helpers ───
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function lightenColor(hex: string, percent: number): string {
+  const h = hex.replace('#', '');
+  let r = parseInt(h.substring(0, 2), 16);
+  let g = parseInt(h.substring(2, 4), 16);
+  let b = parseInt(h.substring(4, 6), 16);
+  r = Math.min(255, r + Math.round((255 - r) * percent / 100));
+  g = Math.min(255, g + Math.round((255 - g) * percent / 100));
+  b = Math.min(255, b + Math.round((255 - b) * percent / 100));
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+function darkenColor(hex: string, percent: number): string {
+  const h = hex.replace('#', '');
+  let r = parseInt(h.substring(0, 2), 16);
+  let g = parseInt(h.substring(2, 4), 16);
+  let b = parseInt(h.substring(4, 6), 16);
+  r = Math.max(0, Math.round(r * (1 - percent / 100)));
+  g = Math.max(0, Math.round(g * (1 - percent / 100)));
+  b = Math.max(0, Math.round(b * (1 - percent / 100)));
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+/** Apply custom theme colors live as the user picks them */
+function applyCustomTheme(colors: Record<string, string>): void {
+  const root = document.documentElement;
+  root.style.setProperty('--color-accent', colors.accent);
+  root.style.setProperty('--color-accent-hover', lightenColor(colors.accent, 15));
+  root.style.setProperty('--color-accent-muted', hexToRgba(colors.accent, 0.16));
+  root.style.setProperty('--color-app-bg', colors.bgApp);
+  root.style.setProperty('--color-panel', colors.panel);
+  root.style.setProperty('--color-panel-raised', colors.panelRaised);
+  root.style.setProperty('--color-panel-hover', lightenColor(colors.panel, 8));
+  root.style.setProperty('--color-panel-active', lightenColor(colors.panel, 14));
+  root.style.setProperty('--color-text-primary', colors.textPrimary);
+  root.style.setProperty('--color-text-secondary', colors.textSecondary);
+  root.style.setProperty('--color-border', hexToRgba(colors.border, 0.4));
+  root.style.setProperty('--color-danger', colors.danger);
+  root.style.setProperty('--color-success', colors.success);
+  root.style.setProperty('--color-input-bg', darkenColor(colors.panel, 10));
+  // Derived vars
+  root.style.setProperty('--color-border-strong', hexToRgba(colors.border, 0.6));
+  root.style.setProperty('--scrollbar-thumb', hexToRgba(colors.textPrimary, 0.15));
+}
+
 interface Props {
   onClose: () => void;
   initialSection?: string;
@@ -38,6 +91,12 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
 
   // Playback settings
   const [cacheSizeMB, setCacheSizeMB] = useState(Math.round(hwProfile.cacheBudget / (1024 * 1024)));
+  const [gpuMemoryBudgetMB, setGpuMemoryBudgetMB] = useState(() => {
+    const saved = localStorage.getItem('pref_gpuMemoryBudgetMB');
+    if (saved) return Number(saved);
+    const gpuCache = (window as any).__gpuTextureCache;
+    return gpuCache ? Math.round(gpuCache.maxBytes / (1024 * 1024)) : 512;
+  });
   const [resolutionMode, setResolutionMode] = useState(hwProfile.resolutionMode);
   const [autoRamPreview, setAutoRamPreview] = useState(hwProfile.autoRamPreview);
   const [workersEnabled, setWorkersEnabled] = useState(hwProfile.workersEnabled);
@@ -56,6 +115,19 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
   const currentThemeId = themeManager.currentThemeId;
   const [themeEditorOpen, setThemeEditorOpen] = useState(false);
   const [themeSearch, setThemeSearch] = useState('');
+
+  // Custom theme editor state
+  const [customColors, setCustomColors] = useState<Record<string, string>>({
+    accent: '#5865ff',
+    bgApp: '#16181d',
+    panel: '#1f2229',
+    panelRaised: '#262a33',
+    textPrimary: '#ffffff',
+    textSecondary: '#8c8c8c',
+    border: '#3a3a3a',
+    danger: '#ff5c5c',
+    success: '#6ad588',
+  });
 
   // Persisted settings (load from localStorage on mount, save on change)
   const [uiScale, setUiScale] = useState(() => Number(localStorage.getItem('pref_uiScale') ?? 100));
@@ -211,16 +283,164 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
                   <input type="text" placeholder="Search themes..." value={themeSearch} onChange={e => setThemeSearch(e.target.value)}
                     className="flex-1 h-7 text-ui-xs px-2 bg-surface border border-border rounded-sm text-text-primary outline-none focus:border-accent" />
                 </div>
-                <div className="pt-2">
+                <div className="pt-2 flex gap-2 flex-wrap">
                   <button onClick={async () => {
                     const name = await alertPrompt('Save Theme', 'Enter a name for the current theme:', '');
                     if (name) themeManager.saveAsCustomTheme(`custom_${Date.now()}`, name);
                   }} className="px-3 py-1.5 text-ui-xs rounded-sm border border-border bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer">
                     Save Current as Theme
                   </button>
-                  <button onClick={themeManager.exportCurrentTheme} className="ml-2 px-3 py-1.5 text-ui-xs rounded-sm border border-border bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer">
+                  <button onClick={() => {
+                    const json = themeManager.exportCurrentTheme();
+                    const blob = new Blob([json], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `onion-theme-${currentThemeId}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }} className="px-3 py-1.5 text-ui-xs rounded-sm border border-border bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer">
                     Export Theme
                   </button>
+                  <button onClick={() => {
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.accept = '.json';
+                    input.onchange = async () => {
+                      const file = input.files?.[0];
+                      if (!file) return;
+                      const text = await file.text();
+                      const imported = themeManager.importCustomTheme(text);
+                      if (imported) {
+                        themeManager.loadTheme(imported.id);
+                      }
+                    };
+                    input.click();
+                  }} className="px-3 py-1.5 text-ui-xs rounded-sm border border-border bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer">
+                    Import Theme
+                  </button>
+                </div>
+
+                {/* Custom Theme Editor */}
+                <div style={{ ...sectionStyle, marginTop: 12 }}>
+                  <button
+                    onClick={() => setThemeEditorOpen(!themeEditorOpen)}
+                    className="flex items-center gap-2 w-full text-left bg-transparent border-0 cursor-pointer py-1"
+                  >
+                    <span style={{ fontSize: 10, transform: themeEditorOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s', color: 'var(--color-text-secondary)' }}>▶</span>
+                    <span className="text-ui-xs font-medium text-text-primary">Custom Theme Editor</span>
+                  </button>
+
+                  {themeEditorOpen && (
+                    <div className="mt-3 space-y-3">
+                      <p className="text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>
+                        Pick colors to create your own theme. Changes apply live.
+                      </p>
+
+                      {/* Color Pickers Grid */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 16px' }}>
+                        <ColorPickerRow
+                          label="Accent"
+                          value={customColors.accent}
+                          onChange={(v) => {
+                            setCustomColors(c => ({ ...c, accent: v }));
+                            applyCustomTheme({ ...customColors, accent: v });
+                          }}
+                        />
+                        <ColorPickerRow
+                          label="Background"
+                          value={customColors.bgApp}
+                          onChange={(v) => {
+                            setCustomColors(c => ({ ...c, bgApp: v }));
+                            applyCustomTheme({ ...customColors, bgApp: v });
+                          }}
+                        />
+                        <ColorPickerRow
+                          label="Panel"
+                          value={customColors.panel}
+                          onChange={(v) => {
+                            setCustomColors(c => ({ ...c, panel: v }));
+                            applyCustomTheme({ ...customColors, panel: v });
+                          }}
+                        />
+                        <ColorPickerRow
+                          label="Panel Raised"
+                          value={customColors.panelRaised}
+                          onChange={(v) => {
+                            setCustomColors(c => ({ ...c, panelRaised: v }));
+                            applyCustomTheme({ ...customColors, panelRaised: v });
+                          }}
+                        />
+                        <ColorPickerRow
+                          label="Text Primary"
+                          value={customColors.textPrimary}
+                          onChange={(v) => {
+                            setCustomColors(c => ({ ...c, textPrimary: v }));
+                            applyCustomTheme({ ...customColors, textPrimary: v });
+                          }}
+                        />
+                        <ColorPickerRow
+                          label="Text Secondary"
+                          value={customColors.textSecondary}
+                          onChange={(v) => {
+                            setCustomColors(c => ({ ...c, textSecondary: v }));
+                            applyCustomTheme({ ...customColors, textSecondary: v });
+                          }}
+                        />
+                        <ColorPickerRow
+                          label="Border"
+                          value={customColors.border}
+                          onChange={(v) => {
+                            setCustomColors(c => ({ ...c, border: v }));
+                            applyCustomTheme({ ...customColors, border: v });
+                          }}
+                        />
+                        <ColorPickerRow
+                          label="Danger"
+                          value={customColors.danger}
+                          onChange={(v) => {
+                            setCustomColors(c => ({ ...c, danger: v }));
+                            applyCustomTheme({ ...customColors, danger: v });
+                          }}
+                        />
+                        <ColorPickerRow
+                          label="Success"
+                          value={customColors.success}
+                          onChange={(v) => {
+                            setCustomColors(c => ({ ...c, success: v }));
+                            applyCustomTheme({ ...customColors, success: v });
+                          }}
+                        />
+                      </div>
+
+                      {/* Action buttons */}
+                      <div className="flex gap-2 pt-2">
+                        <button
+                          onClick={async () => {
+                            const name = await alertPrompt('Save Custom Theme', 'Enter a name:', '');
+                            if (name) {
+                              const id = `custom_${Date.now()}`;
+                              // applyCustomTheme already set all CSS vars on :root,
+                              // so saveAsCustomTheme will snapshot them correctly.
+                              themeManager.saveAsCustomTheme(id, name);
+                              themeManager.loadTheme(id);
+                            }
+                          }}
+                          className="px-3 py-1.5 text-ui-xs rounded-sm border border-accent bg-accent/10 text-accent hover:bg-accent/20 cursor-pointer"
+                        >
+                          Save as Custom Theme
+                        </button>
+                        <button
+                          onClick={() => {
+                            themeManager.loadTheme(currentThemeId);
+                          }}
+                          className="px-3 py-1.5 text-ui-xs rounded-sm border border-border bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer"
+                        >
+                          Reset
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -271,6 +491,20 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
                       <select value={resolutionMode} onChange={e => setResolutionMode(e.target.value as any)} className="text-ui-xs bg-surface border border-border rounded-sm px-1 py-0.5 text-text-primary">
                         <option value="auto">Auto</option><option value="full">Full</option><option value="half">Half</option><option value="quarter">Quarter</option>
                       </select>
+                    </div>
+                                    <div className="flex items-center justify-between"><span style={labelStyle}>GPU Memory Budget:</span>
+                      <div className="flex items-center gap-2">
+                        <input type="range" min={64} max={4096} step={64} value={gpuMemoryBudgetMB}
+                          onChange={e => {
+                            const v = Number(e.target.value);
+                            setGpuMemoryBudgetMB(v);
+                            persist('pref_gpuMemoryBudgetMB', v);
+                            const gpuCache = (window as any).__gpuTextureCache;
+                            if (gpuCache) gpuCache.setMaxBytes(v * 1024 * 1024);
+                          }}
+                          className="w-24 accent-accent" />
+                        <span style={valueStyle} className="w-16 text-right">{gpuMemoryBudgetMB >= 1024 ? `${(gpuMemoryBudgetMB/1024).toFixed(1)} GB` : `${gpuMemoryBudgetMB} MB`}</span>
+                      </div>
                     </div>
                     <button onClick={handleClearCache} className="text-ui-xs px-2 py-1 rounded-sm border border-border bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer">Clear Cache</button>
                   </div>
@@ -428,5 +662,24 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
     </div>
   );
 };
+
+/** Inline color picker row with label + color input + hex display */
+const ColorPickerRow: React.FC<{ label: string; value: string; onChange: (v: string) => void }> = ({ label, value, onChange }) => (
+  <div className="flex items-center justify-between gap-2">
+    <span className="text-[10px]" style={{ color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>{label}</span>
+    <div className="flex items-center gap-1.5">
+      <input
+        type="color"
+        value={value.startsWith('#') ? value : '#5865ff'}
+        onChange={e => onChange(e.target.value)}
+        className="w-6 h-6 rounded cursor-pointer border-0 p-0"
+        style={{ background: 'transparent' }}
+      />
+      <span className="text-[9px] w-16 text-right" style={{ color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-family-mono)' }}>
+        {value.length > 12 ? value.substring(0, 12) + '…' : value}
+      </span>
+    </div>
+  </div>
+);
 
 export default PreferencesDialog;

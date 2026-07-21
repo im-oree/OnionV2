@@ -5,6 +5,7 @@ import { LayerFactory } from '../layers/LayerFactory';
 import type { BaseLayerRenderer } from '../layers/BaseLayerRenderer';
 import type { RuntimeOverrides } from '../../animation/PropertyBinder';
 import { useCompositionStore } from '../../state/compositionStore';
+import { applyBlendModeToMaterial } from '../blending/ApplyBlendMode';
 
 export class LayerSync {
   private factory: LayerFactory;
@@ -17,6 +18,7 @@ export class LayerSync {
   constructor(sceneManager: SceneManager) { this.factory = new LayerFactory(sceneManager); }
 
   setRuntimeOverridesActive(active: boolean): void { this._runtimeOverridesActive = active; }
+  get isRuntimeOverridesActive(): boolean { return this._runtimeOverridesActive; }
 
   sync(layers: Layer[]): void {
     const prevMap = new Map<string,Layer>();
@@ -32,10 +34,21 @@ export class LayerSync {
     }
     for(const layer of layers){
       const prev=prevMap.get(layer.id);
-      if(!prev){this.renderers.set(layer.id,this.factory.create(layer));}
+      if(!prev){
+        const r = this.factory.create(layer);
+        this.renderers.set(layer.id, r);
+        // Apply initial blend mode
+        const mat = r.mesh.material as THREE.Material;
+        if (mat && layer.blendMode && layer.blendMode !== 'normal') {
+          applyBlendModeToMaterial(mat, layer.blendMode);
+        }
+      }
       else{this._updateRenderer(layer.id,prev,layer);}
     }
     this._updateZOrder(layers);
+
+    // Apply masks to canvas-based renderers
+    this._applyMasks(layers);
 
     // Second pass: recompute world transforms for ALL parented layers.
     // This ensures children update when a parent moves, even if the child's
@@ -113,14 +126,17 @@ export class LayerSync {
     // Check if ANY layer is soloed — if so, only soloed layers (that are
     // also visible and in frame range) should be shown.
     const hasSolo = layers.some(l => l.soloed);
+    const wireframe = !!(window as any).__wireframeMode;
     for(const layer of layers){
       const r=this.renderers.get(layer.id); if(!r)continue;
       // Adjustment layers never render as a mesh — their effect output is
       // shown on a compositor quad managed by AdjustmentCompositor.
-      if (layer.type === 'adjustment') { r.setVisible(false); continue; }
+      if (layer.type === 'adjustment' || layer.type === 'camera' || layer.type === 'light' || layer.type === 'null') { r.setVisible(false); continue; }
       const inFrame = currentFrame >= layer.startFrame && currentFrame <= layer.endFrame;
       const visible = layer.visible && inFrame && (hasSolo ? !!layer.soloed : true);
       r.setVisible(visible);
+      // Apply wireframe mode
+      if (r.setWireframe) r.setWireframe(wireframe);
     }
   }
 
@@ -145,6 +161,13 @@ export class LayerSync {
       if(prev.opacity!==next.opacity)r.updateOpacity(next.opacity/100);
     }
     if(prev.visible!==next.visible)r.setVisible(next.visible);
+
+    // Blend mode changed → update material blending
+    if (prev.blendMode !== next.blendMode) {
+      const mat = r.mesh.material as THREE.Material;
+      if (mat) applyBlendModeToMaterial(mat, next.blendMode);
+    }
+
     if(prev.data===next.data)return;
 
     if(next.type==='solid'){
@@ -166,6 +189,10 @@ export class LayerSync {
     if(next.type==='text'){
       const tr=r as any;
       if(tr.setText&&next.data)tr.setText(next.data);
+    }
+    if(next.type==='spline'){
+      const sr=r as any;
+      if(sr.updateData&&next.data)sr.updateData(next.data);
     }
   }
 
@@ -247,23 +274,65 @@ export class LayerSync {
 
   private _updateZOrder(layers: Layer[]): void {
     // Sort by zIndex descending: higher zIndex = rendered on top
-    // This matches the timeline display order (top of timeline = highest zIndex)
     const sorted = [...layers].sort((a, b) => b.zIndex - a.zIndex);
     sorted.forEach((l, i) => {
       const r = this.renderers.get(l.id);
       if (!r) return;
-      // Three.js renders meshes with HIGHER renderOrder ON TOP when depthTest is false.
-      // sorted[0] has highest zIndex (top of timeline) → gets highest renderOrder.
-      r.mesh.renderOrder = sorted.length - 1 - i;
-      r.group.position.z = -(i * 0.001);
-      // Enforce depthTest:false + depthWrite:false on ALL layer materials
-      // so that renderOrder (set above) controls stacking, not Z depth.
-      const mat = r.mesh.material as THREE.MeshBasicMaterial;
-      if (mat && mat.depthTest !== false) {
-        mat.depthTest = false;
-        mat.depthWrite = false;
-        mat.needsUpdate = true;
+
+      if (l.is3D) {
+        // 3D layers: use proper depth testing so objects occlude each other
+        // based on their Z position. Three.js handles depth ordering natively.
+        r.mesh.renderOrder = 0;
+        const mat = r.mesh.material as THREE.Material;
+        if (mat) {
+          mat.depthTest = true;
+          mat.depthWrite = true;
+          mat.needsUpdate = true;
+        }
+      } else {
+        // 2D layers: no depth testing, use renderOrder for stacking
+        r.mesh.renderOrder = sorted.length - 1 - i;
+        r.group.position.z = -(i * 0.001);
+        const mat = r.mesh.material as THREE.Material;
+        if (mat && mat.depthTest !== false) {
+          mat.depthTest = false;
+          mat.depthWrite = false;
+          mat.needsUpdate = true;
+        }
       }
     });
+  }
+
+  private async _applyMasks(layers: Layer[]): Promise<void> {
+    // Dynamic imports to avoid circular deps at module load
+    const [{ useMaskStore }, { MaskCompositor }] = await Promise.all([
+      import('../../state/maskStore'),
+      import('../compositing/MaskCompositor'),
+    ]);
+    const store = useMaskStore.getState();
+
+    for (const layer of layers) {
+      const masks = store.getMasksForLayer(layer.id);
+      if (masks.length === 0) continue;
+
+      const r = this.renderers.get(layer.id);
+      if (!r) continue;
+
+      // Only works for canvas-based renderers (Shape, Solid, Text)
+      const canvas: HTMLCanvasElement | undefined = (r as any)._canvas;
+      const ctx: CanvasRenderingContext2D | undefined = (r as any)._ctx;
+      if (!canvas || !ctx) continue;
+
+      const gw: number = (r as any).geometryWidth?.() ?? 0;
+      const gh: number = (r as any).geometryHeight?.() ?? 0;
+      if (gw <= 0 || gh <= 0) continue;
+
+      const DPI = 2;
+      MaskCompositor.applyMasks(canvas, ctx, masks, gw, gh, DPI);
+
+      // Force texture re-upload
+      const tex = (r as any)._tex;
+      if (tex) tex.needsUpdate = true;
+    }
   }
 }

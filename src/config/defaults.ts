@@ -1,7 +1,7 @@
 import { COMPOSITION, PERFORMANCE } from './constants';
 import type { Composition, Layer, Project } from '../types';
 import { defaultTransform, defaultTransform3D, defaultCameraData, defaultLightData } from '../types/layer';
-import { defaultEnvironment3D } from '../types/composition';
+import { defaultEnvironment3D, defaultMotionBlur } from '../types/composition';
 
 /** AE-style layer label color palette */
 export const LAYER_COLORS = [
@@ -27,6 +27,7 @@ export const DEFAULT_COMPOSITION: Omit<Composition, 'id'> = {
   environment3D: defaultEnvironment3D(),
   rendererMode: 'full',
   viewMode: 'activeCamera',
+  motionBlur: defaultMotionBlur(),
 };
 
 export function createDefaultLayer(type: Layer['type'], name: string): Omit<Layer, 'id'> {
@@ -45,6 +46,8 @@ export function createDefaultLayer(type: Layer['type'], name: string): Omit<Laye
     zIndex: 0,
     effects: [],
     masks: [],
+    modifiers: [],
+    motionBlur: false,
     parentId: null,
     color: LAYER_COLORS[_layerCounter++ % LAYER_COLORS.length],
   };
@@ -54,6 +57,9 @@ export function createDefaultLayer(type: Layer['type'], name: string): Omit<Laye
   }
   if (type === 'light') {
     return { ...base, lightData: defaultLightData(), transform: { ...defaultTransform(), position: { x: 0, y: 0 } } } as any;
+  }
+  if (type === 'model3d') {
+    return { ...base, data: { assetId: '', format: 'gltf' as const, url: '', scale: 1, autoRotate: false, autoRotateSpeed: 1 } } as any;
   }
 
   return base;

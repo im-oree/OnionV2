@@ -34,7 +34,6 @@ export class RenderLoop {
 
   private _targetFps = 0;
   private _interactive = false;
-  private _originalPixelRatio = 1;
 
   /** True when a cache build has paused the loop. */
   private _pausedForCacheBuild = false;
@@ -47,7 +46,6 @@ export class RenderLoop {
     this.renderer = renderer;
     this.scene = scene;
     this.camera = camera;
-    this._originalPixelRatio = renderer.getPixelRatio();
   }
 
   public beforeRender: (() => void) | null = null;
@@ -63,20 +61,11 @@ export class RenderLoop {
 
   setInteractive(v: boolean): void {
     this._interactive = v;
-    if (v) {
-      // During interactive operations (scrubbing, dragging, transform)
-      // render at reduced resolution for immediate GPU feedback, then
-      // restore full quality when the user stops interacting.
-      this.renderer.setPixelRatio(
-        Math.max(0.5, this._originalPixelRatio * 0.5),
-      );
-      this.requestRender();
-    } else {
-      // Restore full-quality rendering
-      this.renderer.setPixelRatio(this._originalPixelRatio);
-      // Force a full-quality render immediately
-      this.requestRender();
-    }
+    // NOTE: we used to call this.renderer.setPixelRatio(0.5 * original) here
+    // for interactive-mode perf, but it desyncs viewport/scissor state and
+    // causes layers to render at the wrong position during drag operations.
+    // The marginal perf gain is not worth the rendering bugs.
+    this.requestRender();
   }
 
   requestRender(): void {
@@ -144,6 +133,14 @@ export class RenderLoop {
       this.lastTime = performance.now();
       this.animFrameId = requestAnimationFrame(this.tick);
     }
+  }
+
+  setCamera(camera: THREE.Camera): void {
+    this.camera = camera;
+  }
+
+  getCamera(): THREE.Camera {
+    return this.camera;
   }
 
   get isPausedForCacheBuild(): boolean { return this._pausedForCacheBuild; }

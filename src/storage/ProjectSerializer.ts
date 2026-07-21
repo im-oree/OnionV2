@@ -9,6 +9,7 @@ import { useEffectsStore } from '../state/effectsStore';
 import { useMaskStore } from '../state/maskStore';
 import { useViewportStore } from '../state/viewportStore';
 import { useTimelineStore } from '../state/timelineStore';
+import { useProjectStore } from '../state/projectStore';
 
 import { runMigrations, validateProjectData, CURRENT_VERSION } from './migrations';
 import { assetManager } from './AssetManager';
@@ -89,6 +90,7 @@ export class ProjectSerializer {
       effects,
       masks,
       assets: this._collectAssetRefs(),
+      folders: (useProjectStore.getState().project.folders ?? []).map(f => ({ ...f })),
       ui: {
         workspaceLayout: (window as any).__workspaceLayout ?? null,
         viewportState: {
@@ -168,6 +170,18 @@ export class ProjectSerializer {
           masksByLayer: { ...current, [layerId]: [...existing, ...ms] },
         });
       }
+    }
+
+    // Restore folders
+    if ((migrated as any).folders) {
+      const proj = useProjectStore.getState().project;
+      useProjectStore.setState({
+        project: {
+          ...proj,
+          folders: (migrated as any).folders,
+        },
+        dirty: false,
+      });
     }
 
     // Restore viewport state

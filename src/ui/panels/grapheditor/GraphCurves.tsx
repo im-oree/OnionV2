@@ -97,13 +97,12 @@ const KfPoint: React.FC<{
   const r = selected ? 7 : 5.5;
   const showHandles = selected && kf.interpolation === 'bezier';
 
-  // Convert normalized tangents (0-1) to pixel-space for handle positions
-  // Tangent.x is fraction of segment width, tangent.y is fraction of segment height
-  // We need to compute adjacent segment widths to get proper handle positions
+  // Convert normalized tangents to pixel-space handle positions
+  // Tangent.x = influence (0-1), tangent.y = speed/bias (-1 to 1)
   const getHandlePoint = (tangent: { x: number; y: number }, isOut: boolean): { px: number; py: number } => {
     const dir = isOut ? 1 : -1;
-    // Use a fixed pixel scale for handle length - 80px base, scaled by tangent magnitude
-    const handleScale = 80;
+    // Handle length proportional to influence, height proportional to value bias
+    const handleScale = 120; // Larger for better visibility
     const hx = p.px + dir * tangent.x * handleScale;
     const hy = p.py - tangent.y * handleScale;
     return { px: hx, py: hy };
@@ -117,10 +116,10 @@ const KfPoint: React.FC<{
         return (
           <g key="out">
             <line x1={p.px} y1={p.py} x2={hp.px} y2={hp.py}
-              stroke={HANDLE_LINE_COLOR} strokeWidth={1.5} strokeLinecap="round"
+              stroke={HANDLE_LINE_COLOR} strokeWidth={2} strokeLinecap="round"
               data-kf-id={kf.id} data-handle="out" style={{ cursor: 'pointer', pointerEvents: 'stroke' }} />
-            <circle cx={hp.px} cy={hp.py} r={4.5}
-              fill={HANDLE_COLOR} stroke="#fff" strokeWidth={1.5}
+            <circle cx={hp.px} cy={hp.py} r={5.5}
+              fill={HANDLE_COLOR} stroke="#fff" strokeWidth={2}
               data-kf-id={kf.id} data-handle="out" style={{ cursor: 'move', pointerEvents: 'all' }} />
           </g>
         );
@@ -130,10 +129,10 @@ const KfPoint: React.FC<{
         return (
           <g key="in">
             <line x1={p.px} y1={p.py} x2={hp.px} y2={hp.py}
-              stroke={HANDLE_LINE_COLOR} strokeWidth={1.5} strokeLinecap="round"
+              stroke={HANDLE_LINE_COLOR} strokeWidth={2} strokeLinecap="round"
               data-kf-id={kf.id} data-handle="in" style={{ cursor: 'pointer', pointerEvents: 'stroke' }} />
-            <circle cx={hp.px} cy={hp.py} r={4.5}
-              fill={HANDLE_COLOR} stroke="#fff" strokeWidth={1.5}
+            <circle cx={hp.px} cy={hp.py} r={5.5}
+              fill={HANDLE_COLOR} stroke="#fff" strokeWidth={2}
               data-kf-id={kf.id} data-handle="in" style={{ cursor: 'move', pointerEvents: 'all' }} />
           </g>
         );

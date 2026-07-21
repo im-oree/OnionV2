@@ -29,7 +29,7 @@ export const TimelinePanel: React.FC = () => {
   const scrollX = useTimelineStore(s => s.scrollX);
   const setScrollX = useTimelineStore(s => s.setScrollX);
 
-  const [outlinerWidth, setOutlinerWidth] = useState(280);
+  const [outlinerWidth, setOutlinerWidth] = useState(350);
   const tracksScrollRef = useRef<HTMLDivElement>(null);
   const outlinerScrollRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
@@ -199,6 +199,31 @@ export const TimelinePanel: React.FC = () => {
     setTimelineDrop(false);
     if (!comp) return;
 
+    // 0. Transition dropped — create transition layer at playhead
+    const transitionData = e.dataTransfer.getData('application/onion-transition');
+    if (transitionData) {
+      try {
+        const { type: transitionType, name: transitionName } = JSON.parse(transitionData);
+        const currentFrame = Math.floor(comp.currentTime * comp.fps);
+        const layer = createLayerInstance('transition', comp, {
+          name: transitionName || transitionType,
+          startFrame: currentFrame,
+          endFrame: currentFrame + Math.round(comp.fps),
+          zIndex: comp.layers.length + 1,
+        });
+        if (layer.data && typeof layer.data === 'object') {
+          (layer.data as any).transitionType = transitionType;
+        }
+        useCompositionStore.getState().addLayer(comp.id, layer);
+        useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: comp.id });
+        useNotificationStore.getState().addNotification({
+          type: 'success', message: `Added "${transitionName}" transition`, autoDismiss: 2000,
+        });
+        try { (window as any).__renderer?.renderLoop?.requestRender?.(); } catch {}
+      } catch { /* parse error */ }
+      return;
+    }
+
     // 1. Effect dropped onto empty timeline — create an adjustment layer
     const effectType = e.dataTransfer.getData('application/onion-effect');
     if (effectType) {
@@ -267,7 +292,7 @@ export const TimelinePanel: React.FC = () => {
       style={{ background: 'var(--color-panel)', borderRadius: 'var(--radius-panel)', overflow: 'hidden', outline: timelineDrop ? '2px dashed var(--color-accent)' : 'none', outlineOffset: -2 }}
       onDragOver={(e) => {
         const types = Array.from(e.dataTransfer.types);
-        if (types.includes('application/onion-asset') || types.includes('application/onion-effect')) {
+        if (types.includes('application/onion-asset') || types.includes('application/onion-effect') || types.includes('application/onion-transition')) {
           e.preventDefault();
           e.dataTransfer.dropEffect = 'copy';
           setTimelineDrop(true);
@@ -298,7 +323,7 @@ export const TimelinePanel: React.FC = () => {
           onMouseDown={(e) => {
             e.preventDefault();
             const sx = e.clientX, sw = outlinerWidth;
-            const mm = (ev: MouseEvent) => setOutlinerWidth(Math.max(160, Math.min(500, sw + ev.clientX - sx)));
+            const mm = (ev: MouseEvent) => setOutlinerWidth(Math.max(250, Math.min(600, sw + ev.clientX - sx)));
             const mu = () => { document.removeEventListener('mousemove', mm); document.removeEventListener('mouseup', mu); };
             document.addEventListener('mousemove', mm);
             document.addEventListener('mouseup', mu);
@@ -370,6 +395,9 @@ const OutlinerTracksHeader: React.FC<{ compId: string }> = ({ compId }) => {
       { id: 'add.text',  label: 'Text',  onClick: () => addFromHeader(compId, 'text') },
       { id: 'add.null',  label: 'Null Object', onClick: () => addFromHeader(compId, 'null') },
       { id: 'add.adj',   label: 'Adjustment Layer', onClick: () => addFromHeader(compId, 'adjustment') },
+      { id: 'add.camera', label: 'Camera', onClick: () => addFromHeader(compId, 'camera') },
+      { id: 'add.light',  label: 'Light', onClick: () => addFromHeader(compId, 'light') },
+      { id: 'add.sep',   label: '', divider: true },
       { id: 'add.d2', divider: true },
       { id: 'add.image', label: 'Image', onClick: () => addFromHeader(compId, 'image') },
       { id: 'add.video', label: 'Video', onClick: () => addFromHeader(compId, 'video') },

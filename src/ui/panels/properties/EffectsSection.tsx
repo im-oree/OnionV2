@@ -7,6 +7,8 @@ import React, { useState } from 'react';
 import { useEffectsStore } from '../../../state/effectsStore';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { usePresetsStore } from '../../../state/presetsStore';
+import { useSmoothDrag } from '../../common/useSmoothDrag';
 import { effectRegistry } from '../../../renderer/effects/EffectRegistry';
 import { Section } from './Section';
 import { NumberInput } from './inputs/NumberInput';
@@ -18,11 +20,19 @@ import { useContextMenu } from '../../common/useContextMenu';
 import type { EffectInstance, EffectParameter } from '../../../types/effect';
 import type { Layer } from '../../../types/layer';
 import { confirm } from '../../common/ConfirmDialog';
+import { BLEND_DESCRIPTIONS } from '../../../renderer/effects/library/blendMode';
+import { BLEND_MODES } from '../../../renderer/blending/BlendModes';
 
 interface Props { layer: Layer; compId: string; }
 
 export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
-  const effects = useEffectsStore((s) => s.effectsByLayer[layer.id] ?? []);
+  // FIX: don't create a new [] on every render — that changes the selector
+  // reference and can cause child inputs to lose focus mid-typing.
+  const effectsMap = useEffectsStore((s) => s.effectsByLayer);
+  const effects = React.useMemo(
+    () => effectsMap[layer.id] ?? [],
+    [effectsMap, layer.id],
+  );
   const removeEffect = useEffectsStore((s) => s.removeEffect);
   const reorderEffect = useEffectsStore((s) => s.reorderEffect);
   const updateParameter = useEffectsStore((s) => s.updateParameter);
@@ -34,6 +44,18 @@ export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
   const comp = useCompositionStore((s) => s.activeCompositionId
     ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null : null);
   const currentFrame = comp ? Math.floor(comp.currentTime * comp.fps) : 0;
+
+  const drag = useSmoothDrag({
+    itemCount: effects.length,
+    rowHeight: 28,
+    onReorder: (from, to) => {
+      if (from === to) return;
+      // reorderEffect takes (layerId, effectId, newIndex)
+      const fromEffect = effects[from];
+      if (!fromEffect) return;
+      reorderEffect(layer.id, fromEffect.id, to);
+    },
+  });
 
   return (
     <Section label="Effects">
@@ -62,10 +84,12 @@ export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
               Clear All Keyframes
             </button>
           </div>
-          <div className="space-y-1">
+          <div className="space-y-1" style={{ position: 'relative' }}>
         {effects.map((effect, idx) => (
           <EffectItem key={effect.id} effect={effect} index={idx} total={effects.length}
             currentFrame={currentFrame} layerId={layer.id} compId={compId}
+            dragHandleProps={{ onMouseDown: (e: React.MouseEvent) => drag.handleMouseDown(idx, e) }}
+            style={drag.getDragStyle(idx)}
             onToggle={() => toggleEffect(layer.id, effect.id)}
             onRemove={async () => {
               const yes = await confirm(`Remove effect "${effect.name}"?`, 'Remove Effect', { confirmLabel: 'Remove' });
@@ -74,8 +98,9 @@ export const EffectsSection: React.FC<Props> = ({ layer, compId }) => {
             onDuplicate={() => duplicateEffect(layer.id, effect.id)}
             onMoveUp={() => reorderEffect(layer.id, effect.id, idx - 1)}
             onMoveDown={() => reorderEffect(layer.id, effect.id, idx + 1)}
-            onParamChange={(paramId, value) => updateParameter(layer.id, effect.id, paramId, value)}
-            onSavePreset={() => {}}
+            onParamChange={(paramId, value) => updateParameter(layer.id, effect.id, paramId, value)}                            onSavePreset={(name) => {
+                              usePresetsStore.getState().addPreset(name, [effect]);
+                            }}
           />
         ))}
           </div>
@@ -152,7 +177,9 @@ const EffectItem: React.FC<{
   onMoveUp: () => void; onMoveDown: () => void;
   onParamChange: (paramId: string, value: any) => void;
   onSavePreset: (name: string) => void;
-}> = ({ effect, index, total, currentFrame, layerId, onToggle, onRemove, onDuplicate, onMoveUp, onMoveDown, onParamChange, onSavePreset }) => {
+  dragHandleProps?: { onMouseDown: (e: React.MouseEvent) => void };
+  style?: React.CSSProperties;
+}> = ({ effect, index, total, currentFrame, layerId, onToggle, onRemove, onDuplicate, onMoveUp, onMoveDown, onParamChange, onSavePreset, dragHandleProps, style: dragStyle }) => {
   const ctxMenu = useContextMenu();
   const [saving, setSaving] = useState(false);
   const [presetName, setPresetName] = useState('');
@@ -162,8 +189,12 @@ const EffectItem: React.FC<{
     const kfStore = useKeyframeStore.getState();
     if (!kfStore.isPropertyAnimated(layerId, propPath)) return;
     const kfs = kfStore.engine.getKeyframesForProperty(layerId, propPath);
-    const atFrame = kfs.some((k) => k.time === currentFrame);
-    if (!atFrame) {
+    const existing = kfs.find((k) => k.time === currentFrame);
+    if (existing) {
+      // Keyframe exists at current frame — UPDATE its value
+      kfStore.updateKeyframe(existing.id, { value });
+    } else {
+      // No keyframe at current frame — ADD a new one
       const param = effect.parameters.find(p => p.id === paramId);
       const interp: 'linear' | 'hold' =
         param?.type === 'boolean' || param?.type === 'select' ? 'hold' : 'linear';
@@ -195,7 +226,7 @@ const EffectItem: React.FC<{
   return (
     <div
       className="rounded-md overflow-hidden"
-      style={{ border: '1px solid var(--color-border)', background: 'var(--color-panel)' }}
+      style={{ border: '1px solid var(--color-border)', background: 'var(--color-panel)', ...dragStyle }}
     >
       {/* Header */}
       <div
@@ -207,6 +238,19 @@ const EffectItem: React.FC<{
         }}
         onContextMenu={handleHeaderContext}
       >
+        {/* Drag handle */}
+        <button
+          className="w-4 h-4 flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
+          style={{ color: 'var(--color-text-disabled)', cursor: 'grab' }}
+          {...dragHandleProps}
+          title="Drag to reorder"
+        >
+          <svg width="7" height="10" viewBox="0 0 7 10" fill="currentColor">
+            <circle cx="2" cy="2" r="1" /><circle cx="5" cy="2" r="1" />
+            <circle cx="2" cy="5" r="1" /><circle cx="5" cy="5" r="1" />
+            <circle cx="2" cy="8" r="1" /><circle cx="5" cy="8" r="1" />
+          </svg>
+        </button>
         <button
           className="w-4 h-4 flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
           style={{ color: 'var(--color-text-secondary)' }}
@@ -232,6 +276,50 @@ const EffectItem: React.FC<{
         >
           {effect.name}
         </span>
+        {/* Local/Screen space toggle icon */}
+        {(() => {
+          const isScreen = (effect.space ?? 'local') === 'screen';
+          return (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                useEffectsStore.getState().setEffectSpace(
+                  layerId,
+                  effect.id,
+                  isScreen ? 'local' : 'screen',
+                );
+              }}
+              className="border-0 bg-transparent cursor-pointer flex items-center justify-center shrink-0"
+              style={{
+                width: 16, height: 16, borderRadius: 3,
+                color: isScreen ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+              }}
+              title={
+                isScreen
+                  ? 'Screen space (applied after layer transform) — click to switch to Local'
+                  : 'Local space (applied before layer transform) — click to switch to Screen'
+              }
+            >
+              {isScreen ? (
+                // Screen-space icon: monitor with a dot in the center
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="1.5" y="2.5" width="13" height="9" rx="1" />
+                  <line x1="5" y1="14" x2="11" y2="14" />
+                  <line x1="8" y1="11.5" x2="8" y2="14" />
+                  <circle cx="8" cy="7" r="1.4" fill="currentColor" stroke="none" />
+                </svg>
+              ) : (
+                // Local-space icon: box with an anchor axis inside it
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2.5" y="2.5" width="11" height="11" rx="1" />
+                  <line x1="8" y1="5" x2="8" y2="11" />
+                  <line x1="5" y1="8" x2="11" y2="8" />
+                  <circle cx="8" cy="8" r="1.2" fill="currentColor" stroke="none" />
+                </svg>
+              )}
+            </button>
+          );
+        })()}
         {index > 0 && (
           <button onClick={onMoveUp} className="w-4 h-4 border-0 bg-transparent cursor-pointer flex items-center justify-center"
             style={{ color: 'var(--color-text-disabled)' }} title="Move up">
@@ -465,61 +553,87 @@ const EffectParamRow: React.FC<{
     rowCtx.open(e, items);
   };
 
+  // Pre-compute the blend mode description for display below the select
+  const blendModeDesc =
+    effect.type === 'blendMode' && param.id === 'mode'
+      ? (() => {
+          const modeVal = param.value;
+          const bm = BLEND_MODES[modeVal as number];
+          return bm ? BLEND_DESCRIPTIONS[bm.id] ?? '' : '';
+        })()
+      : '';
+
   return (
-    <div
-      className="flex items-center gap-1.5 group"
-      style={{ minHeight: 22 }}
-      onContextMenu={openRowContext}
-    >
-      {/* Stopwatch */}
-      <button
-        className="flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
-        style={{
-          width: 14, height: 14,
-          color: isAnimated ? 'var(--color-accent)' : 'var(--color-text-disabled)',
-          opacity: isAnimated ? 1 : 0.4,
-        }}
-        onClick={toggleStopwatch}
-        onMouseEnter={(e) => { if (!isAnimated) (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
-        onMouseLeave={(e) => { if (!isAnimated) (e.currentTarget as HTMLElement).style.opacity = '0.4'; }}
-        title={isAnimated ? 'Animation enabled — click to disable' : 'Enable animation for this property'}
+    <div onContextMenu={openRowContext}>
+      <div
+        className="flex items-center gap-1.5 group"
+        style={{ minHeight: 22 }}
       >
-        <svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
-          <circle cx="5" cy="5" r="4" />
-          <line x1="5" y1="2" x2="5" y2="5" />
-          <line x1="5" y1="5" x2="7" y2="6" />
-        </svg>
-      </button>
-
-      {/* Label */}
-      <span
-        className="text-ui-sm truncate select-none shrink-0"
-        style={{ color: 'var(--color-text-secondary)', width: 78 }}
-        title={param.name}
-      >
-        {param.name}
-      </span>
-
-      {/* Input */}
-      <div className="flex-1 min-w-0" onContextMenu={(e) => e.stopPropagation() /* let browser handle inside text inputs */}>
-        <ParamInputSlot param={param} onChange={onChange} onWrapperContextMenu={openRowContext} />
-      </div>
-
-      {/* Diamond (only when animated) */}
-      {isAnimated && (
+        {/* Stopwatch */}
         <button
           className="flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
           style={{
             width: 14, height: 14,
-            color: hasKeyframe ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+            color: isAnimated ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+            opacity: isAnimated ? 1 : 0.4,
           }}
-          onClick={toggleDiamond}
-          title={hasKeyframe ? 'Remove keyframe at current time' : 'Add keyframe at current time'}
+          onClick={toggleStopwatch}
+          onMouseEnter={(e) => { if (!isAnimated) (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
+          onMouseLeave={(e) => { if (!isAnimated) (e.currentTarget as HTMLElement).style.opacity = '0.4'; }}
+          title={isAnimated ? 'Animation enabled — click to disable' : 'Enable animation for this property'}
         >
-          <svg width="9" height="9" viewBox="0 0 8 8" fill={hasKeyframe ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.2">
-            <polygon points="4,0 8,4 4,8 0,4" />
+          <svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
+            <circle cx="5" cy="5" r="4" />
+            <line x1="5" y1="2" x2="5" y2="5" />
+            <line x1="5" y1="5" x2="7" y2="6" />
           </svg>
         </button>
+
+        {/* Label */}
+        <span
+          className="text-ui-sm truncate select-none shrink-0"
+          style={{ color: 'var(--color-text-secondary)', width: 78 }}
+          title={param.name}
+        >
+          {param.name}
+        </span>
+
+        {/* Input */}
+        <div className="flex-1 min-w-0" onContextMenu={(e) => e.stopPropagation() /* let browser handle inside text inputs */}>
+          <ParamInputSlot param={param} onChange={onChange} onWrapperContextMenu={openRowContext} />
+        </div>
+
+        {/* Diamond (only when animated) */}
+        {isAnimated && (
+          <button
+            className="flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
+            style={{
+              width: 14, height: 14,
+              color: hasKeyframe ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+            }}
+            onClick={toggleDiamond}
+            title={hasKeyframe ? 'Remove keyframe at current time' : 'Add keyframe at current time'}
+          >
+            <svg width="9" height="9" viewBox="0 0 8 8" fill={hasKeyframe ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.2">
+              <polygon points="4,0 8,4 4,8 0,4" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* Blend mode description (outside the flex row, full width) */}
+      {blendModeDesc && (
+        <div
+          className="text-[9px] leading-tight select-none"
+          style={{
+            color: 'var(--color-text-tertiary, #888)',
+            padding: '0 18px 2px 18px',
+            opacity: 0.85,
+          }}
+          title={blendModeDesc}
+        >
+          {blendModeDesc}
+        </div>
       )}
 
       {rowCtx.menu && <ContextMenu items={rowCtx.menu.items} position={rowCtx.menu.position} onClose={rowCtx.close} />}
@@ -592,6 +706,24 @@ function ParamInput({ param, onChange }: { param: EffectParameter; onChange: (va
           <NumberInput value={v[0]} onChange={(x: number) => onChange([x, v[1]])} step={stepVal} precision={1} label="X" />
           <NumberInput value={v[1]} onChange={(y: number) => onChange([v[0], y])} step={stepVal} precision={1} label="Y" />
         </div>
+      );
+    }
+    case 'layerRef': {
+      // Find the active composition's layers for the picker
+      const compId = useCompositionStore.getState().activeCompositionId;
+      const comp = compId
+        ? useCompositionStore.getState().compositions.find((c) => c.id === compId)
+        : null;
+      const layers = comp?.layers ?? [];
+      return (
+        <SelectInput
+          value={String(param.value ?? '')}
+          options={[
+            { label: '— None —', value: '' },
+            ...layers.map((l: any) => ({ label: l.name, value: l.id })),
+          ]}
+          onChange={onChange}
+        />
       );
     }
     default:

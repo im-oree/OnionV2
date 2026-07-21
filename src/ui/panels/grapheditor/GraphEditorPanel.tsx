@@ -59,6 +59,12 @@ export const GraphEditorPanel: React.FC = () => {
   const [propFilter, setPropFilter] = useState<Set<string>>(new Set());
   const [snapToFrame, setSnapToFrame] = useState(true);
   const [graphMode, setGraphMode] = useState<'value' | 'speed'>('value');
+  const [autoTangent, setAutoTangent] = useState(true);
+  const [easingPreview, setEasingPreview] = useState<{
+    outTangent: { x: number; y: number };
+    inTangent: { x: number; y: number };
+    x: number; y: number;
+  } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const { width, height } = useContainerSize(containerRef);
@@ -75,44 +81,62 @@ export const GraphEditorPanel: React.FC = () => {
   const layers = comp.layers.filter((l) =>
     selectedLayerIds.includes(l.id) || selectedLayerIds.length === 0);
   const animatedLayers = layers.filter((l) => engine.getAllAnimatedProperties(l.id).length > 0);
+
+  // Also include camera keyframes when camera has animated properties
+  const cameraProps = engine.getAllAnimatedProperties('__camera__');
+  const hasCameraKeyframes = cameraProps.length > 0;
   const hasPropertySelection = selectedPropertyKeys.size > 0;
 
   const curves = useMemo<FlatCurve[]>(() => {
     const result: FlatCurve[] = [];
-    for (const layer of animatedLayers) {
-      const props = engine.getAllAnimatedProperties(layer.id);
+
+    // Helper to build curves from a layer ID + name
+    const buildCurves = (lId: string, lName: string) => {
+      const props = engine.getAllAnimatedProperties(lId);
       for (const prop of props) {
-        const kfs = engine.getKeyframesForProperty(layer.id, prop);
+        const kfs = engine.getKeyframesForProperty(lId, prop);
         if (kfs.length === 0) continue;
         const first = kfs[0].value;
         const dims = Array.isArray(first) ? first.length : 1;
-        const propKey = `${layer.id}::${prop}`;
+        const propKey = `${lId}::${prop}`;
 
         // Filter: if properties are selected, only show those
         if (hasPropertySelection && !selectedPropertyKeys.has(propKey)) continue;
         // Also respect the toolbar filter
         if (propFilter.size > 0 && !propFilter.has(propKey)) continue;
 
-        const processKfs = graphMode === 'speed'
-          ? computeVelocityKfs(kfs, comp.fps) : kfs;
         const suffixes = ['X', 'Y', 'Z', 'W'];
         if (dims === 1) {
+          const processKfs = graphMode === 'speed'
+            ? computeVelocityKfs(kfs, comp.fps, 0) : kfs;
           result.push({
-            layerId: layer.id, property: prop, dimension: 0,
+            layerId: lId, property: prop, dimension: 0,
             keyframes: processKfs, color: curveColor(prop, 0, 1),
-            label: `${layer.name}: ${prop}${graphMode === 'speed' ? ' (speed)' : ''}`,
+            label: `${lName}: ${prop}${graphMode === 'speed' ? ' (speed)' : ''}`,
           });
         } else {
           for (let d = 0; d < dims; d++) {
+            const processKfs = graphMode === 'speed'
+              ? computeVelocityKfs(kfs, comp.fps, d) : kfs;
             result.push({
-              layerId: layer.id, property: prop, dimension: d,
+              layerId: lId, property: prop, dimension: d,
               keyframes: processKfs, color: curveColor(prop, d, dims),
-              label: `${layer.name}: ${prop}.${suffixes[d] ?? d}`,
+              label: `${lName}: ${prop}.${suffixes[d] ?? d}`,
             });
           }
         }
       }
+    };
+
+    for (const layer of animatedLayers) {
+      buildCurves(layer.id, layer.name);
     }
+
+    // Include camera keyframes
+    if (hasCameraKeyframes) {
+      buildCurves('__camera__', 'Camera');
+    }
+
     return result;
   }, [animatedLayers, engine, propFilter, selectedPropertyKeys, hasPropertySelection, revision, graphMode, comp.fps]);
 
@@ -121,8 +145,13 @@ export const GraphEditorPanel: React.FC = () => {
     for (const layer of animatedLayers)
       for (const prop of engine.getAllAnimatedProperties(layer.id))
         opts.push({ key: `${layer.id}::${prop}`, label: `${layer.name}: ${prop}` });
+    // Include camera props
+    if (hasCameraKeyframes) {
+      for (const prop of cameraProps)
+        opts.push({ key: `__camera__::${prop}`, label: `Camera: ${prop}` });
+    }
     return opts;
-  }, [animatedLayers, engine]);
+  }, [animatedLayers, engine, hasCameraKeyframes, cameraProps]);
 
   const toPx = useCallback((frame: number, value: number) => ({
     px: ((frame - viewBox.x) / viewBox.w) * width,
@@ -132,6 +161,7 @@ export const GraphEditorPanel: React.FC = () => {
   const { handleMouseDown, handleWheel, dragType, boxSelectRect } = useGraphInteraction({
     svgRef, viewBox, setViewBox, engine, curves, totalFrames, snapToFrame,
     svgWidth: width, svgHeight: height,
+    autoTangent,
   });
   const ctx = useContextMenu();
 
@@ -247,6 +277,22 @@ export const GraphEditorPanel: React.FC = () => {
         hasSelection={selectedKfIds.size > 0}
         onFrameAll={frameAll} onApplyPreset={applyPreset}
         presets={Object.keys(EASING_PRESETS) as EasingPresetName[]}
+        autoTangent={autoTangent} setAutoTangent={setAutoTangent}
+        easingPreview={easingPreview}
+        onShowEasingPreview={() => {
+          if (selectedKfIds.size === 0) { setEasingPreview(null); return; }
+          const store = useKeyframeStore.getState();
+          const kf = store.engine.getKeyframe(Array.from(selectedKfIds)[0]);
+          if (!kf) { setEasingPreview(null); return; }
+          const outTan = kf.outTangent ?? { x: 0.333, y: 0.333 };
+          const inTan = kf.inTangent ?? { x: 0.333, y: 0.333 };
+          setEasingPreview(easingPreview ? null : {
+            outTangent: outTan,
+            inTangent: inTan,
+            x: 0, y: 0,
+          });
+        }}
+        onCloseEasingPreview={() => setEasingPreview(null)}
       />
       <GraphRuler viewBox={viewBox} fps={comp.fps} currentFrame={currentFrame}
         workAreaStart={workAreaStart} workAreaEnd={workAreaEnd} compId={comp.id}
@@ -293,16 +339,36 @@ export const GraphEditorPanel: React.FC = () => {
 
 export default GraphEditorPanel;
 
-function computeVelocityKfs(kfs: any[], fps: number): any[] {
-  if (kfs.length < 2) return kfs;
+function computeVelocityKfs(kfs: any[], fps: number, dim: number = 0): any[] {
+  if (kfs.length < 2) return kfs.map(kf => ({ ...kf, value: 0 }));
   const result: any[] = [];
   for (let i = 0; i < kfs.length; i++) {
-    const kf = kfs[i], next = kfs[i + 1];
-    if (!next) { result.push({ ...kf, value: 0 }); continue; }
-    const v1 = Array.isArray(kf.value) ? kf.value[0] : kf.value;
-    const v2 = Array.isArray(next.value) ? next.value[0] : next.value;
-    const dt = (next.time - kf.time) / fps;
-    result.push({ ...kf, value: dt > 0 ? (v2 - v1) / dt : 0 });
+    const kf = kfs[i];
+    // Compute forward velocity (value change per second)
+    if (i < kfs.length - 1) {
+      const next = kfs[i + 1];
+      const v1 = Array.isArray(kf.value) ? (kf.value[dim] ?? 0) : kf.value;
+      const v2 = Array.isArray(next.value) ? (next.value[dim] ?? 0) : next.value;
+      const dt = (next.time - kf.time) / fps;
+      const velocity = dt > 0 ? (v2 - v1) / dt : 0;
+      // Compute acceleration for tangent handles (derivative of velocity)
+      let accel = 0;
+      if (i > 0) {
+        const prev = kfs[i - 1];
+        const v0 = Array.isArray(prev.value) ? (prev.value[dim] ?? 0) : prev.value;
+        const dtPrev = (kf.time - prev.time) / fps;
+        const prevVel = dtPrev > 0 ? (v1 - v0) / dtPrev : 0;
+        accel = dt > 0 ? (velocity - prevVel) / ((dt + (dtPrev || dt)) / 2) : 0;
+      }
+      // Tangent handles: x = influence (0-1), y = velocity scaled
+      const handleScale = 0.003; // Scale velocity to tangent range
+      const outTangent = { x: 0.333, y: Math.max(-2, Math.min(2, velocity * handleScale + accel * 0.1)) };
+      const inTangent = { x: 0.333, y: Math.max(-2, Math.min(2, velocity * handleScale - accel * 0.1)) };
+      result.push({ ...kf, value: velocity, outTangent, inTangent, interpolation: 'bezier' as const });
+    } else {
+      // Last keyframe: velocity is 0 (animation ends)
+      result.push({ ...kf, value: 0 });
+    }
   }
   return result;
 }

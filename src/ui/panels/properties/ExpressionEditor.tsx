@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Code2, Trash2, Power } from 'lucide-react';
 import { useExpressionStore } from '../../../state/expressionStore';
+import { EXPRESSION_SNIPPETS } from '../../../expressions/library/snippets';
 
 interface Props {
   layerId: string;
@@ -116,6 +117,19 @@ export const ExpressionEditor: React.FC<Props> = ({ layerId, property, onClose }
           {error}
         </div>
       )}
+
+      <div className="flex gap-2 mb-2 overflow-x-auto pb-1">
+        {EXPRESSION_SNIPPETS.map(s => (
+          <button
+            key={s.label}
+            className="text-[9px] bg-white/10 hover:bg-white/20 px-2 py-1 rounded whitespace-nowrap"
+            onClick={() => { setSource(s.code); setExpression(layerId, property, s.code); }}
+            title={s.description}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
 
       <div className="mt-2 flex items-center gap-2">
         <button onClick={() => setShowPresets(!showPresets)}

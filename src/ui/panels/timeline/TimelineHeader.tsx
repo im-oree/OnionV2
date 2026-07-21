@@ -1,7 +1,8 @@
 import React, { useCallback, useMemo } from 'react';
-import { ChevronDown, Grid3X3, Circle, Magnet, Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight, Trash2, MonitorPlay } from 'lucide-react';
+import { ChevronDown, Grid3X3, Circle, Magnet, Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight, Trash2, MonitorPlay, Zap, LineChart } from 'lucide-react';
 import { useTimelineStore } from '../../../state/timelineStore';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { useUIStore } from '../../../state/uiStore';
 import { useMarkerStore } from '../../../state/markerStore';
 import { useContextMenu } from '../../common/useContextMenu';
 import { ContextMenu, type ContextMenuItem } from '../../common/ContextMenu';
@@ -11,9 +12,9 @@ import type { Composition } from '../../../types/composition';
 
 interface Props { comp: Composition; currentFrame: number; totalFrames: number; }
 
-const HdrBtn: React.FC<{ onClick?: (e: React.MouseEvent) => void; title?: string; active?: boolean; children: React.ReactNode }> = ({ onClick, title, active, children }) => (
+const HdrBtn: React.FC<{ onClick?: (e: React.MouseEvent) => void; onContextMenu?: (e: React.MouseEvent) => void; title?: string; active?: boolean; children: React.ReactNode }> = ({ onClick, onContextMenu, title, active, children }) => (
   <button
-    onClick={onClick} title={title}
+    onClick={onClick} onContextMenu={onContextMenu} title={title}
     className="flex items-center gap-1.5 border-0 bg-transparent cursor-pointer transition-colors shrink-0"
     style={{
       height: 26, padding: '0 10px',
@@ -68,6 +69,37 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
     animationClock.seekToFrame(f);
     useCompositionStore.getState().setCurrentTime(comp.id, f / fps);
   }, [comp.id, fps]);
+
+  // ── Motion Blur master toggle ─────────────────────────────
+  const mbEnabled = !!comp.motionBlur?.enabled;
+  const toggleMB = useCallback(() => {
+    const cur = comp.motionBlur ?? { enabled: false, shutterAngle: 180, shutterPhase: -90, samples: 8 };
+    useCompositionStore.getState().updateComposition(comp.id, {
+      motionBlur: { ...cur, enabled: !cur.enabled },
+    });
+  }, [comp.id, comp.motionBlur]);
+
+  const mbMenu = useMemo((): ContextMenuItem[] => {
+    const cur = comp.motionBlur ?? { enabled: false, shutterAngle: 180, shutterPhase: -90, samples: 8 };
+    const patch = (upd: Partial<typeof cur>) => useCompositionStore.getState().updateComposition(comp.id, { motionBlur: { ...cur, ...upd } });
+    return [
+      { id: 'mb.enable', label: cur.enabled ? 'Disable Motion Blur' : 'Enable Motion Blur', checked: cur.enabled, onClick: () => patch({ enabled: !cur.enabled }) },
+      { id: 'mb.d1', divider: true },
+      { id: 'mb.hdr', label: `Shutter Angle: ${cur.shutterAngle}°`, disabled: true },
+      { id: 'mb.a90',   label: '  90°',  onClick: () => patch({ shutterAngle: 90 }) },
+      { id: 'mb.a180',  label: '  180° (default)', onClick: () => patch({ shutterAngle: 180 }) },
+      { id: 'mb.a360',  label: '  360°', onClick: () => patch({ shutterAngle: 360 }) },
+      { id: 'mb.a720',  label: '  720°', onClick: () => patch({ shutterAngle: 720 }) },
+      { id: 'mb.d2', divider: true },
+      { id: 'mb.hdr2', label: `Samples: ${cur.samples}`, disabled: true },
+      { id: 'mb.s4',   label: '  4 (draft)',  onClick: () => patch({ samples: 4 }) },
+      { id: 'mb.s8',   label: '  8',   onClick: () => patch({ samples: 8 }) },
+      { id: 'mb.s16',  label: '  16',  onClick: () => patch({ samples: 16 }) },
+      { id: 'mb.s32',  label: '  32 (high quality)',  onClick: () => patch({ samples: 32 }) },
+      { id: 'mb.d3', divider: true },
+      { id: 'mb.settings', label: 'More Settings...', onClick: () => document.dispatchEvent(new CustomEvent('dialogs:openProjectSettings')) },
+    ];
+  }, [comp.id, comp.motionBlur]);
 
   const viewMenu = useMemo((): ContextMenuItem[] => [
     { id: 'v.fit', label: 'Zoom to Fit', shortcut: 'Home', onClick: () => useTimelineStore.getState().zoomToFit() },
@@ -149,6 +181,26 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
         <Magnet size={13} strokeWidth={1.75} />
       </button>
 
+      {/* Motion Blur master toggle */}
+      <button
+        onClick={toggleMB}
+        onContextMenu={(e) => { e.preventDefault(); ctx.open(e, mbMenu); }}
+        title={mbEnabled
+          ? `Motion Blur ON — right-click for settings\nShutter ${comp.motionBlur?.shutterAngle ?? 180}° / ${comp.motionBlur?.samples ?? 8} samples`
+          : 'Motion Blur OFF — click to enable (right-click for settings)'}
+        className="flex items-center gap-1 border-0 cursor-pointer transition-all shrink-0"
+        style={{
+          height: 22, padding: '0 8px',
+          borderRadius: 'var(--radius-sm)',
+          background: mbEnabled ? 'var(--color-accent-muted)' : 'transparent',
+          color: mbEnabled ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+          fontSize: 10, fontWeight: 700, letterSpacing: '0.05em',
+        }}
+      >
+        <Zap size={11} strokeWidth={2} fill={mbEnabled ? 'currentColor' : 'none'} />
+        <span>MB</span>
+      </button>
+
       <div className="flex-1" />
 
       {/* Right group: frame inputs + preview/cache */}
@@ -167,10 +219,37 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
 
       <RAMPreviewButton compId={comp.id} />
       <Sep />
+
+      {/* Graph Editor toggle */}
+      <GraphEditorToggle />
       <ClearCacheButton />
 
       {ctx.menu && <ContextMenu items={ctx.menu.items} position={ctx.menu.position} onClose={ctx.close} />}
     </div>
+  );
+};
+
+const GraphEditorToggle: React.FC = () => {
+  const showGraph = useUIStore((s) => s.showGraphEditor);
+  const toggleGraph = useUIStore((s) => s.toggleGraphEditor);
+  return (
+    <button
+      onClick={toggleGraph}
+      title={showGraph ? 'Hide Graph Editor' : 'Show Graph Editor'}
+      className="flex items-center gap-1.5 border-0 bg-transparent cursor-pointer transition-colors shrink-0"
+      style={{
+        height: 26, padding: '0 10px',
+        borderRadius: 'var(--radius-sm)',
+        fontSize: 'var(--font-size-sm)',
+        color: showGraph ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+        background: showGraph ? 'var(--color-accent-muted)' : 'transparent',
+      }}
+      onMouseEnter={(e)=>{ if(!showGraph){ (e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'; (e.currentTarget as HTMLElement).style.color='var(--color-text-primary)'; } }}
+      onMouseLeave={(e)=>{ if(!showGraph){ (e.currentTarget as HTMLElement).style.background='transparent'; (e.currentTarget as HTMLElement).style.color='var(--color-text-secondary)'; } }}
+    >
+      <LineChart size={13} strokeWidth={1.75} />
+      <span>Graph</span>
+    </button>
   );
 };
 

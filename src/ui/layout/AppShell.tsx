@@ -16,6 +16,8 @@ import CharacterPanel from '../panels/character/CharacterPanel';
 import PerformancePanel from '../panels/performance/PerformancePanel';
 import EffectsPanelWrapper from '../panels/properties/EffectsPanelWrapper';
 import EffectLibraryPanel from '../panels/effects/EffectLibraryPanel';
+import { TransitionLibraryPanel } from '../panels/effects/TransitionLibraryPanel';
+import { CameraPanel } from '../panels/camera/CameraPanel';
 
 const ProjectBrowserPanel = React.lazy(() => import('../panels/project/ProjectBrowserPanel'));
 const ViewportPanel = React.lazy(() => import('../panels/viewport/ViewportPanel'));
@@ -175,6 +177,8 @@ const RightPanelContent: React.FC = () => {
       {tab === 'properties' && <RightPropertiesPanel />}
       {tab === 'effects' && <EffectsPanelWrapper />}
       {tab === 'effectLibrary' && <EffectLibraryPanel />}
+      {tab === 'transitionLibrary' && <TransitionLibraryPanel />}
+      {tab === 'camera' && <CameraPanel />}
       {tab === 'align' && <AlignPanel />}
       {tab === 'info' && <InfoPanel />}
       {tab === 'render' && <RenderPanel />}

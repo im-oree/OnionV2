@@ -13,6 +13,7 @@
 import * as THREE from 'three';
 import type { CameraManager } from '../CameraManager';
 import type { BaseLayerRenderer } from '../layers/BaseLayerRenderer';
+import { useCompositionStore } from '../../state/compositionStore';
 
 export type GizmoMode = 'move' | 'rotate' | 'scale' | null;
 
@@ -33,6 +34,8 @@ export class SelectionOverlay {
   private _hideHandles = false;
   /** Last-selected layer ID for brighter outline when multi-selecting */
   private _lastSelectedId: string | null = null;
+  /** Whether the selected layers are 3D — shows Z arrow in move gizmo */
+  private _is3D = false;
 
   constructor(container: HTMLElement, cameraManager: CameraManager) {
     this.container = container;
@@ -68,10 +71,26 @@ export class SelectionOverlay {
     this.svg = null;
   }
 
-  update(renderers: BaseLayerRenderer[]): void {
+  update(renderers: BaseLayerRenderer[], is3D = false): void {
     if (!this.svg) return;
+    // Always clear first — prevents stuck overlays
     this.svg.innerHTML = '';
     if (renderers.length === 0 || !this._visible) return;
+    this._is3D = is3D;
+
+    // Filter out invisible layer types — adjustment and light layers
+    // should never show selection outlines or gizmos in the viewport.
+    // Do this once upfront (not per-renderer) for efficiency.
+    const cs = useCompositionStore.getState();
+    const comp = cs.activeCompositionId ? cs.compositions.find(c => c.id === cs.activeCompositionId) : null;
+    if (comp) {
+      const layerMap = new Map(comp.layers.map(l => [l.id, l]));
+      renderers = renderers.filter(r => {
+        const layer = layerMap.get(r.id);
+        return layer && layer.type !== 'adjustment' && layer.type !== 'light' && layer.type !== 'camera';
+      });
+      if (renderers.length === 0) return;
+    }
 
     const accent = 'var(--color-accent)';
     const white = '#ffffff';
@@ -79,7 +98,7 @@ export class SelectionOverlay {
     const edgeSize = 6;  // edge handle size
 
     let allCorners: ScreenCorner[] = [];
-    let worldCenterX = 0, worldCenterY = 0, centerCount = 0;
+    let worldCenterX = 0, worldCenterY = 0, worldCenterZ = 0, centerCount = 0;
 
     for (const r of renderers) {
       const corners = this._getWorldCorners(r);
@@ -123,6 +142,7 @@ export class SelectionOverlay {
       r.group.getWorldPosition(worldPos);
       worldCenterX += worldPos.x;
       worldCenterY += worldPos.y;
+      worldCenterZ += worldPos.z;
       centerCount++;
 
       // ── 2. Bounding box handles (unless hidden) ──
@@ -131,7 +151,7 @@ export class SelectionOverlay {
       }
 
       // ── 5. Anchor crosshair ──
-      this._drawAnchor(worldPos.x, worldPos.y);
+      this._drawAnchor(worldPos.x, worldPos.y, worldPos.z);
     }
 
     if (allCorners.length === 0) return;
@@ -148,7 +168,8 @@ export class SelectionOverlay {
 
     const gizmoCx = worldCenterX / centerCount;
     const gizmoCy = worldCenterY / centerCount;
-    const gizmoScreen = this.cameraManager.worldToScreen(gizmoCx, gizmoCy);
+    const gizmoCz = worldCenterZ / centerCount;
+    const gizmoScreen = this.cameraManager.worldToScreen(gizmoCx, gizmoCy, gizmoCz);
     const gx = gizmoScreen.x, gy = gizmoScreen.y;
 
     // ── 3. Blender gizmo (L5: only when Move/Rotate/Scale tool active) ──
@@ -158,6 +179,8 @@ export class SelectionOverlay {
       case 'scale':   this._drawScaleGizmo(gx, gy, accent, white); break;
     }
   }
+
+
 
   // ── L2: PowerPoint-style bounding box handles ─────────────
   private _drawBoundingBoxHandles(
@@ -274,26 +297,86 @@ export class SelectionOverlay {
     return cursors[pos] || 'default';
   }
 
-  // ── Compute 4 world-space corners ─────────────────────────
+  // ── Compute world-space corners for selection outline ─────────────────
+  // For 3D objects: all 8 bounding box corners → convex hull for proper perspective outline
+  // For 2D objects: 4 corners at Z=0 (flat rectangle)
+  // Uses renderer.getWorldBoundingBox() so model3d layers use the actual model geometry
   private _getWorldCorners(renderer: BaseLayerRenderer): ScreenCorner[] {
-    renderer.mesh.updateMatrixWorld(true);
-    const geo = renderer.mesh.geometry;
-    geo.computeBoundingBox();
-    const bbox = geo.boundingBox;
+    // Use the renderer's world bounding box (overridden by Model3DLayerRenderer)
+    const bbox = renderer.getWorldBoundingBox();
     if (!bbox) return [];
 
-    const localCorners = [
+    // 3D mode: use all 8 corners of the bounding box for proper perspective outline
+    if (this.cameraManager.is3DMode) {
+      const corners = [
+        new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.min.z),
+        new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.min.z),
+        new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.min.z),
+        new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.min.z),
+        new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.max.z),
+        new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.max.z),
+        new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.max.z),
+        new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.max.z),
+      ];
+
+      const screenPoints = corners
+        .map(w => this.cameraManager.worldToScreen(w.x, w.y, w.z))
+        .filter(p => isFinite(p.x) && isFinite(p.y));
+
+      // Compute convex hull for proper 3D silhouette outline
+      return this._convexHull(screenPoints);
+    }
+
+    // 2D mode: 4 corners at Z=0 (flat rectangle)
+    const corners = [
       new THREE.Vector3(bbox.min.x, bbox.min.y, 0),
       new THREE.Vector3(bbox.max.x, bbox.min.y, 0),
       new THREE.Vector3(bbox.max.x, bbox.max.y, 0),
       new THREE.Vector3(bbox.min.x, bbox.max.y, 0),
     ];
 
-    const matrix = renderer.mesh.matrixWorld;
-    return localCorners.map((c) => {
-      const world = c.clone().applyMatrix4(matrix);
-      return this.cameraManager.worldToScreen(world.x, world.y);
+    return corners.map((c) => {
+      return this.cameraManager.worldToScreen(c.x, c.y);
     });
+  }
+
+  /**
+   * Andrew's monotone chain convex hull algorithm.
+   * Returns the convex hull of 2D screen points in counter-clockwise order.
+   * This gives the correct silhouette outline for rotated 3D objects.
+   */
+  private _convexHull(points: ScreenCorner[]): ScreenCorner[] {
+    if (points.length <= 2) return points;
+
+    // Sort by x, then by y
+    const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+
+    const cross = (o: ScreenCorner, a: ScreenCorner, b: ScreenCorner): number =>
+      (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+    // Build lower hull
+    const lower: ScreenCorner[] = [];
+    for (const p of sorted) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) {
+        lower.pop();
+      }
+      lower.push(p);
+    }
+
+    // Build upper hull
+    const upper: ScreenCorner[] = [];
+    for (const p of sorted.reverse()) {
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) {
+        upper.pop();
+      }
+      upper.push(p);
+    }
+
+    // Remove last point of each half because it's repeated
+    lower.pop();
+    upper.pop();
+
+    return lower.concat(upper);
   }
 
   // ── MOVE GIZMO ────────────────────────────────────────────
@@ -302,6 +385,28 @@ export class SelectionOverlay {
     const headSize = 8;
     this._arrow(cx, cy, cx + len, cy, headSize, '#ff3355', white, 'move-x');
     this._arrow(cx, cy, cx, cy - len, headSize, '#55dd33', white, 'move-y');
+    // Z arrow — shown when 3D layer is selected
+    if (this._is3D) {
+      // Draw Z axis at 45° downward-right (standard ortho convention)
+      const zLen = len * 0.7;
+      const zAngle = Math.PI * 0.25; // 45 degrees
+      const zx = cx + zLen * Math.cos(zAngle);
+      const zy = cy + zLen * Math.sin(zAngle);
+      this._arrow(cx, cy, zx, zy, headSize * 0.7, '#3388ff', white, 'move-z');
+      // Label
+      const label = document.createElementNS(NS, 'text');
+      label.setAttribute('x', String(zx + 6));
+      label.setAttribute('y', String(zy + 2));
+      label.setAttribute('fill', '#3388ff');
+      label.setAttribute('font-size', '9');
+      label.setAttribute('font-weight', 'bold');
+      label.setAttribute('font-family', 'monospace');
+      label.setAttribute('data-gizmo', 'move-z');
+      label.textContent = 'Z';
+      label.style.pointerEvents = 'all';
+      label.style.cursor = 'pointer';
+      this.svg!.appendChild(label);
+    }
     this._compassRose(cx, cy, 8, accent, white);
     const sq = 7;
     const sqEl = this._rect(cx + sq, cy - sq * 1.5, sq, sq, '#ffdd44', 1, '#ffdd44');
@@ -362,8 +467,8 @@ export class SelectionOverlay {
   }
 
   // ── N3: Anchor crosshair — larger, double-color for visibility ──
-  private _drawAnchor(worldX: number, worldY: number): void {
-    const screen = this.cameraManager.worldToScreen(worldX, worldY);
+  private _drawAnchor(worldX: number, worldY: number, worldZ: number = 0): void {
+    const screen = this.cameraManager.worldToScreen(worldX, worldY, worldZ);
     const cs = 10; // 12px crosshair
     // White outer lines for contrast on any background
     this.svg!.appendChild(this._line(screen.x - cs, screen.y, screen.x + cs, screen.y, '#ffffff', 2));
@@ -503,7 +608,7 @@ export class SelectionOverlay {
 
   // ── Public API ──────────────────────────────────────────
   show(): void { this._visible = true; }
-  hide(): void { this._visible = false; this.update([]); }
+  hide(): void { this._visible = false; if (this.svg) this.svg.innerHTML = ''; }
   get visible(): boolean { return this._visible; }
 
   dispose(): void { this.unmount(); }

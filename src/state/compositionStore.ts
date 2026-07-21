@@ -12,6 +12,7 @@ function genId(): string { return `comp_${Date.now()}_${Math.random().toString(3
 export interface CompositionState {
   compositions: Composition[];
   activeCompositionId: string | null;
+  clearAll: () => void;
   addComposition: (overrides?: Partial<Composition>) => Composition;
   removeComposition: (id: string) => { ok: boolean; reason?: string };
   setActiveComposition: (id: string) => void;
@@ -206,6 +207,11 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
     }));
     markProjectDirty();
     useHistoryStore.getState().pushEntry('Reorder Layers', snapshot);
+  },
+
+  clearAll: () => {
+    set({ compositions: [], activeCompositionId: null });
+    markProjectDirty();
   },
 
   setCurrentTime: (compId, time) => {

@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 interface SelectInputProps {
   value: string | number;
-  onChange: (value: string) => void;
-  options: Array<{ label: string; value: string }>;
+  onChange: (value: string | number) => void;
+  options: Array<{ label: string; value: string | number }>;
   label?: string;
   disabled?: boolean;
 }
@@ -13,6 +13,18 @@ export const SelectInput: React.FC<SelectInputProps> = ({
   value, onChange, options, label, disabled,
 }) => {
   const [focused, setFocused] = useState(false);
+
+  // Detect if this select uses numeric values. If ALL options have
+  // numeric values, coerce the emitted change back to a number so the
+  // consumer receives the same type it registered.
+  const allNumeric = useMemo(
+    () => options.length > 0 && options.every(o =>
+      typeof o.value === 'number' ||
+      (typeof o.value === 'string' && o.value !== '' && !isNaN(Number(o.value))),
+    ),
+    [options],
+  );
+
   return (
     <div className="flex items-center gap-2 min-w-0">
       {label && (
@@ -26,7 +38,10 @@ export const SelectInput: React.FC<SelectInputProps> = ({
       <div className="relative flex-1 min-w-0">
         <select
           value={String(value)}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            const raw = e.target.value;
+            onChange(allNumeric ? Number(raw) : raw);
+          }}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           disabled={disabled}
@@ -45,7 +60,7 @@ export const SelectInput: React.FC<SelectInputProps> = ({
           }}
         >
           {options.map((opt) => (
-            <option key={opt.value} value={opt.value} style={{ background: 'var(--color-panel-raised)' }}>
+            <option key={String(opt.value)} value={String(opt.value)} style={{ background: 'var(--color-panel-raised)' }}>
               {opt.label}
             </option>
           ))}

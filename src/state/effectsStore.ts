@@ -6,11 +6,23 @@
 import { create } from 'zustand';
 import type { EffectInstance, EffectType } from '../types/effect';
 import { effectRegistry } from '../renderer/effects/EffectRegistry';
-import { captureSnapshot, debouncedCapture, flushDebouncedSnapshot, useHistoryStore } from './historyStore';
+import { BLEND_MODES } from '../renderer/blending/BlendModes';
+import { useCompositionStore } from './compositionStore';
+import { captureSnapshot, debouncedCapture, useHistoryStore } from './historyStore';
 
 function genId(): string {
   return `efx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
+
+/**
+ * Convert a blend mode numeric index (0-26 = BLEND_MODES array index) to its
+ * string ID (e.g. 'multiply', 'screen'). The blend mode effect stores the
+ * index in its 'mode' select parameter, but layer.blendMode expects the ID.
+ */
+function blendModeIndexToString(idx: number): string | undefined {
+  return BLEND_MODES[idx]?.id;
+}
+
 
 function requestEffectRender(): void {
   try {
@@ -70,6 +82,26 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
     set((s) => ({
       effectsByLayer: { ...s.effectsByLayer, [layerId]: [...existing, newEffect] },
     }));
+
+    // Blend mode effect: update layer's blendMode property.
+    // The effect uses numeric values (0-26 = BLEND_MODES indices), but
+    // layer.blendMode expects string IDs like 'multiply', 'screen', etc.
+    if (effectType === 'blendMode') {
+      const modeParam = newEffect.parameters.find((p) => p.id === 'mode');
+      if (modeParam) {
+        const blendModeId = blendModeIndexToString(modeParam.value as number);
+        if (blendModeId) {
+          const cs = useCompositionStore.getState();
+          const comp = cs.activeCompositionId
+            ? cs.compositions.find((c) => c.id === cs.activeCompositionId)
+            : null;
+          if (comp) {
+            cs.updateLayer(comp.id, layerId, { blendMode: blendModeId as any });
+          }
+        }
+      }
+    }
+
     useHistoryStore.getState().pushEntry('Add Effect', snapshot);
     requestEffectRender();
   },
@@ -112,6 +144,23 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
           ),
         };
       });
+      // Blend mode effect: when 'mode' param changes, update layer's blendMode.
+      // Convert numeric index (0-26) to string ID like 'multiply', 'screen'.
+      const updatedEffect = (s.effectsByLayer[layerId] ?? []).find((e) => e.id === effectId);
+      if (updatedEffect?.type === 'blendMode' && paramId === 'mode') {
+        const idx = typeof value === 'string' ? Number(value) : (value as number);
+        const safeIdx = Number.isFinite(idx) ? idx : 0;
+        const blendModeId = blendModeIndexToString(safeIdx);
+        if (blendModeId) {
+          const cs = useCompositionStore.getState();
+          const comp = cs.activeCompositionId
+            ? cs.compositions.find((c) => c.id === cs.activeCompositionId)
+            : null;
+          if (comp) {
+            cs.updateLayer(comp.id, layerId, { blendMode: blendModeId as any }, true);
+          }
+        }
+      }
       return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
     });
     requestEffectRender();
@@ -202,10 +251,22 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
   },
 
   setParameterValue: (layerId, effectId, paramId, value) => {
-    get().updateParameter(layerId, effectId, paramId, value);
-    // Flush the debounced snapshot so keyframe-driven value changes
-    // are recorded immediately (not deferred to the next slider drag).
-    flushDebouncedSnapshot();
+    // Silent set — bypasses history/debounce entirely.
+    // This is called from PropertyBinder on every RAF tick for keyframe
+    // evaluation. It must NOT touch debouncedCapture or flushDebouncedSnapshot
+    // because those would fight user edits made in the same frame window.
+    set((s) => {
+      const list = (s.effectsByLayer[layerId] ?? []).map((e) => {
+        if (e.id !== effectId) return e;
+        return {
+          ...e,
+          parameters: e.parameters.map((p) =>
+            p.id === paramId ? { ...p, value } : p,
+          ),
+        };
+      });
+      return { effectsByLayer: { ...s.effectsByLayer, [layerId]: list } };
+    });
     requestEffectRender();
   },
 }));

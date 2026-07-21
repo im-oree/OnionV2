@@ -21,6 +21,8 @@ export const TOOLS = {
   SHAPE_RECT:'shapeRect', SHAPE_ELLIPSE:'shapeEllipse', SHAPE_POLYGON:'shapePolygon',
   PEN:'pen', TEXT:'text', NULL:'null', GRADIENT:'gradient', PICK_WHIP:'pickWhip',
   ORBIT:'orbit', TRACKXY:'trackXY', DOLLY:'dolly',
+  MASK:'mask',              // ← ADD THIS
+  PERSPECTIVE:'perspective', // ← ADD THIS
 } as const;
 
 export const RENDERER_MODE = { DRAFT:'draft', PREVIEW:'preview', FULL:'full' } as const;
@@ -44,6 +46,7 @@ export const PANEL_TYPES = {
   VIEWPORT:'viewport', OUTLINER:'outliner', PROPERTIES:'properties',
   TIMELINE:'timeline', GRAPH_EDITOR:'graphEditor', FILE_BROWSER:'fileBrowser',
   NODE_EDITOR:'nodeEditor', TEXT_EDITOR:'textEditor', CONSOLE:'console',
+  CAMERA:'camera',
 } as const;
 
 export const WORKSPACES = {
