@@ -183,6 +183,13 @@ export class RenderLoop {
 
     try {
       this.beforeRender?.();
+
+      // FORCE correct viewport right before scene render
+      const canvas = this.renderer.domElement;
+      const pr = this.renderer.getPixelRatio();
+      this.renderer.setViewport(0, 0, canvas.width / pr, canvas.height / pr);
+      this.renderer.setScissorTest(false);
+
       this.renderer.render(this.scene, this.camera);
       this.afterRender?.();
     } catch (err) {

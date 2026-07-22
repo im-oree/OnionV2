@@ -324,7 +324,6 @@ export class Renderer {
       const bgColor = comp.backgroundColor ?? '#000000';
       const bgHex = parseInt(bgColor.replace('#', '0x'), 16);
       {
-        const canvas = this.renderer.domElement;
         const oldTarget = this.renderer.getRenderTarget();
         const oldClearColor = new THREE.Color();
         this.renderer.getClearColor(oldClearColor);
@@ -332,8 +331,9 @@ export class Renderer {
         this.renderer.setRenderTarget(null);
 
         this.renderer.setScissorTest(false);
-        this.renderer.setScissor(0, 0, canvas.width, canvas.height);
-        this.renderer.setViewport(0, 0, canvas.width, canvas.height);
+        const { w: lw, h: lh } = this._getLogicalSize();
+        this.renderer.setScissor(0, 0, lw, lh);
+        this.renderer.setViewport(0, 0, lw, lh);
         this.renderer.setClearColor(0x000000, 0);
         this.renderer.clear(true, true, true);
 
@@ -814,9 +814,9 @@ export class Renderer {
 
   /** Disable composition scissor and restore whole-canvas rendering. */
   private _disableCompositionScissor(): void {
-    const canvas = this.renderer.domElement;
+    const { w: lw, h: lh } = this._getLogicalSize();
     this.renderer.setScissorTest(false);
-    this.renderer.setScissor(0, 0, canvas.width, canvas.height);
+    this.renderer.setScissor(0, 0, lw, lh);
     // DO NOT touch viewport here. Three.js sets it correctly on its own via
     // its internal render() calls. Changing it can desync from the camera's
     // projection matrix if the pixel ratio changes.
@@ -917,15 +917,30 @@ export class Renderer {
     this._onStateChange = cb;
   }
 
+  /**
+   * Return the logical (CSS) size that Three.js stores from the last
+   * setSize() call. This is exactly what setViewport/setScissor expect —
+   * Three.js multiplies by pixelRatio internally.
+   *
+   * Using renderer.getSize() is always correct because it returns the
+   * values Three.js actually used when setting up the drawing buffer,
+   * regardless of any pixelRatio or preview-scale state.
+   */
+  private _getLogicalSize(): { w: number; h: number } {
+    const s = new THREE.Vector2();
+    this.renderer.getSize(s);
+    return { w: s.x, h: s.y };
+  }
+
   // ── Before-render helpers ─────────────────────────────────────
 
   private _processNestedComps(comp: Composition): void {
     // Safety: ensure no leftover scissor from previous frames affects
     // nested offscreen FBO renders.
     this.renderer.setScissorTest(false);
-    const canvas = this.renderer.domElement;
-    this.renderer.setViewport(0, 0, canvas.width, canvas.height);
-    this.renderer.setScissor(0, 0, canvas.width, canvas.height);
+    const { w: lw, h: lh } = this._getLogicalSize();
+    this.renderer.setViewport(0, 0, lw, lh);
+    this.renderer.setScissor(0, 0, lw, lh);
 
     const state = useCompositionStore.getState();
     const parentFrame = Math.floor(
@@ -1330,9 +1345,9 @@ private _syncModel3DLayer(layer: any): void {
     // our offscreen FBO renders. EffectsRenderer + EffectChain save/restore
     // but during interactive-mode pixel-ratio changes this can desync.
     this.renderer.setScissorTest(false);
-    const canvas = this.renderer.domElement;
-    this.renderer.setViewport(0, 0, canvas.width, canvas.height);
-    this.renderer.setScissor(0, 0, canvas.width, canvas.height);
+    const { w: lw, h: lh } = this._getLogicalSize();
+    this.renderer.setViewport(0, 0, lw, lh);
+    this.renderer.setScissor(0, 0, lw, lh);
 
     const layerIds: string[] = [];
     const nameToId = new Map<string, string>();
@@ -1647,7 +1662,8 @@ private _syncModel3DLayer(layer: any): void {
       ctx.putImageData(imgData, 0, 0);
     }
 
-    this.renderer.setViewport(0, 0, this.renderer.domElement.width, this.renderer.domElement.height);
+    const { w: lw, h: lh } = this._getLogicalSize();
+    this.renderer.setViewport(0, 0, lw, lh);
     this.renderer.setRenderTarget(prevTarget);
     this.renderer.setScissorTest(prevScissorTest);
   }

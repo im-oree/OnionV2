@@ -95,26 +95,26 @@ export class ResizeHandler {
 
     const dpr = Math.min(window.devicePixelRatio || 1, VIEWPORT_CONFIG.MAX_DPR);
     const previewScale = usePreviewResolutionStore.getState().getEffectiveScale();
-
-    // Backing-store resolution: containerSize Ã— dpr Ã— previewScale.
-    // Three.js internally multiplies size Ã— pixelRatio to compute drawing
-    // buffer pixels, so we set pixelRatio = dpr Ã— previewScale.
     const effectiveDpr = dpr * previewScale;
-    this.renderer.setPixelRatio(effectiveDpr);
 
-    // updateStyle = FALSE so Three.js never touches canvas.style.width/height.
-    // We manage those ourselves (100% / 100%) so the browser upscales the
-    // smaller backing store to fill the view.
+    // Order matters: set pixel ratio first, then size.
+    this.renderer.setPixelRatio(effectiveDpr);
     this.renderer.setSize(containerW, containerH, false);
 
-    // setSize(updateStyle=false) already calls setViewport(0, 0, w, h)
-    // internally, and Three.js's setViewport multiplies by pixelRatio.
-    // So no manual viewport/scissor calls needed — that would double-apply.
+    // Explicitly fix viewport + scissor to the ACTUAL drawing buffer size,
+    // bypassing Three.js's pixelRatio multiplication by using the low-level
+    // GL viewport directly via setViewport with the drawing buffer dims
+    // divided by pixelRatio (which Three.js will re-multiply).
+    const bufW = this.renderer.domElement.width;   // physical pixels
+    const bufH = this.renderer.domElement.height;
+    const logicalW = bufW / effectiveDpr;
+    const logicalH = bufH / effectiveDpr;
+
+    this.renderer.setViewport(0, 0, logicalW, logicalH);
+    this.renderer.setScissor(0, 0, logicalW, logicalH);
     this.renderer.setScissorTest(false);
 
-    // Enforce fill-parent CSS every resize (Three.js used to set inline
-    // px width/height on the canvas when updateStyle was true; guard against
-    // any stale styles).
+    // Enforce CSS fill
     const canvas = this.renderer.domElement;
     canvas.style.position = 'absolute';
     canvas.style.left = '0';
@@ -124,9 +124,6 @@ export class ResizeHandler {
     canvas.style.display = 'block';
 
     this.renderer.setClearColor(0x000000, 0);
-
-    // CameraManager viewport uses container size (CSS pixels), which
-    // matches what the user sees. Screen-to-world math stays correct.
     this.cameraManager.setViewportSize(containerW, containerH);
     this.onResize?.(containerW, containerH);
   }
