@@ -24,15 +24,55 @@ async function importFromFile(): Promise<void> {
   if (!comp) return;
   const assets = await assetManager.importFromFilePicker();
   for (const asset of assets) {
-    const type = asset.type === 'video' ? 'video' : 'image';
-    const layer = createLayerInstance(type, comp, {
-      name: asset.name,
-      data: type === 'video'
-        ? { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
-        : { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight },
-    });
-    state.addLayer(compId, layer);
-    useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+    if (asset.type === 'model3d') {
+      // 3D models need special handling — load the scene and create a model3d layer
+      const { loadModelFile } = await import('../../../renderer/layers/Model3DLoader');
+      try {
+        // Re-fetch the blob to create a File for the loader
+        const resp = await fetch(asset.url);
+        const blob = await resp.blob();
+        const file = new File([blob], asset.name, { type: asset.mimeType || 'model/gltf-binary' });
+        await loadModelFile(file); // validates and populates the cache
+      } catch {
+        // Best effort — layer will still be created, loader will retry
+      }
+      const ext = asset.name.split('.').pop()?.toLowerCase() ?? 'glb';
+      const format = (ext === 'gltf' || ext === 'glb') ? ext as 'gltf' | 'glb'
+        : (ext === 'obj') ? 'obj' as const
+        : (ext === 'ply') ? 'ply' as const
+        : (ext === 'stl') ? 'stl' as const
+        : 'gltf' as const;
+      const count = comp.layers.filter(l => l.type === 'model3d').length + 1;
+      const layer = createLayerInstance('model3d', comp, {
+        name: asset.name.replace(/\.[^.]+$/, '') + ' ' + count,
+        is3D: true,
+        transform3D: { position:{x:0,y:0,z:0}, scale:{x:100,y:100,z:100},
+          rotationX:0, rotationY:0, rotationZ:0,
+          orientation:{x:0,y:0,z:0}, anchorPoint:{x:0,y:0,z:0}, opacity:100 },
+        data: {
+          assetId: asset.id,
+          url: asset.url,
+          fileName: asset.name,
+          mimeType: asset.mimeType,
+          format,
+          scale: 1,
+          autoRotate: false,
+          autoRotateSpeed: 1,
+        },
+      } as any);
+      state.addLayer(compId, layer);
+      useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+    } else {
+      const type = asset.type === 'video' ? 'video' : 'image';
+      const layer = createLayerInstance(type, comp, {
+        name: asset.name,
+        data: type === 'video'
+          ? { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
+          : { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight },
+      });
+      state.addLayer(compId, layer);
+      useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
+    }
   }
 }
 
@@ -78,7 +118,20 @@ function addLight(lightType: string): void {
   useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
 }
 
-function import3DModel(): void {
+async function import3DModel(): Promise<void> {
+  const { useNotificationStore } = await import('../../../state/notificationStore');
+  const { loadModelFile } = await import('../../../renderer/layers/Model3DLoader');
+  const state = useCompositionStore.getState();
+  const compId = state.activeCompositionId;
+  if (!compId) {
+    useNotificationStore.getState().addNotification({
+      type: 'warning', message: 'Create a composition first before importing a 3D model.', autoDismiss: 3000,
+    });
+    return;
+  }
+  const comp = state.compositions.find((c) => c.id === compId);
+  if (!comp) return;
+
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.gltf,.glb,.obj,.fbx,.ply,.stl,.3ds,.dae,.json';
@@ -86,18 +139,20 @@ function import3DModel(): void {
   input.onchange = async () => {
     const files = Array.from(input.files ?? []);
     if (files.length === 0) return;
-    const { loadModelFile } = await import('../../../renderer/layers/Model3DLoader');
-    const state = useCompositionStore.getState();
-    const compId = state.activeCompositionId;
-    if (!compId) return;
-    const comp = state.compositions.find((c) => c.id === compId);
-    if (!comp) return;
+    let imported = 0;
     for (const file of files) {
       try {
+        // Step 1: Load the model to validate it and get the scene
         const modelData = await loadModelFile(file);
+
+        // Step 2: Import into the asset manager so it appears in the Project panel
+        const asset = await assetManager.importFile(file);
+
         const ext = file.name.split('.').pop()?.toLowerCase() ?? 'glb';
         const format = (ext === 'gltf' || ext === 'glb') ? ext as 'gltf' | 'glb'
           : (ext === 'obj') ? 'obj' as const
+          : (ext === 'ply') ? 'ply' as const
+          : (ext === 'stl') ? 'stl' as const
           : 'gltf' as const;
         const count = comp.layers.filter(l => l.type === 'model3d').length + 1;
         const layer = createLayerInstance('model3d', comp, {
@@ -107,8 +162,10 @@ function import3DModel(): void {
             rotationX:0, rotationY:0, rotationZ:0,
             orientation:{x:0,y:0,z:0}, anchorPoint:{x:0,y:0,z:0}, opacity:100 },
           data: {
-            assetId: modelData.url,
-            url: modelData.url,
+            assetId: asset.id,
+            url: asset.url,
+            fileName: file.name,
+            mimeType: file.type || 'model/gltf-binary',
             format,
             scale: 1,
             autoRotate: false,
@@ -117,11 +174,18 @@ function import3DModel(): void {
         } as any);
         state.addLayer(compId, layer);
         useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: compId });
-        // Model will be loaded by Renderer._syncModel3DLayer via _loadModel3D
-        // (Model3DLoader cache prevents redundant re-downloading)
+        imported++;
       } catch (err) {
         console.error(`[3D Import] Failed to load ${file.name}:`, err);
+        useNotificationStore.getState().addNotification({
+          type: 'error', message: `Failed to import "${file.name}": ${(err as Error)?.message ?? 'Unknown error'}`,
+        });
       }
+    }
+    if (imported > 0) {
+      useNotificationStore.getState().addNotification({
+        type: 'success', message: `Imported ${imported} 3D model${imported > 1 ? 's' : ''}`, autoDismiss: 3000,
+      });
     }
   };
   input.click();

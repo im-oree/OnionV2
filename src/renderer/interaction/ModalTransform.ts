@@ -5,6 +5,7 @@ import { useSelectionStore } from '../../state/selectionStore';
 import { useViewportStore } from '../../state/viewportStore';
 import { registerModalActiveCheck, registerForceCancelModal } from '../../input/ShortcutRegistry';
 import { Snapping, type SnapTargets, type LayerSnapRect } from '../utils/Snapping';
+import { ViewSpaceTransform } from './ViewSpaceTransform';
 import type { Layer } from '../../types/layer';
 import { useTimelineStore } from '../../state/timelineStore';
 import { useKeyframeStore } from '../../state/keyframeStore';
@@ -72,6 +73,7 @@ export class ModalTransform {
   private _onStateChange: ((info: TransformInfo) => void) | null = null;
   private _boundPointerLockChange: (() => void) | null = null;
   private _cachedSnapTargets: SnapTargets | null = null;
+  private _viewSpace: ViewSpaceTransform;
   private _pendingFirstDelta = false;
   private _undoBeforeSnapshot: string | null = null;
   public lastSnapLines: Array<{ type: 'horizontal' | 'vertical'; position: number }> = [];
@@ -79,6 +81,7 @@ export class ModalTransform {
   constructor(cameraManager: CameraManager, snapping?: Snapping) {
     this.cameraManager = cameraManager;
     this.snapping = snapping ?? new Snapping();
+    this._viewSpace = new ViewSpaceTransform(cameraManager);
     // Safety: the static flag must match instance _active — if they diverge
     // (e.g., pointer lock edge case), the flag is corrected to unblock shortcuts.
     registerModalActiveCheck(() => {
@@ -476,88 +479,92 @@ export class ModalTransform {
 
     switch (_mode) {
       case 'grab': {
-        // 3D perspective-aware movement: project screen delta onto camera view plane
         const is3DPerspective = !!(window as any).__perspectiveActive;
+        const z3dLock = (window as any).__3DAxisLock as 'x' | 'y' | 'z' | undefined;
+        const zAxisActive = (window as any).__moveZActive;
 
         if (is3DPerspective) {
-          const cam = (window as any).__perspectiveCamera as any;
-          if (cam) {
-            // Camera's local right and up vectors
-            const camRight = new THREE.Vector3(1, 0, 0);
-            const camUp = new THREE.Vector3(0, 1, 0);
-            camRight.applyQuaternion(cam.quaternion);
-            camUp.applyQuaternion(cam.quaternion);
+          const vs = this._viewSpace;
+          const mult = _precisionMode ? 0.1 : 1;
 
-            let moveX = delta.x / zoom;
-            let moveY = -delta.y / zoom;
+          for (const [layerId, start] of _startTransforms) {
+            const layer = useCompositionStore.getState()
+              .compositions.find(c => c.id === _compId)
+              ?.layers.find(l => l.id === layerId);
+            if (!layer) continue;
+            const posLocked = (layer.lockedProperties ?? {})['transform.position'];
+            if (posLocked) continue;
 
-            if (_axisLock === 'x' || _axisExclude === 'y') moveY = 0;
-            if (_axisLock === 'y' || _axisExclude === 'x') moveX = 0;
-            if (_precisionMode) { moveX *= 0.1; moveY *= 0.1; }
+            const refPoint = layer.is3D && start.pos3d
+              ? start.pos3d
+              : { x: start.pos.x, y: start.pos.y, z: 0 };
 
-            // Z-axis lock: move along camera forward
-            const z3dLock = (window as any).__3DAxisLock;
-            if (z3dLock === 'z') {
-              const camForward = new THREE.Vector3(0, 0, -1);
-              camForward.applyQuaternion(cam.quaternion);
-              for (const [layerId, start] of _startTransforms) {
-                const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
-                if (!layer) continue;
-                const posLocked = (layer.lockedProperties ?? {})['transform.position'];
-                if (posLocked) continue;
-                if (layer.is3D && layer.transform3D && start.pos3d) {
-                  const nx = start.pos3d.x + camForward.x * moveY * 2;
-                  const ny = start.pos3d.y + camForward.y * moveY * 2;
-                  const nz = start.pos3d.z + camForward.z * moveY * 2;
-                  store.updateLayer(_compId, layerId, {
-                    transform3D: { ...layer.transform3D, position: { x: nx, y: ny, z: nz } },
-                    transform: { ...layer.transform, position: { x: nx, y: ny } },
-                  }, true);
-                }
-              }
-              break;
-            }
+            let worldDelta: { x: number; y: number; z: number };
 
-            // Normal 3D movement on camera plane
-            for (const [layerId, start] of _startTransforms) {
-              const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
-              if (!layer) continue;
-              // Skip locked position
-              const posLocked = (layer.lockedProperties ?? {})['transform.position'];
-              if (posLocked) continue;
-
-              if (layer.is3D && layer.transform3D && start.pos3d) {
-                const newX = start.pos3d.x + camRight.x * moveX + camUp.x * moveY;
-                const newY = start.pos3d.y + camRight.y * moveX + camUp.y * moveY;
-                const newZ = start.pos3d.z + camRight.z * moveX + camUp.z * moveY;
-                store.updateLayer(_compId, layerId, {
-                  transform3D: {
-                    ...layer.transform3D,
-                    position: { x: newX, y: newY, z: newZ },
-                  },
-                  transform: {
-                    ...layer.transform,
-                    position: { x: newX, y: newY },
-                  },
-                }, true);
+            if (z3dLock === 'x' || z3dLock === 'y' || z3dLock === 'z') {
+              // Axis-lock: project mouse motion onto that world axis's
+              // screen direction. Dragging along the axis's on-screen line
+              // moves the object along that world axis. This is what
+              // Blender/AE do — the axis is world, but the drag feels
+              // right because we measure motion along the axis's screen
+              // projection.
+              const proj = vs.axisScreenDirection(z3dLock, refPoint, 100);
+              if (!proj) {
+                worldDelta = { x: 0, y: 0, z: 0 };
               } else {
-                // Non-3D layer: fall back to 2D movement
-                store.updateLayer(_compId, layerId, {
-                  transform: {
-                    position: { x: start.pos.x + moveX, y: start.pos.y + moveY },
-                    scale: start.scale, rotation: start.rotation, anchorPoint: { x: 0, y: 0 },
-                  },
-                }, true);
+                // delta.x = screen mdx, delta.y = -screen mdy (already flipped)
+                const mdx = delta.x * mult;
+                const mdyScreen = -delta.y * mult; // convert back to screen mdy
+                const alongPx = mdx * proj.dirX + mdyScreen * proj.dirY;
+                const worldAmount = alongPx * proj.worldPerPx;
+                worldDelta = {
+                  x: z3dLock === 'x' ? worldAmount : 0,
+                  y: z3dLock === 'y' ? worldAmount : 0,
+                  z: z3dLock === 'z' ? worldAmount : 0,
+                };
               }
+            } else if (zAxisActive) {
+              // Legacy Z drag from gizmo Z arrow — treat as camera dolly
+              worldDelta = vs.screenDeltaAlongForward(-delta.y * mult, refPoint);
+            } else {
+              // Unconstrained: drag on camera view plane
+              worldDelta = vs.screenDeltaToWorldOnViewPlane(
+                delta.x * mult, -delta.y * mult, refPoint,
+              );
             }
-            break;
+
+            // Legacy 2D locks (only apply if no 3D lock)
+            if (!z3dLock) {
+              if (_axisLock === 'x' || _axisExclude === 'y') { worldDelta.y = 0; worldDelta.z = 0; }
+              if (_axisLock === 'y' || _axisExclude === 'x') { worldDelta.x = 0; worldDelta.z = 0; }
+            }
+
+            if (layer.is3D && layer.transform3D && start.pos3d) {
+              const newPos = {
+                x: start.pos3d.x + worldDelta.x,
+                y: start.pos3d.y + worldDelta.y,
+                z: start.pos3d.z + worldDelta.z,
+              };
+              store.updateLayer(_compId, layerId, {
+                transform3D: { ...layer.transform3D, position: newPos },
+                transform: { ...layer.transform, position: { x: newPos.x, y: newPos.y } },
+              }, true);
+            } else {
+              store.updateLayer(_compId, layerId, {
+                transform: {
+                  position: { x: start.pos.x + worldDelta.x, y: start.pos.y + worldDelta.y },
+                  scale: start.scale, rotation: start.rotation,
+                  anchorPoint: { x: 0, y: 0 },
+                },
+              }, true);
+            }
           }
+          break;
         }
 
-        // Original 2D movement (when not in 3D perspective)
+        // ── 2D mode: original screen-to-world math ─────────────────────
         let gx = delta.x / zoom;
         let gy = delta.y / zoom;
-
         if (_axisLock === 'x' || _axisExclude === 'y') gy = 0;
         if (_axisLock === 'y' || _axisExclude === 'x') gx = 0;
         if (_precisionMode) { gx *= 0.1; gy *= 0.1; }
@@ -565,128 +572,150 @@ export class ModalTransform {
         if (useSnap) {
           const movingRect = this._buildMovingSelectionStartBounds();
           if (movingRect) {
-            // Zoom-aware threshold: keep 8 screen pixels regardless of zoom level.
             const threshold = 8 / Math.max(0.01, zoom);
-            const snapped = this.snapping.snapRect(movingRect, gx, gy, _cachedSnapTargets!, threshold);
+            const snapped = this.snapping.snapRect(
+              movingRect, gx, gy, _cachedSnapTargets!, threshold,
+            );
             gx = snapped.dx;
             gy = snapped.dy;
             this.lastSnapLines = snapped.snapped ? snapped.lines : [];
-          } else {
-            this.lastSnapLines = [];
-          }
-        } else {
-          this.lastSnapLines = [];
-        }
+          } else { this.lastSnapLines = []; }
+        } else { this.lastSnapLines = []; }
 
-        // Check if Z-axis dragging is active — route entire Y delta to transform3D.position.z
-        const zAxisActive = (window as any).__moveZActive;
-        if (zAxisActive) {
-          // Use gy (vertical world delta) for Z movement
-          const zDelta = gy;
-          for (const [layerId, start] of _startTransforms) {
-            const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
-            if (!layer) continue;
-            const posLocked = (layer.lockedProperties ?? {})['transform.position'];
-            if (posLocked) continue;
+        for (const [layerId, start] of _startTransforms) {
+          const layer = useCompositionStore.getState()
+            .compositions.find(c => c.id === _compId)
+            ?.layers.find(l => l.id === layerId);
+          if (!layer) continue;
+          const posLocked = (layer.lockedProperties ?? {})['transform.position'];
+          if (posLocked) continue;
+
+          store.updateLayer(_compId, layerId, {
+            transform: {
+              position: { x: start.pos.x + gx, y: start.pos.y + gy },
+              scale: start.scale, rotation: start.rotation,
+              anchorPoint: { x: 0, y: 0 },
+            },
+          }, true);
+          if (layer.is3D && layer.transform3D && start.pos3d) {
             store.updateLayer(_compId, layerId, {
-              transform: {
-                position: start.pos,
-                scale: start.scale, rotation: start.rotation,
-                anchorPoint: { x: 0, y: 0 },
+              transform3D: {
+                ...layer.transform3D,
+                position: { x: start.pos3d.x + gx, y: start.pos3d.y + gy, z: start.pos3d.z },
               },
             }, true);
-            if (layer.is3D && layer.transform3D && start.pos3d) {
-              store.updateLayer(_compId, layerId, {
-                transform3D: {
-                  ...layer.transform3D,
-                  position: { x: start.pos3d.x, y: start.pos3d.y, z: start.pos3d.z + zDelta },
-                },
-              }, true);
-            }
-          }
-        } else {
-          for (const [layerId, start] of _startTransforms) {
-            const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
-            if (!layer) continue;
-            const posLocked = (layer.lockedProperties ?? {})['transform.position'];
-            if (posLocked) continue;
-            store.updateLayer(_compId, layerId, {
-              transform: {
-                position: { x: start.pos.x + gx, y: start.pos.y + gy },
-                scale: start.scale, rotation: start.rotation,
-                anchorPoint: { x: 0, y: 0 },
-              },
-            }, true);
-            // Also update transform3D if layer is 3D
-            if (layer.is3D && layer.transform3D && start.pos3d) {
-              store.updateLayer(_compId, layerId, {
-                transform3D: {
-                  ...layer.transform3D,
-                  position: { x: start.pos3d.x + gx, y: start.pos3d.y + gy, z: start.pos3d.z },
-                },
-              }, true);
-            }
           }
         }
         break;
       }
 
       case 'rotate': {
-        // Z-axis lock: only rotate around Z (roll) using screen X movement
-        const zLock = (window as any).__3DAxisLock as string | undefined;
-        let rawAngle: number;
+        const is3DPerspective = !!(window as any).__perspectiveActive;
+        const zLock = (window as any).__3DAxisLock as 'x' | 'y' | 'z' | undefined;
+
+        // Screen-horizontal drag = angle magnitude. Direction sign depends
+        // on which side of the object the camera is on (for axis locks).
+        let rawAngle = delta.x * (_precisionMode ? 0.02 : 0.2);
+
+        // If we have a handle pivot (from bounding-box rotation handle),
+        // use the pivot-relative angle method (2D behavior, unchanged).
         if (this._handlePivotWorld) {
-          // Handle-based rotation: angle from pivot to mouse
           const pivot = this._handlePivotWorld;
           const currentScreenX = this.startMouseScreen.x + delta.x;
           const currentScreenY = this.startMouseScreen.y - delta.y;
           const currentWorld = this.cameraManager.screenToWorld(currentScreenX, currentScreenY);
           if (this._startRotateAngle === null) {
-            const startWorld = this.cameraManager.screenToWorld(this.startMouseScreen.x, this.startMouseScreen.y);
-            this._startRotateAngle = Math.atan2(startWorld.y - pivot.y, startWorld.x - pivot.x);
+            const startWorld = this.cameraManager.screenToWorld(
+              this.startMouseScreen.x, this.startMouseScreen.y,
+            );
+            this._startRotateAngle = Math.atan2(
+              startWorld.y - pivot.y, startWorld.x - pivot.x,
+            );
           }
-          const currentAngle = Math.atan2(currentWorld.y - pivot.y, currentWorld.x - pivot.x);
+          const currentAngle = Math.atan2(
+            currentWorld.y - pivot.y, currentWorld.x - pivot.x,
+          );
           rawAngle = (currentAngle - this._startRotateAngle) * (180 / Math.PI);
-        } else if (zLock === 'z') {
-          // Z rotation: screen X movement = rotation around Z axis (roll)
-          rawAngle = delta.x * (_precisionMode ? 0.02 : 0.2);
-        } else if (zLock === 'x' || zLock === 'y') {
-          // X/Y rotation: screen movement = rotation around that axis
-          rawAngle = delta.x * (_precisionMode ? 0.02 : 0.2);
-        } else {
-          // Free rotation (keyboard R): screen X = rotation
-          rawAngle = delta.x * (_precisionMode ? 0.02 : 0.2);
         }
+
         const snappedAngle = _snapMode ? Math.round(rawAngle / 1) : rawAngle;
+        const norm = (v: number) => ((v + 180) % 360 + 360) % 360 - 180;
+
+        // For 3D axis-locked rotation, flip sign based on whether the axis
+        // points toward or away from the camera. If away, screen-CW = world-CCW
+        // (right-hand rule inverted from viewer's perspective).
+        const computeAxisSign = (axis: 'x' | 'y' | 'z', posAE: { x: number; y: number; z: number }): number => {
+          if (!is3DPerspective) return 1;
+          const cam = this.cameraManager.getActiveCamera();
+          const camPos = cam.position;
+          // AE-space object pos → GL-space
+          const objGL = { x: posAE.x, y: posAE.y, z: -posAE.z };
+          const toObj = new THREE.Vector3(
+            objGL.x - camPos.x,
+            objGL.y - camPos.y,
+            objGL.z - camPos.z,
+          ).normalize();
+          const ax = axis === 'x' ? 1 : 0;
+          const ay = axis === 'y' ? 1 : 0;
+          const az = axis === 'z' ? -1 : 0; // AE Z = -GL Z
+          const dot = ax * toObj.x + ay * toObj.y + az * toObj.z;
+          // If axis points into scene same direction as view, right-hand
+          // rotation on screen = positive world rotation. Otherwise flip.
+          return dot >= 0 ? 1 : -1;
+        };
+
         for (const [layerId, start] of _startTransforms) {
-          // Always update 2D rotation (maps to Z rotation)
-          let newRotation = start.rotation + snappedAngle;
-          newRotation = ((newRotation + 180) % 360 + 360) % 360 - 180;
-          store.updateLayer(_compId, layerId, {
-            transform: {
-              position: start.pos, scale: start.scale,
-              rotation: newRotation,
-              anchorPoint: { x: 0, y: 0 },
-            },
-          }, true);
-          // Also update transform3D for 3D layers
-          const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
-          if (layer?.is3D && layer.transform3D) {
-            const t3d = layer.transform3D;
-            if (zLock === 'x') {
-              store.updateLayer(_compId, layerId, {
-                transform3D: { ...t3d, rotationX: (start.rotX ?? 0) + snappedAngle },
-              }, true);
-            } else if (zLock === 'y') {
-              store.updateLayer(_compId, layerId, {
-                transform3D: { ...t3d, rotationY: (start.rotY ?? 0) + snappedAngle },
-              }, true);
-            } else {
-              // Default: Z rotation (roll)
-              store.updateLayer(_compId, layerId, {
-                transform3D: { ...t3d, rotationZ: (start.rotZ ?? 0) + snappedAngle },
-              }, true);
-            }
+          const layer = useCompositionStore.getState()
+            .compositions.find(c => c.id === _compId)
+            ?.layers.find(l => l.id === layerId);
+
+          if (!layer?.is3D || !layer.transform3D) {
+            // 2D layer: just Z rotation
+            const newRot = norm(start.rotation + snappedAngle);
+            store.updateLayer(_compId, layerId, {
+              transform: {
+                position: start.pos, scale: start.scale,
+                rotation: newRot, anchorPoint: { x: 0, y: 0 },
+              },
+            }, true);
+            continue;
+          }
+
+          const t3d = layer.transform3D;
+          const refPos = start.pos3d ?? { x: start.pos.x, y: start.pos.y, z: 0 };
+
+          if (zLock === 'x') {
+            const sign = computeAxisSign('x', refPos);
+            const newX = norm((start.rotX ?? 0) + snappedAngle * sign);
+            store.updateLayer(_compId, layerId, {
+              transform3D: { ...t3d, rotationX: newX },
+            }, true);
+          } else if (zLock === 'y') {
+            const sign = computeAxisSign('y', refPos);
+            const newY = norm((start.rotY ?? 0) + snappedAngle * sign);
+            store.updateLayer(_compId, layerId, {
+              transform3D: { ...t3d, rotationY: newY },
+            }, true);
+          } else if (zLock === 'z') {
+            const sign = computeAxisSign('z', refPos);
+            const newZ = norm((start.rotZ ?? 0) + snappedAngle * sign);
+            store.updateLayer(_compId, layerId, {
+              transform3D: { ...t3d, rotationZ: newZ },
+            }, true);
+          } else {
+            // Unconstrained rotate in 3D: rotate around Z (screen-normal
+            // for default view). This gives the flat "spin" behavior AE
+            // and Blender show for R with no axis constraint. Also update
+            // 2D rotation to match.
+            const newZ = norm((start.rotZ ?? 0) + snappedAngle);
+            const newRot2D = norm(start.rotation + snappedAngle);
+            store.updateLayer(_compId, layerId, {
+              transform: {
+                position: start.pos, scale: start.scale,
+                rotation: newRot2D, anchorPoint: { x: 0, y: 0 },
+              },
+              transform3D: { ...t3d, rotationZ: newZ },
+            }, true);
           }
         }
         break;
@@ -707,16 +736,17 @@ export class ModalTransform {
       }
 
       case 'scale': {
-        let factorX = 1, factorY = 1;
+        const is3DPerspective = !!(window as any).__perspectiveActive;
+        const zLockScale = (window as any).__3DAxisLock as string | undefined;
+
+        let factorX = 1, factorY = 1, factorZ = 1;
 
         if (this._handlePivotWorld) {
-          // M2 FIX: Use signed distance from pivot, NOT absolute distance.
-          // Absolute distance loses directional sign when mouse crosses pivot,
-          // causing scale to never shrink below 1 when dragging handle past pivot.
-          // Signed distance preserves the sign: positive = right/up of pivot,
-          // negative = left/down of pivot, so ratio correctly reflects scale direction.
+          // Signed screen-space distance from pivot to mouse
           const pivot = this._handlePivotWorld;
-          const startWorld = this.cameraManager.screenToWorld(this.startMouseScreen.x, this.startMouseScreen.y);
+          const startWorld = this.cameraManager.screenToWorld(
+            this.startMouseScreen.x, this.startMouseScreen.y,
+          );
           const currentScreenX = this.startMouseScreen.x + delta.x;
           const currentScreenY = this.startMouseScreen.y - delta.y;
           const currentWorld = this.cameraManager.screenToWorld(currentScreenX, currentScreenY);
@@ -724,111 +754,108 @@ export class ModalTransform {
           const startDistY = startWorld.y - pivot.y;
           const curDistX = currentWorld.x - pivot.x;
           const curDistY = currentWorld.y - pivot.y;
-          // Use signed division: if startDist is negative (mouse started left of pivot),
-          // the ratio naturally handles the sign correctly
           factorX = Math.abs(startDistX) > 0.5 ? curDistX / startDistX : 1;
           factorY = Math.abs(startDistY) > 0.5 ? curDistY / startDistY : 1;
           factorX = Math.max(0.01, factorX);
           factorY = Math.max(0.01, factorY);
         } else {
-          // Free scale (keyboard S) — distance-based from layer center
+          // Keyboard S — measure screen distance from selection center
           const firstId = Array.from(_startTransforms.keys())[0];
           if (firstId) {
             const start = _startTransforms.get(firstId)!;
-            const pivotScreen = this.cameraManager.worldToScreen(start.pos.x, start.pos.y);
-            // Distance from pivot to mouse start
+            const refPointAE = start.pos3d ?? { x: start.pos.x, y: start.pos.y, z: 0 };
+            const pivotScreen = this.cameraManager.worldToScreen(
+              refPointAE.x, refPointAE.y, -refPointAE.z,
+            );
             const startDx = this.startMouseScreen.x - pivotScreen.x;
             const startDy = this.startMouseScreen.y - pivotScreen.y;
             const startDist = Math.hypot(startDx, startDy);
-            // Current mouse position (delta.y is world-up so subtract to get screen)
             const curMouseX = this.startMouseScreen.x + delta.x;
             const curMouseY = this.startMouseScreen.y - delta.y;
             const curDx = curMouseX - pivotScreen.x;
             const curDy = curMouseY - pivotScreen.y;
             const curDist = Math.hypot(curDx, curDy);
 
-            // If pivot is basically under the mouse (< 10px), fall back to travel-based scaling
             let factor: number;
             if (startDist < 10) {
-              // Determine sign by comparing current distance to pivot vs anchor distance.
-              // We use the distance from the mouse to the computed handle pivot (not the layer center)
-              // to determine if the mouse is moving toward or away.
-              const pivotWorld = this._handlePivotWorld;
-              const pivotScreen = pivotWorld
-                ? this.cameraManager.worldToScreen(pivotWorld.x, pivotWorld.y)
-                : this.cameraManager.worldToScreen(start.pos.x, start.pos.y);
-              const curDxPivot = (this.startMouseScreen.x + delta.x) - pivotScreen.x;
-              const curDyPivot = (this.startMouseScreen.y - delta.y) - pivotScreen.y;
-              const curDistFromPivot = Math.hypot(curDxPivot, curDyPivot);
-              // If current distance > start distance, sign is positive (scaling up)
-              const sign = curDistFromPivot > startDist ? 1 : -1;
+              const sign = curDist > startDist ? 1 : -1;
               const travel = Math.hypot(delta.x, delta.y);
               factor = Math.max(0.01, 1 + sign * travel * 0.02);
             } else {
               factor = Math.max(0.01, curDist / startDist);
             }
+            // Blender/AE convention: unconstrained S in 3D = uniform on all axes
             factorX = factor;
             factorY = factor;
+            factorZ = factor;
           }
         }
 
         if (_precisionMode) {
           factorX = 1 + (factorX - 1) * 0.1;
           factorY = 1 + (factorY - 1) * 0.1;
+          factorZ = 1 + (factorZ - 1) * 0.1;
         }
 
-        let sx = factorX;
-        let sy = factorY;
+        // Axis constraints
+        if (zLockScale === 'x') { factorY = 1; factorZ = 1; }
+        else if (zLockScale === 'y') { factorX = 1; factorZ = 1; }
+        else if (zLockScale === 'z') { factorX = 1; factorY = 1; }
+        else {
+          // Legacy 2D axis locks (when no 3D axis lock)
+          if (_axisLock === 'x') factorY = 1;
+          else if (_axisLock === 'y') factorX = 1;
+          else if (_axisExclude === 'x') factorY = 1;
+          else if (_axisExclude === 'y') factorX = 1;
+          // 3D uniform: if no lock at all and not from handle, ensure Z scales too
+          if (!this._handlePivotWorld && is3DPerspective &&
+              _axisLock === null && _axisExclude === null) {
+            // factorZ already set above from the same base factor
+          } else if (!is3DPerspective) {
+            factorZ = 1; // 2D mode: never scale Z
+          }
+        }
 
-        if (_axisLock === 'x') sy = 1;
-        else if (_axisLock === 'y') sx = 1;
-        else if (_axisExclude === 'x') sy = 1;
-        else if (_axisExclude === 'y') sx = 1;
-
-        if (_aspectLock && !_axisLock && !_axisExclude) {
-          const uniform = Math.max(sx, sy);
-          sx = uniform;
-          sy = uniform;
+        if (_aspectLock && !_axisLock && !_axisExclude && !zLockScale) {
+          const uniform = Math.max(factorX, factorY);
+          factorX = uniform;
+          factorY = uniform;
+          if (is3DPerspective) factorZ = uniform;
         }
 
         if (_snapMode) {
-          // Snap scale to 5% increments for intuitive behavior
-          sx = Math.round(sx * 20) / 20 || 0.05;
-          sy = Math.round(sy * 20) / 20 || 0.05;
+          factorX = Math.round(factorX * 20) / 20 || 0.05;
+          factorY = Math.round(factorY * 20) / 20 || 0.05;
+          factorZ = Math.round(factorZ * 20) / 20 || 0.05;
         }
 
-        sx = Math.max(0.01, sx);
-        sy = Math.max(0.01, sy);
-
-        // Z-axis lock: only scale Z
-        const zLockScale = (window as any).__3DAxisLock as string | undefined;
-        let factorZ = 1;
-        if (zLockScale === 'z') {
-          const travel = Math.hypot(delta.x, delta.y);
-          factorZ = 1 + (delta.y < 0 ? 1 : -1) * travel * 0.005;
-          if (_precisionMode) factorZ = 1 + (factorZ - 1) * 0.1;
-          factorZ = Math.max(0.01, factorZ);
-          sx = 1; sy = 1; // Only scale Z
-        }
+        factorX = Math.max(0.01, factorX);
+        factorY = Math.max(0.01, factorY);
+        factorZ = Math.max(0.01, factorZ);
 
         for (const [layerId, start] of _startTransforms) {
           store.updateLayer(_compId, layerId, {
             transform: {
               position: start.pos,
-              scale: { x: Math.max(0.01, start.scale.x * sx), y: Math.max(0.01, start.scale.y * sy) },
+              scale: {
+                x: Math.max(0.01, start.scale.x * factorX),
+                y: Math.max(0.01, start.scale.y * factorY),
+              },
               rotation: start.rotation,
               anchorPoint: { x: 0, y: 0 },
             },
           }, true);
-          // Also update transform3D.scale for 3D layers
-          const layer = useCompositionStore.getState().compositions.find(c=>c.id===_compId)?.layers.find(l=>l.id===layerId);
+
+          const layer = useCompositionStore.getState()
+            .compositions.find(c => c.id === _compId)
+            ?.layers.find(l => l.id === layerId);
           if (layer?.is3D && layer.transform3D) {
             store.updateLayer(_compId, layerId, {
               transform3D: {
                 ...layer.transform3D,
                 scale: {
-                  x: (start.scale3d?.x ?? start.scale.x) * sx,
-                  y: (start.scale3d?.y ?? start.scale.y) * sy,
+                  x: (start.scale3d?.x ?? start.scale.x) * factorX,
+                  y: (start.scale3d?.y ?? start.scale.y) * factorY,
                   z: (start.scale3d?.z ?? 100) * factorZ,
                 },
               },

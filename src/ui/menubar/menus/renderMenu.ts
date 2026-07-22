@@ -2,27 +2,35 @@ import type { MenuItemDefinition } from '../MenuDropdown';
 
 export const renderMenu: MenuItemDefinition[] = [
   {
-    id: 'render.addToQueue', label: 'Add to Render Queue', shortcut: 'Ctrl+M',
-    onClick: () => import('../../../state/uiStore').then(m => m.useUIStore.getState().setActiveRightTab('render')),
+    id: 'render.export',
+    label: 'Export...',
+    shortcut: 'Ctrl+M',
+    onClick: () => import('../../../state/exportStore').then(m => m.useExportStore.getState().openSettings()),
   },
   {
-    id: 'render.addFrame', label: 'Add Frame to Render Queue',
-    onClick: () => import('../../../state/uiStore').then(m => m.useUIStore.getState().setActiveRightTab('render')),
+    id: 'render.exportFrame',
+    label: 'Export Current Frame...',
+    shortcut: 'Ctrl+Alt+S',
+    onClick: () => import('../../../state/exportStore').then(m => {
+      const store = m.useExportStore.getState();
+      store.updateSettings({ format: 'frame-png' });
+      store.openSettings();
+    }),
+  },
+  {
+    id: 'render.exportAudio',
+    label: 'Export Audio Only...',
+    onClick: () => import('../../../state/exportStore').then(m => {
+      const store = m.useExportStore.getState();
+      store.updateSettings({ format: 'audio-wav' });
+      store.openSettings();
+    }),
   },
   { id: 'render.sep1', label: '', divider: true, onClick: () => {} },
-  {
-    id: 'render.queue', label: 'Render Queue...',
-    onClick: () => import('../../../state/uiStore').then(m => m.useUIStore.getState().setActiveRightTab('render')),
-  },
-  {
-    id: 'render.outputModule', label: 'Output Module Settings...',
-    onClick: () => import('../../../state/uiStore').then(m => m.useUIStore.getState().setActiveRightTab('render')),
-  },
-  { id: 'render.sep2', label: '', divider: true, onClick: () => {} },
 
-  // ── Preview submenu ──────────────────────────────────
   {
-    id: 'render.preview', label: 'Preview',
+    id: 'render.preview',
+    label: 'Preview',
     children: [
       { id: 'render.preview.ramPreview', label: 'RAM Preview', shortcut: 'Numpad 0', onClick: () => {
         const builder = (window as any).__ramPreviewBuilder;
@@ -43,29 +51,29 @@ export const renderMenu: MenuItemDefinition[] = [
     ],
   },
 
-  // ── Purge submenu ─────────────────────────────────────
   {
-    id: 'render.purge', label: 'Purge',
+    id: 'render.purge',
+    label: 'Purge',
     children: [
       { id: 'render.purge.imageCache', label: 'Image Cache Memory', onClick: () => {
         const fc = (window as any).__frameCache;
         if (fc) fc.invalidateAllCompositions();
-        console.log('[Menu] Image cache purged');
       }},
       { id: 'render.purge.allMemory', label: 'All Memory', onClick: () => {
         const fc = (window as any).__frameCache;
         if (fc) fc.invalidateAllCompositions();
-        console.log('[Menu] All memory purged');
-      }},
-      { id: 'render.purge.undo', label: 'Undo (Phase 10)', disabled: true, onClick: () => {
-        console.log('[Menu] Purge Undo — placeholder');
       }},
     ],
   },
 
-  { id: 'render.sep3', label: '', divider: true, onClick: () => {} },
-  { id: 'render.adaptiveRes', label: 'Adaptive Resolution', checked: true, onClick: () => {
-    const ar = (window as any).__adaptiveResolution;
-    if (ar) ar.setMode(ar.mode === 'auto' ? 'full' : 'auto');
-  }},
+  { id: 'render.sep2', label: '', divider: true, onClick: () => {} },
+  {
+    id: 'render.adaptiveRes',
+    label: 'Adaptive Resolution',
+    checked: true,
+    onClick: () => {
+      const ar = (window as any).__adaptiveResolution;
+      if (ar) ar.setMode(ar.mode === 'auto' ? 'full' : 'auto');
+    },
+  },
 ];

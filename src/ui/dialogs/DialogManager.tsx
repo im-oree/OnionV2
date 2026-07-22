@@ -4,6 +4,8 @@ import { NewProjectDialog } from './NewProjectDialog';
 import { PreferencesDialog } from './PreferencesDialog';
 import { WorkspacePicker } from './WorkspacePicker';
 import { ProjectSettingsDialog } from './ProjectSettingsDialog';
+import { ExportSettingsDialog } from './ExportSettingsDialog';
+import { ExportProgressDialog } from './ExportProgressDialog';
 
 interface DialogState {
   newComposition: boolean;
@@ -73,6 +75,9 @@ export const DialogManager: React.FC = () => {
       {state.preferences && <PreferencesDialog onClose={closeAllDialogs} initialSection={state.preferencesSection} />}
       {state.workspacePicker && <WorkspacePicker onClose={closeAllDialogs} />}
       {state.projectSettings && <ProjectSettingsDialog onClose={closeAllDialogs} />}
+      {/* Export dialogs are self-managed via useExportStore */}
+      <ExportSettingsDialog />
+      <ExportProgressDialog />
     </>
   );
 };

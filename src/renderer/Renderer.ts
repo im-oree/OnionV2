@@ -674,7 +674,12 @@ export class Renderer {
 
     this._composition = comp;
 
-    this.sceneManager.applyComposition(comp.width, comp.height, comp.backgroundColor, comp.layers.some(l => l.is3D || l.type === 'camera'));
+    this.sceneManager.applyComposition(
+      comp.width,
+      comp.height,
+      comp.backgroundColor,
+      !!comp.perspective3D || comp.layers.some(l => l.is3D || l.type === 'camera' || l.type === 'light'),
+    );
 
     // Update skybox color to match composition background
     this.sceneManager.updateBackgroundColor(comp.backgroundColor ?? '#000000');
@@ -848,10 +853,6 @@ export class Renderer {
     cam.near = 0.1;
     cam.far = 50000;
 
-    // Read UI-only "camera view zoom" (Blender-style — zooms the FOV,
-    // does NOT move the actual camera).
-    const uiZoom = useViewportStore.getState().settings.cameraViewZoom ?? 1;
-
     if (isFree) {
       const yaw = (window as any).__freeOrbitY ?? 0.5;
       const pitch = (window as any).__freeOrbitX ?? 0.3;
@@ -875,7 +876,7 @@ export class Renderer {
       (window as any).__freeCamZ = camZ;
     } else {
       const baseFov = comp.cameraFOV ?? 50;
-      // uiZoom acts as a visual telephoto in Active Camera view.
+      const uiZoom = useViewportStore.getState().settings.cameraViewZoom ?? 1;
       const effectiveFov = Math.max(1, Math.min(170, baseFov / uiZoom));
       const camZ = comp.cameraPositionZ ?? 1000;
       const orbitX = comp.cameraRotationX ?? 0;
@@ -1280,7 +1281,10 @@ private _syncModel3DLayer(layer: any): void {
         const { loadModelFile } = await import('./layers/Model3DLoader');
         const resp = await fetch(d.url);
         const blob = await resp.blob();
-        const file = new File([blob], d.fileName ?? 'model', { type: d.mimeType ?? 'model/gltf-binary' });
+        // Reconstruct a File with the correct extension so loadModelFile can detect the format.
+        // Without the correct extension, loadModelFile falls back to a placeholder box.
+        const fileName = d.fileName || `model.${data.format || 'glb'}`;
+        const file = new File([blob], fileName, { type: d.mimeType || 'model/gltf-binary' });
         const loaded = await loadModelFile(file);
         if (loaded.scene) {
           lr.setModel(loaded.scene);

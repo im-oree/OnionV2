@@ -280,8 +280,9 @@ const EffectCard: React.FC<{ def: EffectDefinition; onDoubleClick: () => void; o
     if (document.getElementById(styleId)) return;
     const style = document.createElement('style');
     style.id = styleId;
+    // Move by 100% per frame — matches the % background-size above
     style.textContent = `@keyframes ${animName} {
-      to { background-position: -${THUMB_SIZE * (frameCount - 1)}px; }
+      to { background-position: -${100 * (frameCount - 1)}% 0; }
     }`;
     document.head.appendChild(style);
     return () => { document.getElementById(styleId)?.remove(); };
@@ -310,15 +311,15 @@ const EffectCard: React.FC<{ def: EffectDefinition; onDoubleClick: () => void; o
         transition: 'background 120ms ease-out',
         border: `1px solid ${hover ? 'var(--color-border)' : 'transparent'}`,
       }}
-    >
-      <div
-        style={{
-          width: '100%',
-          aspectRatio: isAnimated ? `auto` : '1/1',
-          height: THUMB_SIZE,
-          background: thumb
-            ? `url(${thumb}) 0 0 / ${THUMB_SIZE * frameCount}px ${THUMB_SIZE}px no-repeat`
-            : '#1a1c22',
+    >          <div
+            style={{
+              width: '100%',
+              aspectRatio: '1/1',
+              background: thumb
+                ? isAnimated
+                  ? `url(${thumb}) 0 0 / ${100 * frameCount}% 100% no-repeat`
+                  : `url(${thumb}) center / cover no-repeat`
+                : '#1a1c22',
           borderRadius: 'var(--radius-sm)',
           border: '1px solid var(--color-border)',
           display: 'flex',

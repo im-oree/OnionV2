@@ -327,13 +327,40 @@ export abstract class BaseLayerRenderer {
       new THREE.Vector3(-w, h, 0),
       new THREE.Vector3(w, h, 0),
       new THREE.Vector3(w, -h, 0),
-      new THREE.Vector3(-w, -h, 0),
+      new THREE.Vector3(-w, -h, 0), 
     ];
 
     return localCorners.map((v) => {
       const world = v.applyMatrix4(this.mesh.matrixWorld);
       return { x: world.x, y: world.y, z: world.z };
     });
+  }
+
+  /**
+   * Return the world-space AABB corners (8 points) for this renderer.
+   * Base implementation uses the mesh's local bounding box transformed by
+   * mesh.matrixWorld. Model3DLayerRenderer overrides this to use the actual
+   * loaded GLTF/OBJ scene bounds instead of the invisible proxy mesh box.
+   */
+  getWorldAABBCorners(): THREE.Vector3[] | null {
+    this.group.updateMatrixWorld(true);
+    const bbox = this.getLocalBoundingBox();
+    if (!bbox) return null;
+
+    const matrix = this.mesh.matrixWorld;
+    const corners: THREE.Vector3[] = [];
+    const xs = [bbox.min.x, bbox.max.x];
+    const ys = [bbox.min.y, bbox.max.y];
+    const zs = [bbox.min.z, bbox.max.z];
+
+    for (const x of xs) {
+      for (const y of ys) {
+        for (const z of zs) {
+          corners.push(new THREE.Vector3(x, y, z).applyMatrix4(matrix));
+        }
+      }
+    }
+    return corners;
   }
 
   // ── Private helpers ────────────────────────────────────────────

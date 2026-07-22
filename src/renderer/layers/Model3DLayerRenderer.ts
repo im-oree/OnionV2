@@ -115,6 +115,13 @@ export class Model3DLayerRenderer extends BaseLayerRenderer {
 
     this.mesh.visible = false;
     this.group.updateMatrixWorld(true);
+
+    // Apply any scale that was set before the model finished loading
+    // (from proxy mesh) to the newly-loaded model group.
+    if (this.mesh.scale.x !== 1 || this.mesh.scale.y !== 1 || this.mesh.scale.z !== 1) {
+      scene.scale.copy(this.mesh.scale);
+      this.mesh.scale.set(1, 1, 1);
+    }
   }
 
   updateData(data: any): void {
@@ -197,6 +204,125 @@ export class Model3DLayerRenderer extends BaseLayerRenderer {
     });
 
     return box.isEmpty() ? null : box;
+  }
+
+  /**
+   * Return world-space AABB corners of the ACTUAL loaded 3D model, not the
+   * invisible proxy box the base class holds. Uses Box3.setFromObject which
+   * walks all descendant meshes and accounts for their world matrices, so
+   * this always reflects the true visible extent of the model in world space.
+   */
+  override getWorldAABBCorners(): THREE.Vector3[] | null {
+    if (!this._modelGroup) {
+      // Model not loaded yet — fall back to base implementation
+      return super.getWorldAABBCorners();
+    }
+
+    this._modelGroup.updateMatrixWorld(true);
+    const worldBox = new THREE.Box3().setFromObject(this._modelGroup);
+    if (worldBox.isEmpty()) return null;
+
+    const corners: THREE.Vector3[] = [];
+    const xs = [worldBox.min.x, worldBox.max.x];
+    const ys = [worldBox.min.y, worldBox.max.y];
+    const zs = [worldBox.min.z, worldBox.max.z];
+
+    for (const x of xs) {
+      for (const y of ys) {
+        for (const z of zs) {
+          corners.push(new THREE.Vector3(x, y, z));
+        }
+      }
+    }
+    return corners;
+  }
+
+  /**
+   * Override updateTransform3D so that scale/position/rotation apply to the
+   * actual loaded model group instead of the invisible proxy mesh. The base
+   * implementation only affects `this.mesh` (a 1x1x1 hidden box), which is
+   * why 3D models never respond to scale changes.
+   */
+  override updateTransform3D(t3d: {
+    position: { x: number; y: number; z: number };
+    scale: { x: number; y: number; z: number };
+    rotationX: number;
+    rotationY: number;
+    rotationZ: number;
+    anchorPoint: { x: number; y: number; z: number };
+    extrusion?: number;
+  }): void {
+    // Position + rotation on the group (same as base class)
+    this.group.position.set(
+      t3d.position.x,
+      t3d.position.y,
+      -t3d.position.z,
+    );
+    this.group.rotation.set(
+      THREE.MathUtils.degToRad(t3d.rotationX),
+      THREE.MathUtils.degToRad(t3d.rotationY),
+      THREE.MathUtils.degToRad(t3d.rotationZ),
+    );
+
+    // Scale + anchor apply to the loaded model group, not the proxy mesh
+    const sx = t3d.scale.x / 100 || 0.0001;
+    const sy = t3d.scale.y / 100 || 0.0001;
+    const sz = t3d.scale.z / 100 || 0.0001;
+
+    if (this._modelGroup) {
+      this._modelGroup.scale.set(sx, sy, sz);
+      this._modelGroup.position.set(
+        -t3d.anchorPoint.x,
+        -t3d.anchorPoint.y,
+        -t3d.anchorPoint.z,
+      );
+    } else {
+      // Fall back to proxy mesh if model not loaded yet
+      this.mesh.scale.set(sx, sy, sz);
+      this.mesh.position.set(
+        -t3d.anchorPoint.x,
+        -t3d.anchorPoint.y,
+        -t3d.anchorPoint.z,
+      );
+    }
+  }
+
+  /**
+   * Override updateTransform so 2D-style scale also affects the model.
+   */
+  override updateTransform(transform: {
+    position: { x: number; y: number };
+    scale: { x: number; y: number };
+    rotation: number;
+    anchorPoint: { x: number; y: number };
+  }): void {
+    this.group.position.set(
+      transform.position.x,
+      transform.position.y,
+      this.group.position.z,
+    );
+    this.group.rotation.z = THREE.MathUtils.degToRad(transform.rotation);
+
+    const sx = transform.scale.x / 100 || 0.0001;
+    const sy = transform.scale.y / 100 || 0.0001;
+    // Keep existing Z scale (from previous transform3D update)
+    const sz = this._modelGroup?.scale.z ?? 1;
+
+    if (this._modelGroup) {
+      this._modelGroup.scale.set(sx, sy, sz);
+      this._modelGroup.position.set(
+        -transform.anchorPoint.x,
+        -transform.anchorPoint.y,
+        this._modelGroup.position.z,
+      );
+    } else {
+      this.mesh.scale.set(sx, sy, 1);
+      this.mesh.position.set(
+        -transform.anchorPoint.x,
+        -transform.anchorPoint.y,
+        0,
+      );
+    }
   }
 
   getModelGroup(): THREE.Group | null {

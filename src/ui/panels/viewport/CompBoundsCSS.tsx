@@ -178,6 +178,10 @@ export const CompBoundsCSS: React.FC<Props> = ({
     return effectiveBg;
   }, [showTransparencyCheckerboard, effectiveBg]);
 
+  // Hide comp bounds when comp is in 3D perspective mode — the camera frustum
+  // overlay (CameraFrustumOverlay) already communicates the render area in 3D.
+  if (comp.perspective3D) return null;
+
   return (
     <div
       className="absolute inset-0 pointer-events-none"

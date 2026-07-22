@@ -397,6 +397,7 @@ src\renderer\interaction\KeyframeHelpers.ts
 src\renderer\interaction\LayerBoundsOverlay.ts
 src\renderer\interaction\ModalTransform.ts
 src\renderer\interaction\SelectionOverlay.ts
+src\renderer\interaction\ViewSpaceTransform.ts
 src\renderer\layers\AdjustmentLayerRenderer.ts
 src\renderer\layers\AudioLayerRenderer.ts
 src\renderer\layers\BaseLayerRenderer.ts

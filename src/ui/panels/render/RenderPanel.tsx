@@ -1,45 +1,37 @@
 import React from 'react';
-import { useCompositionStore } from '../../../state/compositionStore';
+import { Sparkles } from 'lucide-react';
+import { useExportStore } from '../../../state/exportStore';
 
 export const RenderPanel: React.FC = () => {
-  const comp = useCompositionStore((s) =>
-    s.activeCompositionId
-      ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null
-      : null,
-  );
+  const openSettings = useExportStore((s) => s.openSettings);
 
   return (
-    <div className="p-3 space-y-3 text-ui-xs">
-      <div className="text-text-secondary font-medium uppercase tracking-wider">
-        Render Output
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      padding: 24, gap: 12, height: '100%',
+      color: 'var(--color-text-secondary)', fontSize: 11, textAlign: 'center',
+    }}>
+      <Sparkles size={22} strokeWidth={1.5} style={{ opacity: 0.5 }} />
+      <div style={{ maxWidth: 240, lineHeight: 1.5 }}>
+        Export has moved to the <strong>Render</strong> menu.
+        Use <kbd style={{
+          padding: '1px 5px', borderRadius: 3,
+          background: 'var(--color-input-bg)',
+          border: '1px solid var(--color-border)',
+          fontSize: 10, fontFamily: 'monospace',
+        }}>Ctrl+M</kbd> or click below.
       </div>
-      {comp ? (
-        <>
-          <div>
-            <label className="block text-text-disabled mb-1">Format</label>
-            <select
-              className="w-full h-6 bg-surface border border-border rounded-sm px-1 text-text-primary outline-none"
-            >
-              <option>PNG Sequence</option>
-              <option>MP4 (H.264)</option>
-              <option>WebM (VP9)</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-text-disabled mb-1">Resolution</label>
-            <select className="w-full h-6 bg-surface border border-border rounded-sm px-1 text-text-primary outline-none">
-              <option>Full ({comp.width}×{comp.height})</option>
-              <option>Half</option>
-              <option>Quarter</option>
-            </select>
-          </div>
-          <button className="w-full h-8 bg-accent text-white border-0 rounded-sm cursor-pointer hover:bg-accent-hover">
-            Export (coming soon)
-          </button>
-        </>
-      ) : (
-        <div className="text-text-disabled">No composition active</div>
-      )}
+      <button
+        onClick={openSettings}
+        style={{
+          padding: '6px 16px', fontSize: 11, fontWeight: 600,
+          background: 'var(--color-accent)',
+          border: 'none', borderRadius: 4,
+          color: '#ffffff', cursor: 'pointer',
+        }}
+      >
+        Open Export Dialog
+      </button>
     </div>
   );
 };

@@ -1032,7 +1032,15 @@ export const ProjectBrowserPanel: React.FC = () => {
     if (asset.type === 'model3d') {
       const fullAsset = assetManager.getAsset(asset.id);
       layerData.url = fullAsset?.url ?? '';
-      layerData.format = 'gltf';
+      layerData.fileName = fullAsset?.name ?? asset.name;
+      layerData.mimeType = fullAsset?.mimeType ?? 'model/gltf-binary';
+      // Detect format from file extension
+      const ext = (fullAsset?.name ?? asset.name).split('.').pop()?.toLowerCase() ?? 'glb';
+      layerData.format = (ext === 'gltf' || ext === 'glb') ? ext
+        : (ext === 'obj') ? 'obj'
+        : (ext === 'ply') ? 'ply'
+        : (ext === 'stl') ? 'stl'
+        : 'gltf';
       layerData.scale = 1;
     } else if (asset.type === 'video') {
       layerData.duration = asset.duration ?? 10;

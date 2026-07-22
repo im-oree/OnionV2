@@ -43,6 +43,7 @@ import { MaskOverlay } from './MaskOverlay';
 import { PerspectiveOverlay } from './PerspectiveOverlay';
 import { SplineOverlay } from './SplineOverlay';
 import { TransformGizmo3D } from './TransformGizmo3D';
+import { RotationGizmo3D } from './RotationGizmo3D';
 import { CameraFrameGuide } from './CameraFrameGuide';
 import { CameraFrustumOverlay } from './CameraFrustumOverlay';
 import { CameraPreview } from './CameraPreview';
@@ -203,6 +204,73 @@ const EmptyState: React.FC = React.memo(() => (
 
 EmptyState.displayName = 'EmptyState';
 
+// ── Camera view mask — darkens outside the composition rectangle ─────────
+
+const CameraViewMask: React.FC<{
+  viewportSize: { width: number; height: number };
+  cameraManager: any;
+  compWidth: number;
+  compHeight: number;
+  zoomUI: number;
+}> = React.memo(({ viewportSize, compWidth, compHeight, zoomUI }) => {
+  const vw = viewportSize.width;
+  const vh = viewportSize.height;
+  if (vw <= 0 || vh <= 0) return null;
+
+  const scale = Math.min(vw / compWidth, vh / compHeight) * zoomUI;
+  const rectW = compWidth * scale;
+  const rectH = compHeight * scale;
+  const rectX = (vw - rectW) / 2;
+  const rectY = (vh - rectH) / 2;
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        pointerEvents: 'none',
+        zIndex: 15,
+      }}
+    >
+      {/* Top strip */}
+      <div style={{
+        position: 'absolute',
+        left: 0, top: 0, width: '100%', height: Math.max(0, rectY),
+        background: 'rgba(0,0,0,0.6)',
+      }} />
+      {/* Bottom strip */}
+      <div style={{
+        position: 'absolute',
+        left: 0, top: rectY + rectH, width: '100%',
+        height: Math.max(0, vh - (rectY + rectH)),
+        background: 'rgba(0,0,0,0.6)',
+      }} />
+      {/* Left strip */}
+      <div style={{
+        position: 'absolute',
+        left: 0, top: rectY, width: Math.max(0, rectX), height: rectH,
+        background: 'rgba(0,0,0,0.6)',
+      }} />
+      {/* Right strip */}
+      <div style={{
+        position: 'absolute',
+        left: rectX + rectW, top: rectY, width: Math.max(0, vw - (rectX + rectW)),
+        height: rectH,
+        background: 'rgba(0,0,0,0.6)',
+      }} />
+      {/* Bright accent border around comp rect */}
+      <div style={{
+        position: 'absolute',
+        left: rectX, top: rectY, width: rectW, height: rectH,
+        border: '2px solid rgba(120,140,255,0.9)',
+        boxShadow: '0 0 12px rgba(120,140,255,0.4)',
+        boxSizing: 'border-box',
+      }} />
+    </div>
+  );
+});
+CameraViewMask.displayName = 'CameraViewMask';
+
 // ── Overlay group (reduces comp&& repetition) ────────────────
 
 const ViewportOverlays: React.FC<{
@@ -262,6 +330,10 @@ const ViewportOverlays: React.FC<{
         viewportSize={viewportSize}
       />
       <TransformGizmo3D
+        cameraManager={cameraManager}
+        viewportSize={viewportSize}
+      />
+      <RotationGizmo3D
         cameraManager={cameraManager}
         viewportSize={viewportSize}
       />
@@ -335,6 +407,9 @@ export const ViewportPanel: React.FC = () => {
   );
   const showAnchorPoints = useViewportStore(
     (s) => s.settings.showAnchorPoints,
+  );
+  const cameraViewZoom = useViewportStore(
+    (s) => s.settings.cameraViewZoom ?? 1,
   );
 
   const ctxMenu = useContextMenu();
@@ -640,6 +715,17 @@ export const ViewportPanel: React.FC = () => {
           viewportSize={viewportSize}
           cameraManager={cameraManager}
           zoom={state.zoom}
+        />
+      )}
+
+      {/* Camera view mask — darken area outside the composition rect */}
+      {comp?.perspective3D && !isFreeView && (
+        <CameraViewMask
+          viewportSize={viewportSize}
+          cameraManager={cameraManager}
+          compWidth={comp.width}
+          compHeight={comp.height}
+          zoomUI={cameraViewZoom}
         />
       )}
 

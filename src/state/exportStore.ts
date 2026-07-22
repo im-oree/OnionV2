@@ -1,61 +1,84 @@
 /**
- * exportStore — drives the export/render panel state machine.
+ * exportStore — export dialog & progress state.
  */
 import { create } from 'zustand';
-
-export type ExportFormat = 'png-sequence' | 'webm' | 'frame-png' | 'frame-jpg';
-export type ExportResolution = 'full' | 'half' | 'quarter';
-export type ExportStatus = 'idle' | 'preparing' | 'rendering' | 'encoding' | 'done' | 'error' | 'cancelled';
-
-export interface ExportSettings {
-  format: ExportFormat;
-  resolution: ExportResolution;
-  quality: number;       // 0-1, used for webm and jpg
-  startFrame: number;
-  endFrame: number;
-  frameRate: number;
-  includeAudio: boolean;
-}
-
-export interface ExportProgress {
-  current: number;
-  total: number;
-  status: ExportStatus;
-  message: string;
-  errorMessage?: string;
-  outputUrl?: string;  // blob URL for download when done
-  outputName?: string;
-}
+import type {
+  ExportSettings,
+  ExportProgress,
+} from '../renderer/export/types';
+import {
+  defaultExportSettings,
+  defaultProgress,
+} from '../renderer/export/types';
 
 interface ExportState {
   settings: ExportSettings;
   progress: ExportProgress;
+  // Dialog visibility
+  settingsDialogOpen: boolean;
+  progressDialogOpen: boolean;
+
+  // Actions
+  openSettings: () => void;
+  closeSettings: () => void;
+  openProgress: () => void;
+  closeProgress: () => void;
+
   updateSettings: (patch: Partial<ExportSettings>) => void;
+  replaceSettings: (settings: ExportSettings) => void;
   setProgress: (patch: Partial<ExportProgress>) => void;
-  reset: () => void;
+  resetProgress: () => void;
 }
 
-const DEFAULT_SETTINGS: ExportSettings = {
-  format: 'png-sequence',
-  resolution: 'full',
-  quality: 0.92,
-  startFrame: 0,
-  endFrame: 0,
-  frameRate: 30,
-  includeAudio: false,
-};
+export const useExportStore = create<ExportState>((set) => ({
+  settings: defaultExportSettings(),
+  progress: defaultProgress(),
+  settingsDialogOpen: false,
+  progressDialogOpen: false,
 
-const DEFAULT_PROGRESS: ExportProgress = {
-  current: 0,
-  total: 0,
-  status: 'idle',
-  message: '',
-};
+  openSettings: () => set({ settingsDialogOpen: true }),
+  closeSettings: () => set({ settingsDialogOpen: false }),
+  openProgress: () => set({ progressDialogOpen: true }),
+  closeProgress: () => set({ progressDialogOpen: false }),
 
-export const useExportStore = create<ExportState>(set => ({
-  settings: { ...DEFAULT_SETTINGS },
-  progress: { ...DEFAULT_PROGRESS },
-  updateSettings: patch => set(s => ({ settings: { ...s.settings, ...patch } })),
-  setProgress: patch => set(s => ({ progress: { ...s.progress, ...patch } })),
-  reset: () => set({ progress: { ...DEFAULT_PROGRESS } }),
+  updateSettings: (patch) =>
+    set((s) => ({ settings: { ...s.settings, ...patch } })),
+  replaceSettings: (settings) => set({ settings }),
+  setProgress: (patch) =>
+    set((s) => ({ progress: { ...s.progress, ...patch } })),
+  resetProgress: () => set({ progress: defaultProgress() }),
 }));
+
+/**
+ * Initialize export settings from active composition — called when opening
+ * the settings dialog so fps/duration/name defaults match the current comp.
+ */
+export function initializeExportSettingsFromComp(comp: {
+  width: number; height: number; fps: number; duration: number; name: string;
+}): void {
+  const store = useExportStore.getState();
+  const cur = store.settings;
+  // Only overwrite fields that are still at default (comp-derived)
+  const next: ExportSettings = { ...cur };
+  if (cur.resolutionPresetId === 'comp') {
+    next.width = comp.width;
+    next.height = comp.height;
+  }
+  if (cur.fpsPresetId === 'comp') {
+    next.fps = comp.fps;
+  }
+  // Always refresh duration-based range if in 'full' mode
+  if (cur.range.mode === 'full') {
+    const totalFrames = Math.floor(comp.duration * comp.fps);
+    next.range = {
+      mode: 'full',
+      startFrame: 0,
+      endFrame: Math.max(0, totalFrames - 1),
+    };
+  }
+  // Suggest filename if still empty or default
+  if (!cur.fileName || cur.fileName === 'export') {
+    next.fileName = comp.name.replace(/[^\w\s-]/g, '').trim() || 'export';
+  }
+  store.replaceSettings(next);
+}

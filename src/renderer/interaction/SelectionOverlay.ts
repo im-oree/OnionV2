@@ -168,13 +168,19 @@ export class SelectionOverlay {
       const isLast = isMulti && r.id === this._lastSelectedId;
       this._drawSelectionOutline(corners, isMulti, isLast);
 
-      // 2. Bounding box handles (single selection only, unless last-selected)
-      if (!this._hideHandles && (!isMulti || isLast)) {
+      const layerIs3D = this._isLayer3D(r.id);
+
+      // 2. Bounding box handles — SKIP for 3D layers (AE convention).
+      // 3D layers use the AE cage gizmo (TransformGizmo3D) instead of the
+      // 8 flat handles, since flat handles have no meaningful projection
+      // in perspective view.
+      if (!this._hideHandles && !layerIs3D && (!isMulti || isLast)) {
         this._drawHandles(corners, r.id);
       }
 
-      // 4. Anchor crosshair
-      if (useViewportStore.getState().settings.showAnchorPoints) {
+      // 4. Anchor crosshair — SKIP for 3D layers (needs a 3D anchor tool,
+      // which is out of scope here; hiding avoids a broken drag hitbox).
+      if (!layerIs3D && useViewportStore.getState().settings.showAnchorPoints) {
         r.group.getWorldPosition(_worldPos);
         this._drawAnchor(_worldPos.x, _worldPos.y, _worldPos.z);
       }
@@ -195,7 +201,10 @@ export class SelectionOverlay {
       gizmoCenterWorld.z,
     );
 
-    if (this._gizmoMode) {
+    // Skip legacy SVG gizmo for any selection containing 3D layers —
+    // TransformGizmo3D / RotationGizmo3D handle those.
+    const anySelected3D = renderers.some(r => this._isLayer3D(r.id));
+    if (this._gizmoMode && !anySelected3D) {
       this._drawGizmo(gizmoScreen.x, gizmoScreen.y);
     }
   }
@@ -591,39 +600,49 @@ export class SelectionOverlay {
     parent.appendChild(v);
   }
 
+  // ── 3D layer detection ────────────────────────────────────
+
+  /** Check if a specific layer is flagged 3D (from composition store). */
+  private _isLayer3D(layerId: string): boolean {
+    const cs = useCompositionStore.getState();
+    const comp = cs.activeCompositionId
+      ? cs.compositions.find(c => c.id === cs.activeCompositionId)
+      : null;
+    const layer = comp?.layers.find(l => l.id === layerId);
+    return !!layer?.is3D;
+  }
+
   // ── Screen corner computation ─────────────────────────────
 
   private _getScreenCorners(renderer: BaseLayerRenderer): ScreenPt[] {
+    // Ask the renderer for its true world-space AABB corners. This lets
+    // Model3DLayerRenderer return the actual loaded-model bounds instead of
+    // the invisible 1×1×1 proxy mesh that BaseLayerRenderer holds.
+    const worldCorners = (renderer as any).getWorldAABBCorners?.() as
+      | THREE.Vector3[]
+      | null
+      | undefined;
+
+    // In 3D perspective mode, project all 8 world corners and take the
+    // convex hull for a silhouette outline that follows the camera view.
+    if (this.cameraManager.is3DMode && worldCorners && worldCorners.length > 0) {
+      const screen: ScreenPt[] = [];
+      for (const w of worldCorners) {
+        const s = this.cameraManager.worldToScreen(w.x, w.y, w.z);
+        if (isFinite(s.x) && isFinite(s.y)) screen.push(s);
+      }
+      if (screen.length < 3) return [];
+      return this._convexHull(screen);
+    }
+
+    // 2D mode: use the original local-XY corner path so the outline is
+    // an axis-aligned or rotated rectangle (not a full 8-corner hull).
     const bbox = renderer.getLocalBoundingBox();
     if (!bbox) return [];
 
     renderer.group.updateMatrixWorld(true);
     const matrix = renderer.mesh.matrixWorld;
 
-    if (this.cameraManager.is3DMode) {
-      const corners: ScreenPt[] = [];
-      const xs = [bbox.min.x, bbox.max.x];
-      const ys = [bbox.min.y, bbox.max.y];
-      const zs = [bbox.min.z, bbox.max.z];
-
-      for (const x of xs) {
-        for (const y of ys) {
-          for (const z of zs) {
-            _vec3.set(x, y, z).applyMatrix4(matrix);
-            const s = this.cameraManager.worldToScreen(
-              _vec3.x, _vec3.y, _vec3.z,
-            );
-            if (isFinite(s.x) && isFinite(s.y)) {
-              corners.push(s);
-            }
-          }
-        }
-      }
-
-      return this._convexHull(corners);
-    }
-
-    // 2D: 4 corners at Z=0
     const pts2d: ScreenPt[] = [];
     const localCorners = [
       [bbox.min.x, bbox.min.y],
@@ -634,11 +653,8 @@ export class SelectionOverlay {
 
     for (const [lx, ly] of localCorners) {
       _vec3.set(lx, ly, 0).applyMatrix4(matrix);
-      pts2d.push(
-        this.cameraManager.worldToScreen(_vec3.x, _vec3.y),
-      );
+      pts2d.push(this.cameraManager.worldToScreen(_vec3.x, _vec3.y));
     }
-
     return pts2d;
   }
 

@@ -714,27 +714,69 @@ export function useViewportInput({
           const isFree = !!(window as any).__freeViewMode;
 
           if (isFree) {
-            // ── Free View: orbit the free camera around the scene ──
-            const startX = e.clientX;
-            const startY = e.clientY;
-            const startOrbitX = (window as any).__freeOrbitX ?? 0.3;
-            const startOrbitY = (window as any).__freeOrbitY ?? 0.5;
+            const isShiftPan = e.shiftKey;
 
-            document.body.style.cursor = 'crosshair';
-            const onMove = (ev: MouseEvent) => {
-              const dx = ev.clientX - startX;
-              const dy = ev.clientY - startY;
-              (window as any).__freeOrbitY = startOrbitY - dx * 0.005;
-              (window as any).__freeOrbitX = startOrbitX - dy * 0.005;
-              requestRender?.();
-            };
-            const onUp = () => {
-              document.body.style.cursor = '';
-              document.removeEventListener('mousemove', onMove);
-              document.removeEventListener('mouseup', onUp);
-            };
-            document.addEventListener('mousemove', onMove);
-            document.addEventListener('mouseup', onUp);
+            if (isShiftPan) {
+              // ── Free View: Shift+MMB = pan focal point along camera right/up ──
+              const startX = e.clientX;
+              const startY = e.clientY;
+              const startLookAtX = (window as any).__freeLookAtX ?? 0;
+              const startLookAtY = (window as any).__freeLookAtY ?? 0;
+              const startLookAtZ = (window as any).__freeLookAtZ ?? 0;
+              const yaw = (window as any).__freeOrbitY ?? 0.5;
+              const pitch = (window as any).__freeOrbitX ?? 0.3;
+
+              // Compute camera right/up basis from yaw/pitch
+              const cosP = Math.cos(pitch);
+              const rightX = Math.cos(yaw);
+              const rightZ = -Math.sin(yaw);
+              const upX = Math.sin(yaw) * Math.sin(pitch);
+              const upY = cosP;
+              const upZ = Math.cos(yaw) * Math.sin(pitch);
+
+              // Pan speed based on distance from camera to focal point
+              const dist = (window as any).__freeDistance ?? 500;
+              const speed = dist * 0.002;
+
+              document.body.style.cursor = 'grabbing';
+              const onMove = (ev: MouseEvent) => {
+                const dx = ev.clientX - startX;
+                const dy = ev.clientY - startY;
+                (window as any).__freeLookAtX = startLookAtX - dx * speed * rightX + dy * speed * upX;
+                (window as any).__freeLookAtY = startLookAtY + dy * speed * upY;
+                (window as any).__freeLookAtZ = startLookAtZ - dx * speed * rightZ + dy * speed * upZ;
+                requestRender?.();
+              };
+              const onUp = () => {
+                document.body.style.cursor = '';
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+              };
+              document.addEventListener('mousemove', onMove);
+              document.addEventListener('mouseup', onUp);
+            } else {
+              // ── Free View: MMB (no shift) = orbit around focal point ──
+              const startX = e.clientX;
+              const startY = e.clientY;
+              const startOrbitX = (window as any).__freeOrbitX ?? 0.3;
+              const startOrbitY = (window as any).__freeOrbitY ?? 0.5;
+
+              document.body.style.cursor = 'crosshair';
+              const onMove = (ev: MouseEvent) => {
+                const dx = ev.clientX - startX;
+                const dy = ev.clientY - startY;
+                (window as any).__freeOrbitY = startOrbitY - dx * 0.005;
+                (window as any).__freeOrbitX = startOrbitX - dy * 0.005;
+                requestRender?.();
+              };
+              const onUp = () => {
+                document.body.style.cursor = '';
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+              };
+              document.addEventListener('mousemove', onMove);
+              document.addEventListener('mouseup', onUp);
+            }
           } else {
             // ── Active Camera: orbit/pan the comp camera with auto-keyframing ──
             // Block camera movement unless "Move with View" is enabled
@@ -1881,8 +1923,11 @@ export function useViewportInput({
     if (!canvas) return;
 
     const onKeyDown = (e: KeyboardEvent) => {
-      // Shift + ` toggles fly mode (Blender-style)
-      if (e.key === '`' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Shift + ` or Shift + F toggles fly mode (Blender-style)
+      const isFlyToggle =
+        (e.key === '`' && e.shiftKey) ||
+        ((e.key === 'f' || e.key === 'F') && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey);
+      if (isFlyToggle) {
         e.preventDefault();
         const cs = useCompositionStore.getState();
         const compId = cs.activeCompositionId;
