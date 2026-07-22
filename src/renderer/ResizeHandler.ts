@@ -107,6 +107,11 @@ export class ResizeHandler {
     // smaller backing store to fill the view.
     this.renderer.setSize(containerW, containerH, false);
 
+    // setSize(updateStyle=false) already calls setViewport(0, 0, w, h)
+    // internally, and Three.js's setViewport multiplies by pixelRatio.
+    // So no manual viewport/scissor calls needed — that would double-apply.
+    this.renderer.setScissorTest(false);
+
     // Enforce fill-parent CSS every resize (Three.js used to set inline
     // px width/height on the canvas when updateStyle was true; guard against
     // any stale styles).
