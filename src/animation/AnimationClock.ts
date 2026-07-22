@@ -1,13 +1,7 @@
 /**
- * AnimationClock — drives frame advancement for playback.
+ * AnimationClock â€” drives frame advancement for playback.
  * Uses performance.now() for high-resolution timing.
  * Emits frame-changed events; never triggers React re-renders directly.
- *
- * FIX: Accumulator is now properly reset to zero (not made negative)
- * when the MAX_CONSUMED cap is hit. The old code did:
- *   accumulator = 0; then accumulator -= consumed * frameBudget
- * which produced a large negative accumulator, causing a timing gap
- * before the next frame, resulting in uneven/stuttery playback.
  */
 type Listener<T = unknown> = (data: T) => void;
 
@@ -26,9 +20,7 @@ export class AnimationClock {
 
   on<K extends string>(
     event: K,
-    handler: Listener<
-      ClockEventPayloads[K & keyof ClockEventPayloads]
-    >,
+    handler: Listener<ClockEventPayloads[K & keyof ClockEventPayloads]>,
   ): void {
     let set = this._handlers.get(event);
     if (!set) {
@@ -40,9 +32,7 @@ export class AnimationClock {
 
   off<K extends string>(
     event: K,
-    handler: Listener<
-      ClockEventPayloads[K & keyof ClockEventPayloads]
-    >,
+    handler: Listener<ClockEventPayloads[K & keyof ClockEventPayloads]>,
   ): void {
     const set = this._handlers.get(event);
     if (set) {
@@ -56,9 +46,8 @@ export class AnimationClock {
     data: ClockEventPayloads[K & keyof ClockEventPayloads],
   ): void {
     const set = this._handlers.get(event);
-    if (set) {
-      for (const h of set) h(data);
-    }
+    if (!set) return;
+    for (const h of set) h(data);
   }
 
   private _isPlaying = false;
@@ -78,11 +67,7 @@ export class AnimationClock {
   private _rafId: number | null = null;
 
   play(): void {
-    if (this._isPlaying) {
-      console.log('[AnimClock] play() called but already playing, _currentFrame=', this._currentFrame);
-      return;
-    }
-    console.log('[AnimClock] play() called, _currentFrame=', this._currentFrame, '_fps=', this._fps, '_totalFrames=', this._totalFrames);
+    if (this._isPlaying) return;
     this._isPlaying = true;
     this._forward = this._playbackRate >= 0;
     this._lastTimestamp = performance.now();
@@ -118,10 +103,7 @@ export class AnimationClock {
   }
 
   seekToFrame(frame: number): void {
-    this._currentFrame = Math.max(
-      0,
-      Math.min(this._totalFrames, Math.round(frame)),
-    );
+    this._currentFrame = Math.max(0, Math.min(this._totalFrames, Math.round(frame)));
     this._accumulator = 0;
     this._emit('frame-changed', {
       frame: this._currentFrame,
@@ -158,20 +140,10 @@ export class AnimationClock {
 
   stepForward(): void { this.seekToFrame(this._currentFrame + 1); }
   stepBackward(): void { this.seekToFrame(this._currentFrame - 1); }
-  jumpForward(frames: number): void {
-    this.seekToFrame(this._currentFrame + frames);
-  }
-  jumpBackward(frames: number): void {
-    this.seekToFrame(this._currentFrame - frames);
-  }
-  goToStart(): void {
-    this.seekToFrame(this._useWorkArea ? this._workAreaStart : 0);
-  }
-  goToEnd(): void {
-    this.seekToFrame(
-      this._useWorkArea ? this._workAreaEnd : this._totalFrames,
-    );
-  }
+  jumpForward(frames: number): void { this.seekToFrame(this._currentFrame + frames); }
+  jumpBackward(frames: number): void { this.seekToFrame(this._currentFrame - frames); }
+  goToStart(): void { this.seekToFrame(this._useWorkArea ? this._workAreaStart : 0); }
+  goToEnd(): void { this.seekToFrame(this._useWorkArea ? this._workAreaEnd : this._totalFrames); }
 
   dispose(): void {
     this.pause();
@@ -179,10 +151,7 @@ export class AnimationClock {
   }
 
   private _tick = (now: number): void => {
-    if (!this._isPlaying) {
-      console.log('[AnimClock] _tick fired but _isPlaying is false, returning');
-      return;
-    }
+    if (!this._isPlaying) return;
 
     const elapsed = now - this._lastTimestamp;
     this._lastTimestamp = now;
@@ -201,13 +170,10 @@ export class AnimationClock {
     const consumed = Math.floor(this._accumulator / this._frameBudget);
 
     if (consumed > 0) {
-      // Subtract exactly what we consume — accumulator stays non-negative
       this._accumulator -= consumed * this._frameBudget;
 
       const boundStart = this._useWorkArea ? this._workAreaStart : 0;
       const boundEnd = this._useWorkArea ? this._workAreaEnd : this._totalFrames;
-
-      console.log('[AnimClock] _tick consuming', consumed, 'frames, currentFrame before:', this._currentFrame, 'bounds:', boundStart, '-', boundEnd);
 
       let stopped = false;
 
@@ -216,9 +182,8 @@ export class AnimationClock {
         else this._currentFrame--;
 
         if (this._currentFrame > boundEnd) {
-          if (this._loopMode === 'loop') {
-            this._currentFrame = boundStart;
-          } else if (this._loopMode === 'ping-pong') {
+          if (this._loopMode === 'loop') this._currentFrame = boundStart;
+          else if (this._loopMode === 'ping-pong') {
             this._forward = false;
             this._currentFrame = boundEnd - 1;
           } else {
@@ -227,9 +192,8 @@ export class AnimationClock {
             break;
           }
         } else if (this._currentFrame < boundStart) {
-          if (this._loopMode === 'loop') {
-            this._currentFrame = boundEnd;
-          } else if (this._loopMode === 'ping-pong') {
+          if (this._loopMode === 'loop') this._currentFrame = boundEnd;
+          else if (this._loopMode === 'ping-pong') {
             this._forward = true;
             this._currentFrame = boundStart + 1;
           } else {
@@ -240,14 +204,12 @@ export class AnimationClock {
         }
       }
 
-      console.log('[AnimClock] _tick emitting frame-changed, frame:', this._currentFrame);
       this._emit('frame-changed', {
         frame: this._currentFrame,
         time: this._currentFrame / this._fps,
       });
 
       if (stopped) {
-        console.log('[AnimClock] _tick paused at end');
         this.pause();
         return;
       }

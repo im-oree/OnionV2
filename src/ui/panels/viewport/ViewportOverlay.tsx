@@ -1,122 +1,245 @@
 /**
- * ViewportOverlay — SVG overlay for grid lines, guides, and crosshair.
- * Positioned absolutely on top of the Three.js canvas.
- * Uses the composition dimensions and camera zoom to draw the grid.
+ * ViewportOverlay — SVG overlay for grid, composition bounds, and crosshair.
+ * Renders on top of the Three.js canvas, clipped to the composition area.
+ *
+ * This is the GRID overlay only — composition bounds background/outline is
+ * handled by CompBoundsCSS. This component draws:
+ * - Adaptive grid (minor + major lines) inside composition area
+ * - Center crosshair with subtle dot
+ * - Composition corner markers
  */
-import React from 'react';
+import React, { useMemo, useId } from 'react';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { useViewportStore } from '../../../state/viewportStore';
 
 interface ViewportOverlayProps {
-  /** Current zoom level from camera (affects grid density) */
   zoom: number;
-  /** Pixel dimensions of the viewport container */
   viewportSize: { width: number; height: number };
 }
+
+// ── Nice step computation (1-2-5 sequence) ───────────────────
+
+function niceStep(raw: number): number {
+  if (raw <= 0) return 50;
+
+  const magnitude = Math.pow(10, Math.floor(Math.log10(raw)));
+  const normalized = raw / magnitude;
+
+  let nice: number;
+  if (normalized < 1.5) nice = 1;
+  else if (normalized < 3.5) nice = 2;
+  else if (normalized < 7.5) nice = 5;
+  else nice = 10;
+
+  return Math.max(5, nice * magnitude);
+}
+
+// ── Main component ──────────────────────────────────────────
 
 export const ViewportOverlay: React.FC<ViewportOverlayProps> = ({
   zoom,
   viewportSize,
 }) => {
+  const minorPatternId = useId();
+  const majorPatternId = useId();
+  const clipId = useId();
+
   const comp = useCompositionStore((s) => {
     const id = s.activeCompositionId;
-    return id ? s.compositions.find((c) => c.id === id) ?? null : null;
+    return id
+      ? (s.compositions.find((c) => c.id === id) ?? null)
+      : null;
   });
 
-  if (!comp) return null;
+  const showGrid = useViewportStore((s) => s.settings.showGrid);
 
-  const gridStep = Math.max(10, Math.round(50 * zoom));
+  // Compute grid geometry
+  const grid = useMemo(() => {
+    if (!comp) return null;
 
-  // Calculate scale to fit comp in viewport
-  const scale = Math.min(
-    viewportSize.width / comp.width,
-    viewportSize.height / comp.height,
-  );
+    const vw = viewportSize.width;
+    const vh = viewportSize.height;
+    if (vw <= 0 || vh <= 0) return null;
+    if (comp.width <= 0 || comp.height <= 0) return null;
+
+    const safeZoom = Math.max(0.01, zoom);
+
+    // Scale to fit composition in viewport
+    const scale = Math.min(vw / comp.width, vh / comp.height);
+
+    // Composition rect in viewport coords
+    const compW = comp.width * scale;
+    const compH = comp.height * scale;
+    const compX = (vw - compW) / 2;
+    const compY = (vh - compH) / 2;
+
+    // Target ~25-40px screen spacing for minor grid
+    const targetScreenPx = 32;
+    const rawStep = targetScreenPx / (scale * safeZoom);
+    const minorStep = niceStep(rawStep);
+    const majorStep = minorStep * 5;
+
+    // Step sizes in screen pixels
+    const minorPx = minorStep * scale;
+    const majorPx = majorStep * scale;
+
+    // Grid line stroke widths (scale with zoom for crispness)
+    const minorStroke = Math.max(0.3, Math.min(0.8, 0.5 / safeZoom));
+    const majorStroke = Math.max(0.5, Math.min(1.2, 0.8 / safeZoom));
+
+    return {
+      compX,
+      compY,
+      compW,
+      compH,
+      minorPx,
+      majorPx,
+      minorStroke,
+      majorStroke,
+      cx: vw / 2,
+      cy: vh / 2,
+    };
+  }, [
+    comp?.width,
+    comp?.height,
+    viewportSize.width,
+    viewportSize.height,
+    zoom,
+    comp,
+  ]);
+
+  if (!comp || !grid) return null;
+
+  const {
+    compX, compY, compW, compH,
+    minorPx, majorPx,
+    minorStroke, majorStroke,
+    cx, cy,
+  } = grid;
 
   return (
     <svg
-      className="absolute inset-0 pointer-events-none"
+      style={{
+        position: 'absolute',
+        inset: 0,
+        pointerEvents: 'none',
+        zIndex: 1,
+        overflow: 'hidden',
+      }}
       width={viewportSize.width}
       height={viewportSize.height}
-      viewBox={`0 0 ${viewportSize.width} ${viewportSize.height}`}
+      xmlns="http://www.w3.org/2000/svg"
     >
-      <defs>
-        <pattern
-          id="grid-minor"
-          width={gridStep * scale}
-          height={gridStep * scale}
-          patternUnits="userSpaceOnUse"
-        >
-          <path
-            d={`M ${gridStep * scale} 0 L 0 0 0 ${gridStep * scale}`}
-            fill="none"
-            stroke="var(--viewport-grid)"
-            strokeWidth={1 / (zoom || 1)}
-          />
-        </pattern>
-        <pattern
-          id="grid-major"
-          width={gridStep * scale * 5}
-          height={gridStep * scale * 5}
-          patternUnits="userSpaceOnUse"
-        >
+      {showGrid && minorPx > 3 && (
+        <>
+          <defs>
+            {/* Minor grid pattern */}
+            <pattern
+              id={minorPatternId}
+              width={minorPx}
+              height={minorPx}
+              patternUnits="userSpaceOnUse"
+              x={compX}
+              y={compY}
+            >
+              <line
+                x1={minorPx}
+                y1={0}
+                x2={minorPx}
+                y2={minorPx}
+                stroke="rgba(255,255,255,0.04)"
+                strokeWidth={minorStroke}
+              />
+              <line
+                x1={0}
+                y1={minorPx}
+                x2={minorPx}
+                y2={minorPx}
+                stroke="rgba(255,255,255,0.04)"
+                strokeWidth={minorStroke}
+              />
+            </pattern>
+
+            {/* Major grid pattern */}
+            <pattern
+              id={majorPatternId}
+              width={majorPx}
+              height={majorPx}
+              patternUnits="userSpaceOnUse"
+              x={compX}
+              y={compY}
+            >
+              <rect
+                width={majorPx}
+                height={majorPx}
+                fill={`url(#${minorPatternId})`}
+              />
+              <line
+                x1={majorPx}
+                y1={0}
+                x2={majorPx}
+                y2={majorPx}
+                stroke="rgba(255,255,255,0.08)"
+                strokeWidth={majorStroke}
+              />
+              <line
+                x1={0}
+                y1={majorPx}
+                x2={majorPx}
+                y2={majorPx}
+                stroke="rgba(255,255,255,0.08)"
+                strokeWidth={majorStroke}
+              />
+            </pattern>
+
+            {/* Clip to composition bounds */}
+            <clipPath id={clipId}>
+              <rect
+                x={compX}
+                y={compY}
+                width={compW}
+                height={compH}
+              />
+            </clipPath>
+          </defs>
+
+          {/* Grid — clipped to composition bounds */}
           <rect
-            width={gridStep * scale * 5}
-            height={gridStep * scale * 5}
-            fill="url(#grid-minor)"
+            x={compX}
+            y={compY}
+            width={compW}
+            height={compH}
+            fill={`url(#${majorPatternId})`}
+            clipPath={`url(#${clipId})`}
           />
-          <path
-            d={`M ${gridStep * scale * 5} 0 L 0 0 0 ${gridStep * scale * 5}`}
-            fill="none"
-            stroke="var(--viewport-grid-major)"
-            strokeWidth={1.5 / (zoom || 1)}
-          />
-        </pattern>
-      </defs>
+        </>
+      )}
 
-      {/* Composition bounds */}
-      <rect
-        x={(viewportSize.width - comp.width * scale) / 2}
-        y={(viewportSize.height - comp.height * scale) / 2}
-        width={comp.width * scale}
-        height={comp.height * scale}
-        fill="none"
-        stroke="var(--color-border)"
-        strokeWidth={1}
-      />
-
-      {/* Grid fill */}
-      <rect
-        x={(viewportSize.width - comp.width * scale) / 2}
-        y={(viewportSize.height - comp.height * scale) / 2}
-        width={comp.width * scale}
-        height={comp.height * scale}
-        fill="url(#grid-major)"
-      />
-
-      {/* Center crosshair */}
-      <line
-        x1={viewportSize.width / 2 - 20}
-        y1={viewportSize.height / 2}
-        x2={viewportSize.width / 2 + 20}
-        y2={viewportSize.height / 2}
-        stroke="var(--viewport-crosshair)"
-        strokeWidth={1}
-      />
-      <line
-        x1={viewportSize.width / 2}
-        y1={viewportSize.height / 2 - 20}
-        x2={viewportSize.width / 2}
-        y2={viewportSize.height / 2 + 20}
-        stroke="var(--viewport-crosshair)"
-        strokeWidth={1}
-      />
-      {/* Center dot */}
-      <circle
-        cx={viewportSize.width / 2}
-        cy={viewportSize.height / 2}
-        r={2}
-        fill="var(--viewport-crosshair)"
-      />
+      {/* Center crosshair — very subtle */}
+      <g opacity={0.25}>
+        <line
+          x1={cx - 16}
+          y1={cy}
+          x2={cx + 16}
+          y2={cy}
+          stroke="rgba(255,255,255,0.5)"
+          strokeWidth={0.5}
+        />
+        <line
+          x1={cx}
+          y1={cy - 16}
+          x2={cx}
+          y2={cy + 16}
+          stroke="rgba(255,255,255,0.5)"
+          strokeWidth={0.5}
+        />
+        <circle
+          cx={cx}
+          cy={cy}
+          r={1.5}
+          fill="rgba(255,255,255,0.4)"
+        />
+      </g>
     </svg>
   );
 };

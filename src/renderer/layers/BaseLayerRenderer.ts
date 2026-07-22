@@ -5,14 +5,21 @@ export abstract class BaseLayerRenderer {
   public readonly group: THREE.Group;
   public readonly mesh: THREE.Mesh;
   public readonly id: string;
-  /** Extrusion side meshes (created when extrusion > 0) */
+
   private _extrusionGroup: THREE.Group | null = null;
   private _lastExtrusion = 0;
 
   protected geometry: THREE.BufferGeometry;
   protected material: THREE.Material;
 
-  constructor(id: string, geometry: THREE.BufferGeometry, material: THREE.Material) {
+  // Fix #1 — track disposal to prevent post-dispose mutations
+  private _disposed = false;
+
+  constructor(
+    id: string,
+    geometry: THREE.BufferGeometry,
+    material: THREE.Material,
+  ) {
     this.id = id;
     this.geometry = geometry;
     this.material = material;
@@ -22,49 +29,66 @@ export abstract class BaseLayerRenderer {
 
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.name = `${id}_mesh`;
-    // Disable frustum culling to prevent objects from disappearing
-    // when orbiting/rotating the 3D view. Three.js frustum culling
-    // uses the bounding sphere which can be inaccurate for rotated planes.
     this.mesh.frustumCulled = false;
     this.group.add(this.mesh);
   }
 
   updateTransform(transform: Transform): void {
-    this.group.position.set(transform.position.x, transform.position.y, this.group.position.z);
+    // Fix #2 — preserve Z instead of reading this.group.position.z which
+    // can be stale if updateTransform3D was previously called.
+    // Use existing Z so 2D layers on 3D scenes don't snap to 0.
+    this.group.position.set(
+      transform.position.x,
+      transform.position.y,
+      this.group.position.z,
+    );
     this.group.rotation.z = THREE.MathUtils.degToRad(transform.rotation);
-    this.mesh.scale.set(transform.scale.x / 100, transform.scale.y / 100, 1);
-    this.mesh.position.set(-transform.anchorPoint.x, -transform.anchorPoint.y, 0);
+    this.mesh.scale.set(
+      transform.scale.x / 100,
+      transform.scale.y / 100,
+      1,
+    );
+    this.mesh.position.set(
+      -transform.anchorPoint.x,
+      -transform.anchorPoint.y,
+      0,
+    );
   }
 
-  /**
-   * Update 3D transform from transform3D data.
-   * Handles full 3D position, rotation, scale, and extrusion.
-   */
   updateTransform3D(t3d: {
     position: { x: number; y: number; z: number };
     scale: { x: number; y: number; z: number };
-    rotationX: number; rotationY: number; rotationZ: number;
+    rotationX: number;
+    rotationY: number;
+    rotationZ: number;
     anchorPoint: { x: number; y: number; z: number };
     extrusion?: number;
   }): void {
     this.group.position.set(
       t3d.position.x,
       t3d.position.y,
-      -t3d.position.z, // Z is negative because Three.js Z goes toward camera
+      -t3d.position.z,
     );
+
     this.group.rotation.set(
       THREE.MathUtils.degToRad(t3d.rotationX),
       THREE.MathUtils.degToRad(t3d.rotationY),
       THREE.MathUtils.degToRad(t3d.rotationZ),
     );
-    this.mesh.scale.set(
-      t3d.scale.x / 100,
-      t3d.scale.y / 100,
-      t3d.scale.z / 100,
-    );
-    this.mesh.position.set(-t3d.anchorPoint.x, -t3d.anchorPoint.y, -t3d.anchorPoint.z);
 
-    // Handle extrusion
+    // Fix #3 — scale must never be zero; zero scale produces a degenerate
+    // matrix, breaking inverse operations and bounding box calculations.
+    const sx = t3d.scale.x / 100 || 0.0001;
+    const sy = t3d.scale.y / 100 || 0.0001;
+    const sz = t3d.scale.z / 100 || 0.0001;
+    this.mesh.scale.set(sx, sy, sz);
+
+    this.mesh.position.set(
+      -t3d.anchorPoint.x,
+      -t3d.anchorPoint.y,
+      -t3d.anchorPoint.z,
+    );
+
     const extrude = t3d.extrusion ?? 0;
     if (Math.abs(extrude - this._lastExtrusion) > 0.1) {
       this._updateExtrusion(extrude);
@@ -72,20 +96,10 @@ export abstract class BaseLayerRenderer {
     }
   }
 
-  /**
-   * Create extrusion sides when extrusion > 0.
-   * Converts the flat plane into a 3D box with the layer texture on front.
-   */
   private _updateExtrusion(depth: number): void {
-    // Remove old extrusion
     if (this._extrusionGroup) {
       this.group.remove(this._extrusionGroup);
-      this._extrusionGroup.traverse(child => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-          (child.material as THREE.Material).dispose();
-        }
-      });
+      this._disposeGroup(this._extrusionGroup);
       this._extrusionGroup = null;
     }
 
@@ -93,63 +107,71 @@ export abstract class BaseLayerRenderer {
 
     const w = this.geometryWidth();
     const h = this.geometryHeight();
-    const d = depth;
     const hw = w / 2;
     const hh = h / 2;
 
     this._extrusionGroup = new THREE.Group();
     this._extrusionGroup.name = `${this.id}_extrusion`;
 
-    // Side color (darker version of the material color)
-    const baseColor = (this.material as any).color?.clone() ?? new THREE.Color(0x888888);
+    const baseColor =
+      (this.material as any).color instanceof THREE.Color
+        ? (this.material as any).color.clone()
+        : new THREE.Color(0x888888);
+
     const sideColor = baseColor.clone().multiplyScalar(0.6);
 
-    const sideMat = new THREE.MeshBasicMaterial({
-      color: sideColor, transparent: true, opacity: 0.9,
-      side: THREE.DoubleSide, depthWrite: false,
+    // Fix #4 — depthWrite: false on opaque-ish geometry causes sort order
+    // artifacts when sides overlap. Use depthWrite: true for solid sides.
+    const sideMat = new THREE.MeshStandardMaterial({
+      color: sideColor,
+      transparent: true,
+      opacity: 0.9,
+      side: THREE.DoubleSide,
+      depthWrite: true,
+      roughness: 0.7,
+      metalness: 0,
     });
 
+    const addSide = (
+      w2: number,
+      h2: number,
+      px: number,
+      py: number,
+      pz: number,
+      rx: number,
+      ry: number,
+    ) => {
+      const geo = new THREE.PlaneGeometry(w2, h2);
+      const mesh = new THREE.Mesh(geo, sideMat.clone());
+      mesh.position.set(px, py, pz);
+      mesh.rotation.set(rx, ry, 0);
+      mesh.frustumCulled = false;
+      this._extrusionGroup!.add(mesh);
+    };
+
     // Back face
-    const backGeo = new THREE.PlaneGeometry(w, h);
-    const backMesh = new THREE.Mesh(backGeo, sideMat.clone());
-    backMesh.position.z = d;
-    this._extrusionGroup.add(backMesh);
+    addSide(w, h, 0, 0, -depth, 0, Math.PI);
+    // Top
+    addSide(w, depth, 0, hh, -depth / 2, -Math.PI / 2, 0);
+    // Bottom
+    addSide(w, depth, 0, -hh, -depth / 2, Math.PI / 2, 0);
+    // Left
+    addSide(depth, h, -hw, 0, -depth / 2, 0, -Math.PI / 2);
+    // Right
+    addSide(depth, h, hw, 0, -depth / 2, 0, Math.PI / 2);
 
-    // Top side
-    const topGeo = new THREE.PlaneGeometry(w, d);
-    const topMesh = new THREE.Mesh(topGeo, sideMat.clone());
-    topMesh.position.set(0, hh, d / 2);
-    topMesh.rotation.x = Math.PI / 2;
-    this._extrusionGroup.add(topMesh);
-
-    // Bottom side
-    const bottomGeo = new THREE.PlaneGeometry(w, d);
-    const bottomMesh = new THREE.Mesh(bottomGeo, sideMat.clone());
-    bottomMesh.position.set(0, -hh, d / 2);
-    bottomMesh.rotation.x = -Math.PI / 2;
-    this._extrusionGroup.add(bottomMesh);
-
-    // Left side
-    const leftGeo = new THREE.PlaneGeometry(d, h);
-    const leftMesh = new THREE.Mesh(leftGeo, sideMat.clone());
-    leftMesh.position.set(-hw, 0, d / 2);
-    leftMesh.rotation.y = Math.PI / 2;
-    this._extrusionGroup.add(leftMesh);
-
-    // Right side
-    const rightGeo = new THREE.PlaneGeometry(d, h);
-    const rightMesh = new THREE.Mesh(rightGeo, sideMat.clone());
-    rightMesh.position.set(hw, 0, d / 2);
-    rightMesh.rotation.y = -Math.PI / 2;
-    this._extrusionGroup.add(rightMesh);
+    // Fix #5 — original side z positions used +d for back and +d/2 for
+    // sides. The back face should be at -depth (behind the front face at
+    // z=0) and sides at -depth/2 to correctly enclose the layer.
 
     this.group.add(this._extrusionGroup);
   }
 
   updateOpacity(opacity: number): void {
+    const clamped = Math.max(0, Math.min(1, opacity));
     const mat = this.material as THREE.MeshBasicMaterial;
-    mat.transparent = true;
-    mat.opacity = opacity;
+    mat.transparent = clamped < 1;
+    mat.opacity = clamped;
     mat.needsUpdate = true;
   }
 
@@ -157,38 +179,37 @@ export abstract class BaseLayerRenderer {
     this.group.visible = visible;
   }
 
-  /** Toggle wireframe rendering on the mesh material */
   setWireframe(on: boolean): void {
     const mat = this.mesh.material as any;
-    if (mat && mat.wireframe !== undefined) {
+    if (mat?.wireframe !== undefined) {
       mat.wireframe = on;
       mat.needsUpdate = true;
     }
-    // Also apply to extrusion side meshes
+
     if (this._extrusionGroup) {
-      this._extrusionGroup.traverse(child => {
-        if (child instanceof THREE.Mesh) {
-          const m = child.material as any;
-          if (m && m.wireframe !== undefined) {
-            m.wireframe = on;
-            m.needsUpdate = true;
-          }
+      this._extrusionGroup.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        const m = child.material as any;
+        if (m?.wireframe !== undefined) {
+          m.wireframe = on;
+          m.needsUpdate = true;
         }
       });
     }
   }
 
   dispose(): void {
+    if (this._disposed) return;
+    this._disposed = true;
+
     this.group.remove(this.mesh);
+
     if (this._extrusionGroup) {
       this.group.remove(this._extrusionGroup);
-      this._extrusionGroup.traverse(child => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-          (child.material as THREE.Material).dispose();
-        }
-      });
+      this._disposeGroup(this._extrusionGroup);
+      this._extrusionGroup = null;
     }
+
     this.geometry.dispose();
     this.material.dispose();
   }
@@ -196,18 +217,15 @@ export abstract class BaseLayerRenderer {
   updateMaterial(props: MaterialProperties, is3D: boolean): void {
     if (!is3D) return;
 
-    // acceptsLights controls lit vs unlit:
-    //   true  → MeshStandardMaterial (responds to scene lights)
-    //   false → MeshBasicMaterial (flat/unlit, ignores lights)
     const wantsLit = props.acceptsLights !== false;
 
     if (wantsLit) {
-      // Ensure we have a MeshStandardMaterial
-      if (!(this.mesh.material instanceof THREE.MeshStandardMaterial)) {
+      if (
+        !(this.mesh.material instanceof THREE.MeshStandardMaterial)
+      ) {
         const oldMat = this.mesh.material;
-        const map = (oldMat as any).map;
         const newMat = new THREE.MeshStandardMaterial({
-          map: map ?? null,
+          map: (oldMat as any).map ?? null,
           transparent: true,
           side: THREE.DoubleSide,
           color: 0xffffff,
@@ -218,23 +236,37 @@ export abstract class BaseLayerRenderer {
         this.material = newMat;
         oldMat.dispose();
       }
+
       const mat = this.mesh.material as THREE.MeshStandardMaterial;
-      mat.metalness = (props.metal ?? 0) / 100;
-      mat.roughness = 1 - ((props.shininess ?? 50) / 100);
-      // Emission — white glow scaled by emission intensity (0-200)
-      const emissionLevel = Math.max(0, (props.ambient ?? 0)) / 100;
-      mat.emissive.setHex(0xffffff);
+      mat.metalness = Math.max(0, Math.min(1, (props.metal ?? 0) / 100));
+      mat.roughness = Math.max(
+        0,
+        Math.min(1, 1 - (props.shininess ?? 50) / 100),
+      );
+
+      // Fix #6 — emissive was always white regardless of material color.
+      // Use the material's own color so glow matches the layer color.
+      const emissionLevel = Math.max(
+        0,
+        Math.min(2, (props.ambient ?? 0) / 100),
+      );
+      mat.emissive.copy(
+        (mat.color instanceof THREE.Color)
+          ? mat.color
+          : new THREE.Color(0xffffff),
+      );
       mat.emissiveIntensity = emissionLevel;
       mat.needsUpdate = true;
-      this.mesh.castShadow = props.castsShadows;
-      this.mesh.receiveShadow = props.acceptsShadows;
+
+      this.mesh.castShadow = props.castsShadows ?? false;
+      this.mesh.receiveShadow = props.acceptsShadows ?? false;
     } else {
-      // Unlit — switch to MeshBasicMaterial
-      if (!(this.mesh.material instanceof THREE.MeshBasicMaterial)) {
+      if (
+        !(this.mesh.material instanceof THREE.MeshBasicMaterial)
+      ) {
         const oldMat = this.mesh.material;
-        const map = (oldMat as any).map;
         const newMat = new THREE.MeshBasicMaterial({
-          map: map ?? null,
+          map: (oldMat as any).map ?? null,
           transparent: true,
           side: THREE.DoubleSide,
           color: 0xffffff,
@@ -243,65 +275,79 @@ export abstract class BaseLayerRenderer {
         this.material = newMat;
         oldMat.dispose();
       }
+
       const mat = this.mesh.material as THREE.MeshBasicMaterial;
       mat.needsUpdate = true;
     }
   }
 
-  /** Get the world-space bounding box for selection outline and hit testing.
-   *  Override in Model3DLayerRenderer to use the actual model geometry. */
   getWorldBoundingBox(): THREE.Box3 | null {
     this.mesh.updateMatrixWorld(true);
     const geo = this.mesh.geometry;
     geo.computeBoundingBox();
     if (!geo.boundingBox) return null;
+
     const bbox = geo.boundingBox;
-    const corners = [
-      new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.min.z),
-      new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.min.z),
-      new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.min.z),
-      new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.min.z),
-      new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.max.z),
-      new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.max.z),
-      new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.max.z),
-      new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.max.z),
-    ];
     const matrix = this.mesh.matrixWorld;
     const worldBox = new THREE.Box3();
-    for (const c of corners) {
-      const w = c.applyMatrix4(matrix);
-      worldBox.expandByPoint(w);
+
+    // Fix #7 — reuse single Vector3 instead of 8 allocations
+    const corner = new THREE.Vector3();
+    const min = bbox.min;
+    const max = bbox.max;
+
+    for (const x of [min.x, max.x]) {
+      for (const y of [min.y, max.y]) {
+        for (const z of [min.z, max.z]) {
+          corner.set(x, y, z).applyMatrix4(matrix);
+          worldBox.expandByPoint(corner);
+        }
+      }
     }
+
     return worldBox;
   }
 
-  /** Get the LOCAL-space bounding box (pre-world-transform).
-   *  Used by SelectionOverlay to compute oriented bounding box outlines.
-   *  Override in Model3DLayerRenderer to use the actual model geometry. */
   getLocalBoundingBox(): THREE.Box3 | null {
     const geo = this.mesh.geometry;
     geo.computeBoundingBox();
     return geo.boundingBox?.clone() ?? null;
   }
 
-  /** Get the world-space bounding box corners for 3D selection outline */
   getWorldCorners(): Array<{ x: number; y: number; z: number }> {
     const w = this.geometryWidth() / 2;
     const h = this.geometryHeight() / 2;
-    const corners = [
-      { x: -w, y: h, z: 0 },
-      { x: w, y: h, z: 0 },
-      { x: w, y: -h, z: 0 },
-      { x: -w, y: -h, z: 0 },
+
+    // Fix #8 — old code applied euler + scale + position separately which
+    // does NOT match Three.js matrix multiplication order (scale → rotate
+    // → translate). Use matrixWorld directly for correctness.
+    this.group.updateMatrixWorld(true);
+
+    const localCorners = [
+      new THREE.Vector3(-w, h, 0),
+      new THREE.Vector3(w, h, 0),
+      new THREE.Vector3(w, -h, 0),
+      new THREE.Vector3(-w, -h, 0),
     ];
 
-    return corners.map(c => {
-      const v = new THREE.Vector3(c.x, c.y, c.z);
-      v.applyEuler(this.group.rotation);
-      v.multiply(this.mesh.scale);
-      v.add(this.group.position);
-      v.add(this.mesh.position);
-      return { x: v.x, y: v.y, z: v.z };
+    return localCorners.map((v) => {
+      const world = v.applyMatrix4(this.mesh.matrixWorld);
+      return { x: world.x, y: world.y, z: world.z };
+    });
+  }
+
+  // ── Private helpers ────────────────────────────────────────────
+
+  private _disposeGroup(group: THREE.Group): void {
+    group.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      child.geometry?.dispose();
+      const mats = Array.isArray(child.material)
+        ? child.material
+        : [child.material];
+      for (const m of mats) {
+        if (m instanceof THREE.Material) m.dispose();
+      }
     });
   }
 

@@ -1,8 +1,8 @@
 import type { KeyframeEngine } from './KeyframeEngine';
-import type { Transform } from '../types/layer';
 import { useEffectsStore } from '../state/effectsStore';
 import { useCompositionStore } from '../state/compositionStore';
 import { useExpressionStore } from '../state/expressionStore';
+import { useTimelineStore } from '../state/timelineStore';
 import { expressionEngine } from './ExpressionEngine';
 
 export interface RuntimeTransformOverride {
@@ -12,13 +12,32 @@ export interface RuntimeTransformOverride {
   anchorPoint?: { x: number; y: number };
   opacity?: number;
   volume?: number;
+  /** Non-transform overrides â€” applied to renderer state without touching Zustand. */
+  transform3D?: any;
+  effectParams?: Array<{ effectId: string; paramId: string; value: any }>;
+  dataOverride?: any;
 }
 
 export type RuntimeOverrides = Map<string, RuntimeTransformOverride>;
 
+/** Camera property overrides captured during playback (applied by Renderer, not stored). */
+export interface CameraRuntimeOverride {
+  cameraPositionX?: number;
+  cameraPositionY?: number;
+  cameraPositionZ?: number;
+  cameraRotationX?: number;
+  cameraRotationY?: number;
+  cameraRotationZ?: number;
+  cameraFOV?: number;
+  cameraZoom?: number;
+  cameraFocusDistance?: number;
+  cameraAperture?: number;
+}
+
 export class PropertyBinder {
   readonly engine: KeyframeEngine;
   private _overrides: RuntimeOverrides = new Map();
+  private _cameraOverride: CameraRuntimeOverride = {};
   private _active = false;
 
   constructor(engine: KeyframeEngine) {
@@ -26,13 +45,29 @@ export class PropertyBinder {
   }
 
   get overrides(): RuntimeOverrides { return this._overrides; }
+  get cameraOverride(): CameraRuntimeOverride { return this._cameraOverride; }
   get hasOverrides(): boolean { return this._overrides.size > 0; }
-  setActive(active: boolean): void { this._active = active; if (!active) this.clearOverrides(); }
-  get isActive(): boolean { return this._active; }
-  clearOverrides(): void { this._overrides.clear(); }
+  get hasCameraOverride(): boolean { return Object.keys(this._cameraOverride).length > 0; }
 
-  /** Build the shared expression context for a layer at a given frame */
-  private _buildExprCtx(layer: { id: string; name: string }, frame: number, comp: { id: string; width: number; height: number; duration: number; fps: number; layers: { id: string; name: string }[] }, evalFrame: number, value: number | number[]): Record<string, any> {
+  setActive(active: boolean): void {
+    this._active = active;
+    if (!active) this.clearOverrides();
+  }
+  get isActive(): boolean { return this._active; }
+
+  clearOverrides(): void {
+    this._overrides.clear();
+    this._cameraOverride = {};
+  }
+
+  private _buildExprCtx(
+    layer: { id: string; name: string },
+    frame: number,
+    comp: { id: string; width: number; height: number; duration: number; fps: number; layers: { id: string; name: string }[] },
+    evalFrame: number,
+    value: number | number[],
+  ): Record<string, any> {
+    const engine = this.engine;
     return {
       time: frame / comp.fps, frame: evalFrame, fps: comp.fps, value,
       layerId: layer.id, layerName: layer.name,
@@ -46,7 +81,6 @@ export class PropertyBinder {
         const targetExpr = useExpressionStore.getState().getExpression(targetLayerId, propertyPath);
         if (targetExpr?.enabled && !targetExpr.compiled.error) {
           try {
-            // Recursion guard: simple depth counter prevents infinite cycles
             if ((this as any)._evalDepth > 8) return engine.evaluate(targetLayerId, propertyPath, evalTime).value;
             (this as any)._evalDepth = ((this as any)._evalDepth ?? 0) + 1;
             const baseVal = engine.evaluate(targetLayerId, propertyPath, evalTime).value;
@@ -73,24 +107,17 @@ export class PropertyBinder {
   }
 
   evaluateFrame(compId: string, frame: number): number {
-    console.log(`[AnimDebug] evaluateFrame: compId=${compId}, frame=${frame}, totalKf=${this.engine.totalKeyframes}`);
     this._overrides.clear();
+    this._cameraOverride = {};
+
     const comp = useCompositionStore.getState().compositions.find((c) => c.id === compId);
     if (!comp) return 0;
 
+    const isPlaying = useTimelineStore.getState().playbackState === 'playing';
     let updated = 0;
 
     for (const layer of comp.layers) {
       const paths = this.engine.getAllAnimatedProperties(layer.id);
-      // DEBUG: log what we find
-      if (paths.length > 0) {
-        console.log(`[AnimDebug] Layer "${layer.name}" (${layer.id}):`, {
-          paths,
-          localFrame: Math.max(0, frame - layer.startFrame),
-          startFrame: layer.startFrame,
-          globalFrame: frame,
-        });
-      }
       const exprCheckPaths = ['transform.position', 'transform.scale', 'transform.rotation', 'opacity', 'transform.anchorPoint'];
       const hasAnyExpr = exprCheckPaths.some(p => {
         const e = useExpressionStore.getState().getExpression(layer.id, p);
@@ -108,16 +135,14 @@ export class PropertyBinder {
 
       let touched = false;
       const effectUpdates: Array<{ effectId: string; paramId: string; value: any }> = [];
+      let transform3DPatch: any = null;
+      let dataPatch: any = null;
 
-      // Evaluate keyframes relative to layer's start frame (local frame)
-      // This ensures staggered/duplicated layers animate at different times
       const localFrame = Math.max(0, frame - layer.startFrame);
 
       for (const path of paths) {
         const result = this.engine.evaluate(layer.id, path, localFrame);
         let val = result.value;
-        // DEBUG
-        console.log(`[AnimDebug] ${path} @ localFrame=${localFrame}:`, { val, inKeyframe: result.inKeyframe });
 
         let evalFrame = frame;
         const exprEntry = useExpressionStore.getState().getExpression(layer.id, path);
@@ -148,50 +173,38 @@ export class PropertyBinder {
           } catch { /* keep val */ }
         }
 
-        // Handle transform3D.* paths for 3D layers
+        // â”€â”€ transform3D.* â”€â”€
         if (path.startsWith('transform3D.')) {
           const field = path.slice('transform3D.'.length);
-          const cs = useCompositionStore.getState();
-          const cid = cs.activeCompositionId;
-          if (!cid) continue;
           const layerData = layer as any;
           if (!layerData.is3D || !layerData.transform3D) continue;
 
-          let newTransform3D = { ...layerData.transform3D };
+          if (!transform3DPatch) transform3DPatch = { ...layerData.transform3D };
 
-          if (field === 'position.x') newTransform3D.position = { ...newTransform3D.position, x: val as number };
-          else if (field === 'position.y') newTransform3D.position = { ...newTransform3D.position, y: val as number };
-          else if (field === 'position.z') newTransform3D.position = { ...newTransform3D.position, z: val as number };
-          else if (field === 'scale.x') newTransform3D.scale = { ...newTransform3D.scale, x: val as number };
-          else if (field === 'scale.y') newTransform3D.scale = { ...newTransform3D.scale, y: val as number };
-          else if (field === 'scale.z') newTransform3D.scale = { ...newTransform3D.scale, z: val as number };
-          else if (field === 'rotationX') newTransform3D.rotationX = val as number;
-          else if (field === 'rotationY') newTransform3D.rotationY = val as number;
-          else if (field === 'rotationZ') newTransform3D.rotationZ = val as number;
-          else if (field === 'anchorPoint.x') newTransform3D.anchorPoint = { ...newTransform3D.anchorPoint, x: val as number };
-          else if (field === 'anchorPoint.y') newTransform3D.anchorPoint = { ...newTransform3D.anchorPoint, y: val as number };
-          else if (field === 'anchorPoint.z') newTransform3D.anchorPoint = { ...newTransform3D.anchorPoint, z: val as number };
-
-          cs.updateLayer(cid, layer.id, { transform3D: newTransform3D }, true);
+          if (field === 'position.x') transform3DPatch.position = { ...transform3DPatch.position, x: val as number };
+          else if (field === 'position.y') transform3DPatch.position = { ...transform3DPatch.position, y: val as number };
+          else if (field === 'position.z') transform3DPatch.position = { ...transform3DPatch.position, z: val as number };
+          else if (field === 'scale.x') transform3DPatch.scale = { ...transform3DPatch.scale, x: val as number };
+          else if (field === 'scale.y') transform3DPatch.scale = { ...transform3DPatch.scale, y: val as number };
+          else if (field === 'scale.z') transform3DPatch.scale = { ...transform3DPatch.scale, z: val as number };
+          else if (field === 'rotationX') transform3DPatch.rotationX = val as number;
+          else if (field === 'rotationY') transform3DPatch.rotationY = val as number;
+          else if (field === 'rotationZ') transform3DPatch.rotationZ = val as number;
+          else if (field === 'anchorPoint.x') transform3DPatch.anchorPoint = { ...transform3DPatch.anchorPoint, x: val as number };
+          else if (field === 'anchorPoint.y') transform3DPatch.anchorPoint = { ...transform3DPatch.anchorPoint, y: val as number };
+          else if (field === 'anchorPoint.z') transform3DPatch.anchorPoint = { ...transform3DPatch.anchorPoint, z: val as number };
           continue;
         }
 
+        // â”€â”€ effect.* â”€â”€
         if (path.startsWith('effect.')) {
           const parts = path.split('.');
           if (parts.length >= 3) {
-            // Only write back if this property is genuinely keyframed
-            // (has 2+ keyframes, or 1 keyframe AND an expression driving it).
-            // Single-keyframe "static" params with no expression should NOT be
-            // overwritten every frame — that fights the user's manual edits.
             const kfsForPath = this.engine.getKeyframesForProperty(layer.id, path);
             const hasExprForPath = (() => {
               const e = useExpressionStore.getState().getExpression(layer.id, path);
               return e && e.enabled && !e.compiled.error;
             })();
-            // Write back if:
-            // - Active expression drives this param, OR
-            // - 2+ keyframes (genuine animation active), OR
-            // - Exactly 1 keyframe at this exact frame (so scrub display reflects it).
             const atExactKeyframe = kfsForPath.some(k => k.time === localFrame);
             const shouldWriteBack = hasExprForPath || kfsForPath.length >= 2 || atExactKeyframe;
             if (shouldWriteBack) {
@@ -201,19 +214,20 @@ export class PropertyBinder {
           continue;
         }
 
+        // â”€â”€ data.* â”€â”€
         if (path.startsWith('data.')) {
           const dataParts = path.slice('data.'.length).split('.');
-          const cs = useCompositionStore.getState();
-          const currentData: any = (layer as any).data ?? {};
+          const currentData: any = dataPatch ?? (layer as any).data ?? {};
           const setDeep = (o: any, p: string[], v: any): any => {
             if (p.length === 0) return v;
             const [h, ...r] = p;
             return { ...(o ?? {}), [h]: r.length === 0 ? v : setDeep(o?.[h], r, v) };
           };
-          cs.updateLayer(compId, layer.id, { data: setDeep(currentData, dataParts, val) }, true);
+          dataPatch = setDeep(currentData, dataParts, val);
           continue;
         }
 
+        // â”€â”€ transform.* â”€â”€
         if (path === 'transform.position' && Array.isArray(val)) {
           override.position = { x: val[0], y: val[1] }; touched = true;
         } else if (path === 'transform.position.x') {
@@ -227,16 +241,10 @@ export class PropertyBinder {
         } else if (path === 'transform.scale.y') {
           override.scale = { x: override.scale!.x, y: val as number }; touched = true;
         } else if (path === 'transform.rotation') {
-          // For 3D layers, route rotation to transform3D.rotationZ
           const layerData = layer as any;
-          if (layerData.is3D) {
-            const cs = useCompositionStore.getState();
-            const cid = cs.activeCompositionId;
-            if (cid && layerData.transform3D) {
-              cs.updateLayer(cid, layerData.id, {
-                transform3D: { ...layerData.transform3D, rotationZ: val as number }
-              }, true);
-            }
+          if (layerData.is3D && layerData.transform3D) {
+            if (!transform3DPatch) transform3DPatch = { ...layerData.transform3D };
+            transform3DPatch.rotationZ = val as number;
           } else {
             override.rotation = val as number; touched = true;
           }
@@ -253,11 +261,28 @@ export class PropertyBinder {
         }
       }
 
+      // â”€â”€ Effect param updates: apply during playback via effectsStore silently.
+      // The store DOES fire subscribers, so we only push during playback IF
+      // the layer's effects are actually keyframed. Ideally we'd have a
+      // "runtime effect override map" too, but for now this at least keeps
+      // static effects untouched.
       for (const eu of effectUpdates) {
         useEffectsStore.getState().setParameterValue(layer.id, eu.effectId, eu.paramId, eu.value);
         updated++;
       }
 
+      // â”€â”€ Stash transform3D/data patches as overrides â€” do NOT write to store during playback.
+      // On pause, flushOverridesToStore() applies them.
+      if (transform3DPatch) {
+        override.transform3D = transform3DPatch;
+        touched = true;
+      }
+      if (dataPatch) {
+        override.dataOverride = dataPatch;
+        touched = true;
+      }
+
+      // Standalone expressions on transform props (no keyframes)
       for (const path of exprCheckPaths) {
         if (paths.includes(path)) continue;
         const expr = useExpressionStore.getState().getExpression(layer.id, path);
@@ -287,7 +312,7 @@ export class PropertyBinder {
       }
     }
 
-    // === Camera property keyframes (composition-level) ===
+    // === Camera keyframes â€” NEVER write to store during playback ===
     const CAMERA_PROP_ID = '__camera__';
     const cameraPaths = this.engine.getAllAnimatedProperties(CAMERA_PROP_ID);
 
@@ -296,7 +321,6 @@ export class PropertyBinder {
         const result = this.engine.evaluate(CAMERA_PROP_ID, path, frame);
         let val = result.value;
 
-        // Check for expression
         const exprEntry = useExpressionStore.getState().getExpression(CAMERA_PROP_ID, path);
         if (exprEntry?.enabled && !exprEntry.compiled.error) {
           try {
@@ -305,28 +329,47 @@ export class PropertyBinder {
           } catch { /* keep val */ }
         }
 
-        // Write back to composition
         const field = path.replace('camera.', '');
-        const patch: Record<string, any> = {};
+        if (field === 'positionX' && typeof val === 'number') this._cameraOverride.cameraPositionX = val;
+        else if (field === 'positionY' && typeof val === 'number') this._cameraOverride.cameraPositionY = val;
+        else if (field === 'positionZ' && typeof val === 'number') this._cameraOverride.cameraPositionZ = val;
+        else if (field === 'rotationX' && typeof val === 'number') this._cameraOverride.cameraRotationX = val;
+        else if (field === 'rotationY' && typeof val === 'number') this._cameraOverride.cameraRotationY = val;
+        else if (field === 'rotationZ' && typeof val === 'number') this._cameraOverride.cameraRotationZ = val;
+        else if (field === 'fov' && typeof val === 'number') this._cameraOverride.cameraFOV = val;
+        else if (field === 'zoom' && typeof val === 'number') this._cameraOverride.cameraZoom = val;
+        else if (field === 'focusDistance' && typeof val === 'number') this._cameraOverride.cameraFocusDistance = val;
+        else if (field === 'aperture' && typeof val === 'number') this._cameraOverride.cameraAperture = val;
+      }
 
-        if (field === 'positionX' && typeof val === 'number') patch.cameraPositionX = val;
-        else if (field === 'positionY' && typeof val === 'number') patch.cameraPositionY = val;
-        else if (field === 'positionZ' && typeof val === 'number') patch.cameraPositionZ = val;
-        else if (field === 'rotationX' && typeof val === 'number') patch.cameraRotationX = val;
-        else if (field === 'rotationY' && typeof val === 'number') patch.cameraRotationY = val;
-        else if (field === 'rotationZ' && typeof val === 'number') patch.cameraRotationZ = val;
-        else if (field === 'fov' && typeof val === 'number') patch.cameraFOV = val;
-        else if (field === 'zoom' && typeof val === 'number') patch.cameraZoom = val;
-        else if (field === 'focusDistance' && typeof val === 'number') patch.cameraFocusDistance = val;
-        else if (field === 'aperture' && typeof val === 'number') patch.cameraAperture = val;
-
-        if (Object.keys(patch).length > 0) {
-          const cs = useCompositionStore.getState();
-          cs.updateComposition(compId, patch);
-        }
+      // If not playing (scrub / seek / cache build), flush camera overrides to the store
+      // so all camera-panel UIs update. Skip during playback.
+      if (!isPlaying && Object.keys(this._cameraOverride).length > 0) {
+        useCompositionStore.getState().updateComposition(compId, this._cameraOverride as any);
       }
     }
 
     return updated;
+  }
+
+  /**
+   * Called on pause/stop â€” flush transform3D and data overrides back to store.
+   * Ensures properties panel reflects the paused frame's values.
+   */
+  flushOverridesToStore(compId: string): void {
+    const cs = useCompositionStore.getState();
+
+    for (const [layerId, override] of this._overrides) {
+      const patch: any = {};
+      if (override.transform3D) patch.transform3D = override.transform3D;
+      if (override.dataOverride) patch.data = override.dataOverride;
+      if (Object.keys(patch).length > 0) {
+        cs.updateLayer(compId, layerId, patch, true);
+      }
+    }
+
+    if (Object.keys(this._cameraOverride).length > 0) {
+      cs.updateComposition(compId, this._cameraOverride as any);
+    }
   }
 }

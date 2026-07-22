@@ -87,10 +87,14 @@ interface PropRowProps {
   showAnimClipboard?: boolean;
   /** Property path for lock support — shows a lock icon next to the label */
   lockPath?: string;
+  /** Hide the keyframe diamond button (used when per-axis mode provides its own diamonds) */
+  hideDiamond?: boolean;
+  /** Hide the stopwatch button (used when per-axis mode provides its own stopwatches) */
+  hideStopwatch?: boolean;
 }
 
 export const PropRow: React.FC<PropRowProps> = ({
-  label, children, animatable, layer, currentFrame = 0, compId, showAnimClipboard = true, lockPath,
+  label, children, animatable, layer, currentFrame = 0, compId, showAnimClipboard = true, lockPath, hideDiamond = false, hideStopwatch = false,
 }) => {
   const revision = useKeyframeStore(s => s.revision);
   const ctxMenu = useContextMenu();
@@ -270,7 +274,7 @@ export const PropRow: React.FC<PropRowProps> = ({
         {animatable && layer && useExpressionStore.getState().hasExpression(layer.id, animatable) && (
           <Code2 size={11} strokeWidth={2} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
         )}
-        {animatable && layer && (
+        {animatable && layer && !hideStopwatch && (
           <button
             className="flex items-center justify-center border-0 bg-transparent cursor-pointer transition-colors"
             style={{
@@ -329,7 +333,7 @@ export const PropRow: React.FC<PropRowProps> = ({
           )}
         </div>
       )}
-      {animatable && isAnimated && (
+      {animatable && isAnimated && !hideDiamond && (
         <button
           className="flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0 ml-2 transition-colors"
           style={{

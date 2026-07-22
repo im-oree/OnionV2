@@ -46,6 +46,45 @@ const IconOnly: React.FC<{ onClick?: () => void; title?: string; children: React
 
 const Sep: React.FC = () => <div className="shrink-0" style={{ width: 1, height: 18, background: 'var(--color-border)', margin: '0 6px' }} />;
 
+/**
+ * Live-updating frame input that polls animationClock via RAF during playback.
+ * Falls back to the prop value when stopped/paused, avoiding stale display
+ * from silent currentTime writes.
+ */
+const LiveFrameInput: React.FC<{
+  currentFrame: number;
+  onChange: (f: number) => void;
+  totalFrames: number;
+}> = ({ currentFrame, onChange, totalFrames }) => {
+  const playbackState = useTimelineStore((s) => s.playbackState);
+  const [liveFrame, setLiveFrame] = React.useState(currentFrame);
+  const rafRef = React.useRef(0);
+
+  React.useEffect(() => {
+    if (playbackState !== 'playing') {
+      setLiveFrame(currentFrame);
+      cancelAnimationFrame(rafRef.current);
+      return;
+    }
+    const tick = () => {
+      setLiveFrame(animationClock.currentFrame);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [playbackState, currentFrame]);
+
+  return (
+    <FrameInput
+      value={liveFrame}
+      onChange={onChange}
+      min={0}
+      max={totalFrames}
+      width={58}
+    />
+  );
+};
+
 export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrames }) => {
   const ps = useTimelineStore(s => s.playbackState);
   const loop = useTimelineStore(s => s.loop);
@@ -204,7 +243,7 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
       <div className="flex-1" />
 
       {/* Right group: frame inputs + preview/cache */}
-      <FrameInput value={currentFrame} onChange={seekTo} min={0} max={totalFrames} width={58} />
+      <LiveFrameInput currentFrame={currentFrame} onChange={seekTo} totalFrames={totalFrames} />
       <span
         style={{ fontSize: 9, color: 'var(--color-accent)', fontFamily: 'var(--font-family-mono)', fontWeight: 600, letterSpacing: '0.04em', lineHeight: 1 }}
         title={`Displaying ${timeDisplay} — click time display button to change`}

@@ -1,97 +1,356 @@
-import React, { useState, useEffect } from 'react';
+/**
+ * ViewportToolbar â€” Blender-style right-side rail with viewport-nav buttons.
+ */
+import React, { useCallback, useState, useEffect, useRef } from 'react';
+import {
+  Hand,
+  ZoomIn,
+  ZoomOut,
+  Camera,
+  Orbit,
+  Move3D,
+  Grid3X3,
+  Gauge,
+} from 'lucide-react';
+import { useViewportStore } from '../../../state/viewportStore';
+import { useToolStore } from '../../../state/toolStore';
+import { useCompositionStore } from '../../../state/compositionStore';
+import {
+  usePreviewResolutionStore,
+  PREVIEW_SCALE_LABELS,
+  type PreviewScale,
+} from '../../../state/previewResolutionStore';
+import { TOOLS } from '../../../config/constants';
 
 interface Props {
-  showGrid: boolean;
-  setShowGrid: (v: boolean) => void;
-  renderer: any;
+  showGrid?: boolean;
+  setShowGrid?: (v: boolean) => void;
+  showAnchorPoints?: boolean;
+  setShowAnchorPoints?: (v: boolean) => void;
+  renderer: {
+    cameraManager?: {
+      isFreeView?: boolean;
+      setFreeView?: (v: boolean) => void;
+      zoom?: number;
+      setZoom?: (z: number) => void;
+    };
+    renderLoop?: {
+      requestRender?: () => void;
+    };
+    setGridVisible?: (v: boolean) => void;
+  } | null;
 }
 
-export const ViewportToolbar: React.FC<Props> = ({ showGrid, setShowGrid, renderer }) => {
-  const [gizmosOn, setGizmosOn] = useState(true);
-  const [wireframeOn, setWireframeOn] = useState(false);
-  const [isFree, setIsFree] = useState(false);
+const RailBtn: React.FC<{
+  active?: boolean;
+  title: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}> = React.memo(({ active, title, onClick, children }) => (
+  <button
+    className={`viewport-rail-btn ${active ? 'active' : ''}`}
+    onClick={onClick}
+    title={title}
+  >
+    {children}
+  </button>
+));
+RailBtn.displayName = 'RailBtn';
 
-  // Track view mode changes
+const PreviewScaleMenu: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const scale = usePreviewResolutionStore((s) => s.scale);
+  const playbackScale = usePreviewResolutionStore((s) => s.playbackScale);
+  const autoDrop = usePreviewResolutionStore((s) => s.autoDropOnPlayback);
+  const setScale = usePreviewResolutionStore((s) => s.setScale);
+  const setPlaybackScale = usePreviewResolutionStore((s) => s.setPlaybackScale);
+  const setAutoDrop = usePreviewResolutionStore((s) => s.setAutoDropOnPlayback);
+
   useEffect(() => {
-    const handler = () => setIsFree(!!(window as any).__freeViewMode);
-    document.addEventListener('viewport:viewmode', handler);
-    handler();
-    return () => document.removeEventListener('viewport:viewmode', handler);
-  }, []);
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    setTimeout(() => document.addEventListener('mousedown', onDoc), 0);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
 
-  const btnStyle = (active: boolean): React.CSSProperties => ({
-    width: 28, height: 28, border: 'none', borderRadius: 4, cursor: 'pointer',
-    background: active ? 'rgba(74,144,226,0.15)' : 'transparent',
-    color: active ? '#4A90E2' : 'var(--color-text-secondary)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    transition: 'all 0.15s ease',
-  });
-
-  const divider = <div style={{ width: 1, height: 18, background: 'var(--color-border)', margin: '0 2px' }} />;
+  const scales: PreviewScale[] = [1, 0.5, 0.333, 0.25];
 
   return (
-    <div className="absolute z-30" style={{ top: 44, left: 8, display: 'flex', gap: 3, alignItems: 'center' }}>
-      {/* View Mode Toggle */}
-      <button onClick={() => {
-        const newMode = !isFree;
-        (window as any).__freeViewMode = newMode;
-        setIsFree(newMode);
-        document.dispatchEvent(new CustomEvent('viewport:viewmode', { detail: { free: newMode } }));
-        renderer?.renderLoop?.requestRender?.();
-      }} title={isFree ? 'Switch to Camera View' : 'Switch to Free View'}
-        style={{
-          padding: '3px 10px', fontSize: 10, fontWeight: 600, cursor: 'pointer',
-          background: isFree ? 'rgba(85,221,51,0.15)' : 'rgba(74,144,226,0.15)',
-          color: isFree ? '#55dd33' : '#4A90E2',
-          border: `1px solid ${isFree ? 'rgba(85,221,51,0.4)' : 'rgba(74,144,226,0.4)'}`,
-          borderRadius: 4,
-        }}>
-        {isFree ? '🔓 Free' : '🎬 Camera'}
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <button
+        className={`viewport-rail-btn ${open ? 'active' : ''}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((o) => !o);
+        }}
+        title={`Preview Resolution (${PREVIEW_SCALE_LABELS[scale]})`}
+      >
+        <Gauge size={14} strokeWidth={1.8} />
       </button>
+      {open && (
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: 'absolute',
+            right: 40,
+            top: 0,
+            background: 'rgba(22,24,32,0.96)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: 6,
+            padding: 6,
+            minWidth: 180,
+            boxShadow: '0 6px 24px rgba(0,0,0,0.5)',
+            backdropFilter: 'blur(12px)',
+            zIndex: 100,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            fontSize: 11,
+            color: 'rgba(255,255,255,0.85)',
+            fontFamily: 'system-ui, sans-serif',
+          }}
+        >
+          <div
+            style={{
+              padding: '4px 6px',
+              color: 'rgba(255,255,255,0.5)',
+              fontSize: 9,
+              textTransform: 'uppercase',
+              letterSpacing: '0.5px',
+            }}
+          >
+            Preview Resolution
+          </div>
+          {scales.map((s) => (
+            <button
+              key={s}
+              onClick={(e) => {
+                e.stopPropagation();
+                setScale(s);
+              }}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                padding: '5px 8px',
+                border: 'none',
+                borderRadius: 4,
+                background: scale === s ? 'rgba(88,101,255,0.22)' : 'transparent',
+                color: scale === s ? '#8b95ff' : 'inherit',
+                cursor: 'pointer',
+                fontSize: 11,
+                textAlign: 'left',
+              }}
+              onMouseEnter={(e) => {
+                if (scale !== s) {
+                  (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (scale !== s) {
+                  (e.currentTarget as HTMLElement).style.background = 'transparent';
+                }
+              }}
+            >
+              <span>{PREVIEW_SCALE_LABELS[s]}</span>
+              <span style={{ opacity: 0.5, fontSize: 9 }}>
+                {s === 1 ? '100%' : `${Math.round(s * 100)}%`}
+              </span>
+            </button>
+          ))}
 
-      {divider}
+          <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '4px 0' }} />
 
-      {/* Gizmo Toggle */}
-      <button onClick={() => {
-        const next = !gizmosOn;
-        setGizmosOn(next);
-        (window as any).__gizmosEnabled = next;
-        renderer?.renderLoop?.requestRender?.();
-      }} title={gizmosOn ? 'Hide Gizmos' : 'Show Gizmos'} style={btnStyle(gizmosOn)}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <circle cx="7" cy="7" r="4.5" />
-          <line x1="7" y1="2.5" x2="7" y2="11.5" />
-          <line x1="2.5" y1="7" x2="11.5" y2="7" />
-        </svg>
-      </button>
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '5px 8px',
+              cursor: 'pointer',
+              fontSize: 10,
+              color: 'rgba(255,255,255,0.7)',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={autoDrop}
+              onChange={(e) => {
+                e.stopPropagation();
+                setAutoDrop(e.target.checked);
+              }}
+              style={{ cursor: 'pointer' }}
+            />
+            Auto-drop on playback
+          </label>
 
-      {/* Grid Toggle */}
-      <button onClick={() => {
-        const next = !showGrid;
-        setShowGrid(next);
-        (window as any).__showGrid = next;
-        renderer?.setGridVisible(next);
-      }} title={showGrid ? 'Hide 3D Grid' : 'Show 3D Grid'} style={btnStyle(showGrid)}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <rect x="1" y="1" width="12" height="12" rx="1" />
-          <line x1="1" y1="5" x2="13" y2="5" />
-          <line x1="1" y1="9" x2="13" y2="9" />
-          <line x1="5" y1="1" x2="5" y2="13" />
-          <line x1="9" y1="1" x2="9" y2="13" />
-        </svg>
-      </button>
+          {autoDrop && (
+            <div style={{ padding: '2px 8px 4px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)' }}>Playback scale</div>
+              <div style={{ display: 'flex', gap: 2 }}>
+                {scales.map((s) => (
+                  <button
+                    key={s}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPlaybackScale(s);
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '3px 4px',
+                      fontSize: 9,
+                      border: 'none',
+                      borderRadius: 3,
+                      cursor: 'pointer',
+                      background:
+                        playbackScale === s
+                          ? 'rgba(88,101,255,0.22)'
+                          : 'rgba(255,255,255,0.04)',
+                      color:
+                        playbackScale === s ? '#8b95ff' : 'rgba(255,255,255,0.6)',
+                    }}
+                  >
+                    {PREVIEW_SCALE_LABELS[s]}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
-      {/* Wireframe Toggle */}
-      <button onClick={() => {
-        const next = !wireframeOn;
-        setWireframeOn(next);
-        (window as any).__wireframeMode = next;
-        renderer?.renderLoop?.requestRender?.();
-      }} title={wireframeOn ? 'Solid Mode' : 'Wireframe Mode'} style={btnStyle(wireframeOn)}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <rect x="2" y="2" width="10" height="10" rx="1" strokeDasharray="2 1" />
-        </svg>
-      </button>
+export const ViewportToolbar: React.FC<Props> = ({ renderer }) => {
+  const [isFreeView, setIsFreeView] = useState(false);
+  const activeTool = useToolStore((s) => s.activeTool);
+  const setActiveTool = useToolStore((s) => s.setActiveTool);
+  const showGrid = useViewportStore((s) => s.settings.showGrid);
+  const toggleGrid = useViewportStore((s) => s.toggleGrid);
+  const cameraViewZoom = useViewportStore((s) => s.settings.cameraViewZoom);
+  const setCameraViewZoom = useViewportStore((s) => s.setCameraViewZoom);
+  const flyMode = useViewportStore((s) => s.settings.flyMode);
+
+  const comp = useCompositionStore((s) =>
+    s.activeCompositionId
+      ? s.compositions.find((c) => c.id === s.activeCompositionId) ?? null
+      : null,
+  );
+  const is3D = comp?.perspective3D ?? false;
+
+  useEffect(() => {
+    const update = () => {
+      setIsFreeView(
+        !!(renderer?.cameraManager as any)?.isFreeView ??
+          !!(window as any).__freeViewMode,
+      );
+    };
+    document.addEventListener('viewport:viewmode', update);
+    update();
+    return () => document.removeEventListener('viewport:viewmode', update);
+  }, [renderer]);
+
+  const requestRender = useCallback(() => {
+    renderer?.renderLoop?.requestRender?.();
+  }, [renderer]);
+
+  const toggleView = useCallback(() => {
+    const next = !isFreeView;
+    (window as any).__freeViewMode = next;
+    if (renderer?.cameraManager?.setFreeView) {
+      renderer.cameraManager.setFreeView(next);
+    }
+    setIsFreeView(next);
+    document.dispatchEvent(new CustomEvent('viewport:viewmode', { detail: { free: next } }));
+    requestRender();
+  }, [isFreeView, renderer, requestRender]);
+
+  const zoomIn = useCallback(() => {
+    if (is3D && !isFreeView) {
+      setCameraViewZoom(cameraViewZoom * 1.15);
+    } else if (renderer?.cameraManager) {
+      const cm = renderer.cameraManager;
+      cm.setZoom?.((cm.zoom ?? 1) * 1.15);
+    }
+    requestRender();
+  }, [is3D, isFreeView, cameraViewZoom, setCameraViewZoom, renderer, requestRender]);
+
+  const zoomOut = useCallback(() => {
+    if (is3D && !isFreeView) {
+      setCameraViewZoom(cameraViewZoom / 1.15);
+    } else if (renderer?.cameraManager) {
+      const cm = renderer.cameraManager;
+      cm.setZoom?.((cm.zoom ?? 1) / 1.15);
+    }
+    requestRender();
+  }, [is3D, isFreeView, cameraViewZoom, setCameraViewZoom, renderer, requestRender]);
+
+  const toggleHand = useCallback(() => {
+    if (activeTool === TOOLS.HAND) setActiveTool(TOOLS.SELECT as any);
+    else setActiveTool(TOOLS.HAND as any);
+  }, [activeTool, setActiveTool]);
+
+  const toggleGridClick = useCallback(() => {
+    toggleGrid();
+    renderer?.setGridVisible?.(!showGrid);
+    requestRender();
+  }, [toggleGrid, showGrid, renderer, requestRender]);
+
+  return (
+    <div className="viewport-rail">
+      <RailBtn title="Zoom In" onClick={zoomIn}>
+        <ZoomIn size={14} strokeWidth={1.8} />
+      </RailBtn>
+      <RailBtn title="Zoom Out" onClick={zoomOut}>
+        <ZoomOut size={14} strokeWidth={1.8} />
+      </RailBtn>
+      <RailBtn
+        title="Pan (Hand)"
+        active={activeTool === TOOLS.HAND}
+        onClick={toggleHand}
+      >
+        <Hand size={14} strokeWidth={1.8} />
+      </RailBtn>
+
+      {is3D && (
+        <RailBtn
+          title={isFreeView ? 'Switch to Camera View' : 'Switch to Free View'}
+          active={isFreeView}
+          onClick={toggleView}
+        >
+          {isFreeView ? (
+            <Orbit size={14} strokeWidth={1.8} />
+          ) : (
+            <Camera size={14} strokeWidth={1.8} />
+          )}
+        </RailBtn>
+      )}
+
+      {is3D && (
+        <RailBtn
+          title={flyMode ? 'Exit Fly Mode (Shift+`)' : 'Fly Mode (Shift+`)'}
+          active={flyMode}
+          onClick={() => useViewportStore.getState().toggleFlyMode()}
+        >
+          <Move3D size={14} strokeWidth={1.8} />
+        </RailBtn>
+      )}
+
+      <RailBtn
+        title={showGrid ? 'Hide Grid' : 'Show Grid'}
+        active={showGrid}
+        onClick={toggleGridClick}
+      >
+        <Grid3X3 size={14} strokeWidth={1.8} />
+      </RailBtn>
+
+      <PreviewScaleMenu />
     </div>
   );
 };

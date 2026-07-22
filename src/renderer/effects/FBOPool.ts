@@ -1,6 +1,7 @@
 /**
  * FBOPool — manages reusable THREE.WebGLRenderTarget instances.
- * Effects use normal unsigned-byte RGBA targets for broad compatibility.
+ * Uses HalfFloatType (HDR) render targets for improved precision and
+ * smoother glow/bloom effects without clamping artifacts.
  */
 import * as THREE from 'three';
 
@@ -25,12 +26,10 @@ class FBOPoolClass {
     }
 
     const fbo = new THREE.WebGLRenderTarget(w, h, {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.UnsignedByteType,
-      depthBuffer: false,
-      stencilBuffer: false,
     });
 
     fbo.texture.name = `effect-fbo-${w}x${h}`;

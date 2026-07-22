@@ -9,7 +9,7 @@ export interface ProjectSettings {
 
 export interface ProjectAsset {
   id:string; name:string;
-  type:'image'|'video'|'audio'|'font'|'other';
+  type:'image'|'video'|'audio'|'font'|'model3d'|'other';
   path:string; size:number; originalName:string;
   mimeType:string; importedAt:number;
   naturalWidth?:number; naturalHeight?:number; duration?:number;

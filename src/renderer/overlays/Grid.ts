@@ -1,7 +1,7 @@
 /**
- * Grid — renders composition grid lines and optional 3D ground plane.
- * When 3D is active, also renders a ground plane wireframe at Z=0 with
- * X (red), Y (green), Z (blue) axes and a semi-transparent fill.
+ * GridOverlay â€” renders composition grid lines and optional 3D ground plane.
+ * 2D grid: adaptive spacing, minor/major lines, center axes.
+ * 3D mode: XZ ground plane with wireframe grid and RGB axes; 2D XY grid is hidden.
  */
 import * as THREE from 'three';
 
@@ -10,15 +10,25 @@ export class GridOverlay {
   private _2dGrid: THREE.Group;
   private _3dGround: THREE.Group;
   private _visible = false;
+  private _3dModeActive = false;
+
+  private _lastWidth = 0;
+  private _lastHeight = 0;
+  private _lastZoom = 0;
+  private _last3DWidth = 0;
+  private _last3DHeight = 0;
 
   constructor() {
     this.group = new THREE.Group();
     this.group.name = 'grid-overlay';
+    this.group.renderOrder = -100;
 
-    this._2dGrid = this._create2DGrid();
+    this._2dGrid = new THREE.Group();
+    this._2dGrid.name = '2d-grid';
     this.group.add(this._2dGrid);
 
-    this._3dGround = this._create3DGroundPlane();
+    this._3dGround = new THREE.Group();
+    this._3dGround.name = '3d-ground-plane';
     this._3dGround.visible = false;
     this.group.add(this._3dGround);
 
@@ -26,181 +36,255 @@ export class GridOverlay {
   }
 
   update(width: number, height: number, zoom: number): void {
-    // Rebuild 2D grid lines based on composition dimensions
+    if (width <= 0 || height <= 0 || zoom <= 0) return;
+
+    if (
+      width === this._lastWidth &&
+      height === this._lastHeight &&
+      Math.abs(zoom - this._lastZoom) < 0.001
+    ) {
+      this.group.visible = this._visible;
+      // Keep 2D grid hidden when 3D mode is on
+      this._2dGrid.visible = !this._3dModeActive;
+      return;
+    }
+
+    this._lastWidth = width;
+    this._lastHeight = height;
+    this._lastZoom = zoom;
+
     this._rebuild2DGrid(width, height, zoom);
+    this._2dGrid.visible = !this._3dModeActive;
     this.group.visible = this._visible;
   }
 
-  /** Show 3D ground plane when scene has 3D layers */
   set3DMode(active: boolean, width = 1920, height = 1080): void {
+    this._3dModeActive = active;
+    this._2dGrid.visible = !active;
     this._3dGround.visible = active;
+
+    if (
+      active &&
+      this._3dGround.children.length > 0 &&
+      width === this._last3DWidth &&
+      height === this._last3DHeight
+    ) {
+      return;
+    }
+
     if (active) {
-      // Rebuild ground plane to match comp size
+      this._disposeGroupChildren(this._3dGround);
       this.group.remove(this._3dGround);
+
       this._3dGround = this._create3DGroundPlane(width, height);
       this._3dGround.visible = true;
       this.group.add(this._3dGround);
+
+      this._last3DWidth = width;
+      this._last3DHeight = height;
     }
   }
 
-  show(): void { this._visible = true; this.group.visible = true; }
-  hide(): void { this._visible = false; this.group.visible = false; }
-  get visible(): boolean { return this._visible; }
+  show(): void {
+    this._visible = true;
+    this.group.visible = true;
+  }
+
+  hide(): void {
+    this._visible = false;
+    this.group.visible = false;
+  }
+
+  get visible(): boolean {
+    return this._visible;
+  }
 
   dispose(): void {
-    this.group.traverse((child) => {
-      if (child instanceof THREE.LineSegments) {
-        child.geometry.dispose();
-        (child.material as THREE.Material).dispose();
-      }
-    });
     this._disposeGroupChildren(this._2dGrid);
     this._disposeGroupChildren(this._3dGround);
   }
 
   private _disposeGroupChildren(g: THREE.Group): void {
+    const toRemove: THREE.Object3D[] = [];
     g.traverse((child) => {
-      if (child instanceof THREE.LineSegments || child instanceof THREE.Mesh) {
-        child.geometry.dispose();
-        if (Array.isArray(child.material)) {
-          child.material.forEach(m => m.dispose());
-        } else if (child.material) {
-          (child.material as THREE.Material).dispose();
-        }
+      if (
+        child instanceof THREE.LineSegments ||
+        child instanceof THREE.Mesh
+      ) {
+        child.geometry?.dispose();
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        for (const m of mats) if (m instanceof THREE.Material) m.dispose();
+        toRemove.push(child);
       }
     });
+    for (const obj of toRemove) obj.parent?.remove(obj);
+  }
+
+  private _niceStep(rawStep: number): number {
+    if (rawStep <= 0) return 50;
+    const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const normalized = rawStep / magnitude;
+    let nice: number;
+    if (normalized < 1.5) nice = 1;
+    else if (normalized < 3.5) nice = 2;
+    else if (normalized < 7.5) nice = 5;
+    else nice = 10;
+    return Math.max(5, nice * magnitude);
   }
 
   private _rebuild2DGrid(width: number, height: number, zoom: number): void {
-    // Clear old 2D grid
     this._disposeGroupChildren(this._2dGrid);
-    while (this._2dGrid.children.length > 0) {
-      const child = this._2dGrid.children[0];
-      this._2dGrid.remove(child);
+
+    const halfW = width / 2;
+    const halfH = height / 2;
+
+    const targetScreenPx = 30;
+    const rawStep = targetScreenPx / Math.max(0.01, zoom);
+    const step = this._niceStep(rawStep);
+    const majorStep = step * 5;
+
+    const snapX = (v: number) => Math.ceil(v / step) * step;
+    const snapMajorX = (v: number) => Math.ceil(v / majorStep) * majorStep;
+
+    const minorVerts: number[] = [];
+    for (let x = snapX(-halfW); x <= halfW; x += step) {
+      if (Math.abs(x % majorStep) < 0.01) continue;
+      minorVerts.push(x, -halfH, 0, x, halfH, 0);
+    }
+    for (let y = snapX(-halfH); y <= halfH; y += step) {
+      if (Math.abs(y % majorStep) < 0.01) continue;
+      minorVerts.push(-halfW, y, 0, halfW, y, 0);
+    }
+    if (minorVerts.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(minorVerts, 3));
+      const mat = new THREE.LineBasicMaterial({
+        color: 0x2a2e38, transparent: true, opacity: 0.35,
+        depthTest: false, depthWrite: false,
+      });
+      const lines = new THREE.LineSegments(geo, mat);
+      lines.renderOrder = -2;
+      lines.frustumCulled = false;
+      this._2dGrid.add(lines);
     }
 
-    const halfW = Math.round(width / 2);
-    const halfH = Math.round(height / 2);
-
-    const rawStep = 10 * zoom;
-    const step = rawStep < 5 ? 5 : rawStep < 10 ? 10 : rawStep < 25 ? 25 : rawStep < 50 ? 50 : rawStep < 100 ? 100 : 500;
-    const majorStep = step * 10;
-    const maxLines = 300;
-
-    // Minor grid lines
-    const minorPositions: number[] = [];
-    let count = 0;
-    for (let x = -halfW; x <= halfW && count < maxLines; x += step) {
-      minorPositions.push(x, -halfH, 0, x, halfH, 0);
-      count++;
+    const majorVerts: number[] = [];
+    for (let x = snapMajorX(-halfW); x <= halfW; x += majorStep) {
+      if (Math.abs(x) < 0.01) continue;
+      majorVerts.push(x, -halfH, 0, x, halfH, 0);
     }
-    for (let y = -halfH; y <= halfH && count < maxLines; y += step) {
-      minorPositions.push(-halfW, y, 0, halfW, y, 0);
-      count++;
+    for (let y = snapMajorX(-halfH); y <= halfH; y += majorStep) {
+      if (Math.abs(y) < 0.01) continue;
+      majorVerts.push(-halfW, y, 0, halfW, y, 0);
     }
-    if (minorPositions.length > 0) {
-      const minorGeo = new THREE.BufferGeometry();
-      minorGeo.setAttribute('position', new THREE.Float32BufferAttribute(minorPositions, 3));
-      const minorMat = new THREE.LineBasicMaterial({ color: 0x2a2e38, transparent: true, opacity: 0.5, depthTest: false });
-      const minorLines = new THREE.LineSegments(minorGeo, minorMat);
-      minorLines.renderOrder = -1;
-      this._2dGrid.add(minorLines);
+    if (majorVerts.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(majorVerts, 3));
+      const mat = new THREE.LineBasicMaterial({
+        color: 0x3a3f4d, transparent: true, opacity: 0.5,
+        depthTest: false, depthWrite: false,
+      });
+      const lines = new THREE.LineSegments(geo, mat);
+      lines.renderOrder = -1;
+      lines.frustumCulled = false;
+      this._2dGrid.add(lines);
     }
 
-    // Major grid lines
-    const majorPositions: number[] = [];
-    count = 0;
-    for (let x = -halfW; x <= halfW && count < maxLines; x += majorStep) {
-      majorPositions.push(x, -halfH, 0, x, halfH, 0);
-      count++;
-    }
-    for (let y = -halfH; y <= halfH && count < maxLines; y += majorStep) {
-      majorPositions.push(-halfW, y, 0, halfW, y, 0);
-      count++;
-    }
-    if (majorPositions.length > 0) {
-      const majorGeo = new THREE.BufferGeometry();
-      majorGeo.setAttribute('position', new THREE.Float32BufferAttribute(majorPositions, 3));
-      const majorMat = new THREE.LineBasicMaterial({ color: 0x3a3f4d, transparent: true, opacity: 0.7, depthTest: false });
-      const majorLines = new THREE.LineSegments(majorGeo, majorMat);
-      majorLines.renderOrder = 0;
-      this._2dGrid.add(majorLines);
-    }
-
-    // Axes at center
-    const axisPositions = [0, 0, 0, halfW, 0, 0, 0, 0, 0, 0, halfH, 0];
-    const axisColors = [1, 0.35, 0.35, 1, 0.35, 0.35, 0.35, 1, 0.5, 0.35, 1, 0.5];
+    const axisVerts = new Float32Array([
+      -halfW, 0, 0, halfW, 0, 0,
+      0, -halfH, 0, 0, halfH, 0,
+    ]);
+    const axisColors = new Float32Array([
+      0.85, 0.25, 0.25, 0.85, 0.25, 0.25,
+      0.25, 0.8, 0.35, 0.25, 0.8, 0.35,
+    ]);
     const axisGeo = new THREE.BufferGeometry();
-    axisGeo.setAttribute('position', new THREE.Float32BufferAttribute(axisPositions, 3));
-    axisGeo.setAttribute('color', new THREE.Float32BufferAttribute(axisColors, 3));
-    const axisMat = new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true, opacity: 0.6 });
+    axisGeo.setAttribute('position', new THREE.BufferAttribute(axisVerts, 3));
+    axisGeo.setAttribute('color', new THREE.BufferAttribute(axisColors, 3));
+    const axisMat = new THREE.LineBasicMaterial({
+      vertexColors: true, depthTest: false, depthWrite: false,
+      transparent: true, opacity: 0.5, linewidth: 1,
+    });
     const axes = new THREE.LineSegments(axisGeo, axisMat);
-    axes.renderOrder = 1;
+    axes.renderOrder = 0;
+    axes.frustumCulled = false;
     this._2dGrid.add(axes);
   }
 
-  private _create2DGrid(): THREE.Group {
-    const g = new THREE.Group();
-    g.name = '2d-grid';
-    return g;
-  }
-
+  /**
+   * Create a large XZ ground-plane grid centered at origin.
+   * Extends well beyond composition bounds so it looks like a real floor.
+   */
   private _create3DGroundPlane(width = 1920, height = 1080): THREE.Group {
     const g = new THREE.Group();
     g.name = '3d-ground-plane';
 
-    const halfW = width / 2;
-    const halfH = height / 2;
-    const spacing = 100;
+    // Make the plane much larger than the comp so panning/orbiting still shows floor.
+    const extent = Math.max(width, height) * 6;
+    const halfE = extent / 2;
 
-    // ── Grid lines on XZ plane (horizontal floor at Y=0) ──
-    const lines: number[] = [];
-    // Lines along X (into depth)
-    for (let z = -halfH; z <= halfH; z += spacing) {
-      lines.push(-halfW, 0, z, halfW, 0, z);
+    const shorter = Math.min(width, height);
+    const rawSpacing = shorter / 20;
+    const spacing = this._niceStep(rawSpacing);
+
+    const minorLines: number[] = [];
+    const majorLines: number[] = [];
+    const majorStep = spacing * 10;
+
+    for (let z = -halfE; z <= halfE + 0.001; z += spacing) {
+      if (Math.abs(z) < 0.01) continue;
+      const arr = (Math.abs(z % majorStep) < 0.01) ? majorLines : minorLines;
+      arr.push(-halfE, 0, z, halfE, 0, z);
     }
-    // Lines along Z (across)
-    for (let x = -halfW; x <= halfW; x += spacing) {
-      lines.push(x, 0, -halfH, x, 0, halfH);
+    for (let x = -halfE; x <= halfE + 0.001; x += spacing) {
+      if (Math.abs(x) < 0.01) continue;
+      const arr = (Math.abs(x % majorStep) < 0.01) ? majorLines : minorLines;
+      arr.push(x, 0, -halfE, x, 0, halfE);
     }
 
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(lines, 3));
-    const mat = new THREE.LineBasicMaterial({
-      color: 0x555555, transparent: true, opacity: 0.15, depthWrite: false,
-    });
-    g.add(new THREE.LineSegments(geo, mat));
+    if (minorLines.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(minorLines, 3));
+      const mat = new THREE.LineBasicMaterial({
+        color: 0x555555, transparent: true, opacity: 0.18, depthWrite: false,
+      });
+      const seg = new THREE.LineSegments(geo, mat);
+      seg.frustumCulled = false;
+      seg.renderOrder = -12;
+      g.add(seg);
+    }
+    if (majorLines.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(majorLines, 3));
+      const mat = new THREE.LineBasicMaterial({
+        color: 0x7a7a7a, transparent: true, opacity: 0.32, depthWrite: false,
+      });
+      const seg = new THREE.LineSegments(geo, mat);
+      seg.frustumCulled = false;
+      seg.renderOrder = -11;
+      g.add(seg);
+    }
 
-    // ── Origin axes: X=right(red), Y=up(green), Z=depth(blue) ──
-    const axisLen = Math.min(halfW, halfH) * 0.5;
-    const axisPositions: number[] = [];
-    const axisColors: number[] = [];
-    // X axis (red) → right
-    axisPositions.push(0, 0, 0, axisLen, 0, 0);
-    axisColors.push(1, 0.2, 0.2, 1, 0.2, 0.2);
-    // Y axis (green) → up
-    axisPositions.push(0, 0, 0, 0, axisLen, 0);
-    axisColors.push(0.2, 1, 0.3, 0.2, 1, 0.3);
-    // Z axis (blue) → into depth
-    axisPositions.push(0, 0, 0, 0, 0, axisLen);
-    axisColors.push(0.2, 0.5, 1, 0.2, 0.5, 1);
-
+    // Red X axis + Blue Z axis (green Y is vertical / not drawn on ground)
+    const axisVerts = new Float32Array([
+      -halfE, 0, 0, halfE, 0, 0,   // X (red)
+      0, 0, -halfE, 0, 0, halfE,   // Z (blue)
+    ]);
+    const axisColors = new Float32Array([
+      0.9, 0.25, 0.25, 0.9, 0.25, 0.25,
+      0.25, 0.5, 0.95, 0.25, 0.5, 0.95,
+    ]);
     const axisGeo = new THREE.BufferGeometry();
-    axisGeo.setAttribute('position', new THREE.Float32BufferAttribute(axisPositions, 3));
-    axisGeo.setAttribute('color', new THREE.Float32BufferAttribute(axisColors, 3));
-    const axisMat = new THREE.LineBasicMaterial({ vertexColors: true, depthWrite: false, transparent: true, opacity: 0.7 });
-    g.add(new THREE.LineSegments(axisGeo, axisMat));
-
-    // ── Ground fill plane (horizontal at Y=0) ──
-    const planeGeo = new THREE.PlaneGeometry(width, height);
-    const planeMat = new THREE.MeshBasicMaterial({
-      color: 0x222222, transparent: true, opacity: 0.03,
-      side: THREE.DoubleSide, depthWrite: false,
+    axisGeo.setAttribute('position', new THREE.BufferAttribute(axisVerts, 3));
+    axisGeo.setAttribute('color', new THREE.BufferAttribute(axisColors, 3));
+    const axisMat = new THREE.LineBasicMaterial({
+      vertexColors: true, depthWrite: false,
+      transparent: true, opacity: 0.75,
     });
-    const plane = new THREE.Mesh(planeGeo, planeMat);
-    plane.rotation.x = -Math.PI / 2; // Lay flat on XZ plane
-    plane.renderOrder = -10;
-    g.add(plane);
+    const axes = new THREE.LineSegments(axisGeo, axisMat);
+    axes.frustumCulled = false;
+    axes.renderOrder = -10;
+    g.add(axes);
 
     return g;
   }

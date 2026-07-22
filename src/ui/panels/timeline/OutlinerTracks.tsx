@@ -239,11 +239,33 @@ function buildLayerCtx(compId: string, layer: Layer, idx: number, total: number)
         onClick: () => {
           const d = { ...((layer.data ?? {}) as any) };
           d.timeRemap = !d.timeRemap;
-          if (d.timeRemap && !d.timeRemapKeyframes) {
+          const ks = useKeyframeStore.getState();
+          if (d.timeRemap) {
+            const totalFrames = Math.round(((layer.endFrame ?? 300) - (layer.startFrame ?? 0)));
+            const kf1 = { id: `kf_tr_${Date.now()}_0`, property: 'timeRemap', layerId: layer.id, time: 0, value: 0, interpolation: 'linear' as const };
+            const kf2 = { id: `kf_tr_${Date.now()}_1`, property: 'timeRemap', layerId: layer.id, time: totalFrames, value: totalFrames, interpolation: 'linear' as const };
+            ks.engine.removeAllForProperty(layer.id, 'timeRemap');
+            ks.addKeyframe(layer.id, kf1);
+            ks.addKeyframe(layer.id, kf2);
+            // Sync engine keyframes to layer data for renderer fallback
             d.timeRemapKeyframes = [
               { time: 0, sourceFrame: 0 },
-              { time: Math.round(((layer.endFrame ?? 300) - (layer.startFrame ?? 0))), sourceFrame: Math.round(((layer.endFrame ?? 300) - (layer.startFrame ?? 0))) },
+              { time: totalFrames, sourceFrame: totalFrames },
             ];
+          } else {
+            ks.engine.removeAllForProperty(layer.id, 'timeRemap');
+            // Remove only the timeRemap property from animated properties (not the whole layer!)
+            useKeyframeStore.setState(s => {
+              const m = new Map(s.animatedProperties);
+              const layerProps = m.get(layer.id);
+              if (layerProps) {
+                layerProps.delete('timeRemap');
+                if (layerProps.size === 0) m.delete(layer.id);
+                else m.set(layer.id, new Set(layerProps));
+              }
+              return { animatedProperties: m, revision: s.revision + 1 };
+            });
+            delete d.timeRemapKeyframes;
           }
           cs.updateLayer(compId, layer.id, { data: d });
         } },
@@ -266,6 +288,56 @@ function buildLayerCtx(compId: string, layer: Layer, idx: number, total: number)
         precomposeSelectedLayers();
       });
     }},
+    // Pre-process Comp — bake nested comp frames for fast playback
+    ...(layer.type === 'comp' ? [
+      {
+        id: 'l.preprocess',
+        label: (layer.data as any)?.preProcessed ? 'Clear Pre-processing' : 'Pre-process Comp',
+        onClick: () => {
+          const data = layer.data as any;
+          if (data?.preProcessed) {
+            import('../../../renderer/PreProcessManager').then(({ preProcessManager }) => {
+              preProcessManager.clear(data.sourceCompId);
+              cs.updateLayer(compId, layer.id, {
+                data: { ...data, preProcessed: false },
+              });
+            });
+          } else {
+            import('../../../renderer/PreProcessManager').then(({ preProcessManager }) => {
+              const renderer = (window as any).__renderer;
+              if (!renderer?.renderer) {
+                import('../../../state/notificationStore').then(m =>
+                  m.useNotificationStore.getState().addNotification({
+                    type: 'error', message: 'Renderer not available', autoDismiss: 2000,
+                  })
+                );
+                return;
+              }
+              preProcessManager.bake(data.sourceCompId, renderer.renderer, () => {
+                cs.updateLayer(compId, layer.id, {
+                  data: { ...data, preProcessed: true },
+                });
+              });
+            });
+          }
+        },
+      },
+    ] : []),
+    // Extract (undo pre-compose) — only available for comp-type layers
+    ...(layer.type === 'comp' ? [
+      { id: 'l.extract', label: 'Extract from Pre-comp', onClick: () => {
+        import('../../../utils/precomp').then(({ extractFromComp }) => {
+          const result = extractFromComp(layer.id);
+          if (!result.ok && result.reason) {
+            import('../../../state/notificationStore').then(m =>
+              m.useNotificationStore.getState().addNotification({
+                type: 'error', message: result.reason!, autoDismiss: 3000,
+              })
+            );
+          }
+        });
+      }},
+    ] : []),
     { id: 'l.d5', divider: true },
     { id: 'l.del', label: 'Delete', shortcut: 'Del', onClick: () => { cs.removeLayer(compId, layer.id); useSelectionStore.getState().deselect(layer.id); } },
   ];

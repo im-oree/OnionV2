@@ -1,41 +1,86 @@
 /**
- * SelectionOverlay — draws selection outline + PowerPoint-style bounding box handles + Blender gizmo.
+ * SelectionOverlay — draws selection outline, bounding box handles,
+ * tool gizmos, and anchor crosshair as an SVG overlay.
  *
- * LAYER STACK (bottom to top):
- * 1. Selection polygon (rotated rectangle outline) — always shown
- * 2. Bounding box handles (8 corner/edge + rotation) — always shown when selected (hidden during modal)
- * 3. Blender gizmo (colored arrows/rings) — shown only when Move/Rotate/Scale tool active
- * 4. Anchor crosshair — always shown
- *
- * L1-L6: Handles use data-handle and data-layer-id attributes for interaction in useViewportInput.
- * Bounding box handles are white squares with subtle border (PowerPoint/Avnac style).
+ * Layer stack (bottom to top):
+ * 1. Selection polygon (oriented bounding box outline)
+ * 2. Bounding box handles (8 resize + 1 rotation)
+ * 3. Tool gizmo (move/rotate/scale arrows/rings)
+ * 4. Anchor crosshair
  */
 import * as THREE from 'three';
 import type { CameraManager } from '../CameraManager';
 import type { BaseLayerRenderer } from '../layers/BaseLayerRenderer';
 import { useCompositionStore } from '../../state/compositionStore';
+import { useViewportStore } from '../../state/viewportStore';
 
 export type GizmoMode = 'move' | 'rotate' | 'scale' | null;
 
 const NS = 'http://www.w3.org/2000/svg';
 
-interface ScreenCorner { x: number; y: number; }
+interface ScreenPt {
+  x: number;
+  y: number;
+}
 
-/** Corner/edge handle positions relative to bounding box */
-type HandlePos = 'tl' | 'tr' | 'br' | 'bl' | 'top' | 'right' | 'bottom' | 'left';
+type HandlePos =
+  | 'tl' | 'tr' | 'br' | 'bl'
+  | 'top' | 'right' | 'bottom' | 'left';
+
+// ── Theme ────────────────────────────────────────────────────
+
+const THEME = {
+  accent: '#4a90d9',
+  accentDim: 'rgba(74,144,217,0.5)',
+  white: '#ffffff',
+  shadow: 'rgba(0,0,0,0.35)',
+  axisX: '#e05555',
+  axisY: '#55c05a',
+  axisZ: '#4488ee',
+  axisXY: '#eebb44',
+  handleSize: 8,
+  edgeHandleSize: 6,
+  rotHandleRadius: 6,
+  rotHandleOffset: 28,
+  gizmoLength: 44,
+  gizmoHeadSize: 8,
+  anchorSize: 10,
+  anchorHitRadius: 14,
+} as const;
+
+// ── Cursor map ───────────────────────────────────────────────
+
+const HANDLE_CURSORS: Record<HandlePos, string> = {
+  tl: 'nwse-resize',
+  tr: 'nesw-resize',
+  br: 'nwse-resize',
+  bl: 'nesw-resize',
+  top: 'ns-resize',
+  bottom: 'ns-resize',
+  left: 'ew-resize',
+  right: 'ew-resize',
+};
+
+// Reusable math objects
+const _vec3 = new THREE.Vector3();
+const _worldPos = new THREE.Vector3();
 
 export class SelectionOverlay {
   private container: HTMLElement;
   private cameraManager: CameraManager;
   private svg: SVGSVGElement | null = null;
+
   private _visible = false;
   private _gizmoMode: GizmoMode = null;
-  /** L4: Hide bounding box handles during modal transform */
   private _hideHandles = false;
-  /** Last-selected layer ID for brighter outline when multi-selecting */
   private _lastSelectedId: string | null = null;
-  /** Whether the selected layers are 3D — shows Z arrow in move gizmo */
   private _is3D = false;
+
+  // Cached groups for efficient partial updates
+  private _outlineGroup: SVGGElement | null = null;
+  private _handleGroup: SVGGElement | null = null;
+  private _gizmoGroup: SVGGElement | null = null;
+  private _anchorGroup: SVGGElement | null = null;
 
   constructor(container: HTMLElement, cameraManager: CameraManager) {
     this.container = container;
@@ -45,582 +90,768 @@ export class SelectionOverlay {
   set gizmoMode(mode: GizmoMode) { this._gizmoMode = mode; }
   get gizmoMode(): GizmoMode { return this._gizmoMode; }
 
-  /** L4: Toggle handle visibility (hidden during modal transform) */
   set hideHandles(v: boolean) { this._hideHandles = v; }
   get hideHandles(): boolean { return this._hideHandles; }
 
-  /** Set the last-selected layer ID for brighter outline in multi-select */
   set lastSelectedId(id: string | null) { this._lastSelectedId = id; }
   get lastSelectedId(): string | null { return this._lastSelectedId; }
 
+  // ── Lifecycle ─────────────────────────────────────────────
+
   mount(): void {
     if (this.svg) return;
+
     const svg = document.createElementNS(NS, 'svg');
-    svg.style.position = 'absolute';
-    svg.style.inset = '0';
-    svg.style.pointerEvents = 'none';
-    svg.style.zIndex = '25';
-    svg.style.width = '100%';
-    svg.style.height = '100%';
+    svg.setAttribute('xmlns', NS);
+    svg.style.cssText =
+      'position:absolute;inset:0;pointer-events:none;z-index:25;width:100%;height:100%;overflow:visible';
+
+    // Create layer groups in correct z-order
+    this._outlineGroup = this._createGroup('outlines');
+    this._handleGroup = this._createGroup('handles');
+    this._gizmoGroup = this._createGroup('gizmo');
+    this._anchorGroup = this._createGroup('anchors');
+
+    svg.appendChild(this._outlineGroup);
+    svg.appendChild(this._handleGroup);
+    svg.appendChild(this._gizmoGroup);
+    svg.appendChild(this._anchorGroup);
+
     this.container.appendChild(svg);
     this.svg = svg;
   }
 
   unmount(): void {
-    if (this.svg && this.svg.parentElement) this.svg.parentElement.removeChild(this.svg);
+    this.svg?.parentElement?.removeChild(this.svg);
     this.svg = null;
+    this._outlineGroup = null;
+    this._handleGroup = null;
+    this._gizmoGroup = null;
+    this._anchorGroup = null;
   }
+
+  show(): void { this._visible = true; }
+
+  hide(): void {
+    this._visible = false;
+    this._clearAllGroups();
+  }
+
+  get visible(): boolean { return this._visible; }
+
+  dispose(): void { this.unmount(); }
+
+  // ── Main update ───────────────────────────────────────────
 
   update(renderers: BaseLayerRenderer[], is3D = false): void {
     if (!this.svg) return;
-    // Always clear first — prevents stuck overlays
-    this.svg.innerHTML = '';
+    this._clearAllGroups();
+
     if (renderers.length === 0 || !this._visible) return;
+
     this._is3D = is3D;
 
-    // Filter out invisible layer types — adjustment and light layers
-    // should never show selection outlines or gizmos in the viewport.
-    // Do this once upfront (not per-renderer) for efficiency.
-    const cs = useCompositionStore.getState();
-    const comp = cs.activeCompositionId ? cs.compositions.find(c => c.id === cs.activeCompositionId) : null;
-    if (comp) {
-      const layerMap = new Map(comp.layers.map(l => [l.id, l]));
-      renderers = renderers.filter(r => {
-        const layer = layerMap.get(r.id);
-        return layer && layer.type !== 'adjustment' && layer.type !== 'light' && layer.type !== 'camera';
-      });
-      if (renderers.length === 0) return;
-    }
+    // Filter non-visual layer types
+    renderers = this._filterVisualRenderers(renderers);
+    if (renderers.length === 0) return;
 
-    const accent = 'var(--color-accent)';
-    const white = '#ffffff';
-    const handleSize = 8; // corner handle size
-    const edgeSize = 6;  // edge handle size
-
-    let allCorners: ScreenCorner[] = [];
-    let worldCenterX = 0, worldCenterY = 0, worldCenterZ = 0, centerCount = 0;
+    const isMulti = renderers.length > 1;
+    let allCorners: ScreenPt[] = [];
+    let gizmoCenterWorld = new THREE.Vector3();
+    let centerCount = 0;
 
     for (const r of renderers) {
-      const corners = this._getWorldCorners(r);
-      if (corners.length < 4) continue;
+      const corners = this._getScreenCorners(r);
+      if (corners.length < 3) continue;
 
-      // N2: Selection polygon — double outline for visibility on any background
-      // Last-selected gets brighter/thicker outline when multi-selecting
-      const isLastSelected = renderers.length > 1 && this._lastSelectedId && r.id === this._lastSelectedId;
-      const isMulti = renderers.length > 1;
-      const pts = corners.map((c) => `${c.x},${c.y}`).join(' ');
-      // Black shadow outline underneath
-      const shadow = document.createElementNS(NS, 'polygon');
-      shadow.setAttribute('points', pts);
-      shadow.setAttribute('fill', 'none');
-      shadow.setAttribute('stroke', '#000000');
-      shadow.setAttribute('stroke-width', isLastSelected ? '4' : '3');
-      this.svg.appendChild(shadow);
-      // Main outline on top — brighter and thicker for last-selected
-      const poly = document.createElementNS(NS, 'polygon');
-      poly.setAttribute('points', pts);
-      poly.setAttribute('fill', 'none');
-      if (isLastSelected) {
-        // Last-selected: bright white accent
-        poly.setAttribute('stroke', '#ffffff');
-        poly.setAttribute('stroke-width', '2.5');
-      } else if (isMulti) {
-        // Other selected: dimmer accent
-        poly.setAttribute('stroke', 'rgba(71,114,179,0.8)');
-        poly.setAttribute('stroke-width', '1.5');
-      } else {
-        // Single selection: accent color
-        poly.setAttribute('stroke', accent);
-        poly.setAttribute('stroke-width', '1.5');
+      // 1. Selection outline
+      const isLast = isMulti && r.id === this._lastSelectedId;
+      this._drawSelectionOutline(corners, isMulti, isLast);
+
+      // 2. Bounding box handles (single selection only, unless last-selected)
+      if (!this._hideHandles && (!isMulti || isLast)) {
+        this._drawHandles(corners, r.id);
       }
-      this.svg.appendChild(poly);
+
+      // 4. Anchor crosshair
+      if (useViewportStore.getState().settings.showAnchorPoints) {
+        r.group.getWorldPosition(_worldPos);
+        this._drawAnchor(_worldPos.x, _worldPos.y, _worldPos.z);
+      }
 
       allCorners = allCorners.concat(corners);
-
-      // World center for gizmo + anchor
-      const worldPos = new THREE.Vector3();
-      r.group.getWorldPosition(worldPos);
-      worldCenterX += worldPos.x;
-      worldCenterY += worldPos.y;
-      worldCenterZ += worldPos.z;
+      r.group.getWorldPosition(_worldPos);
+      gizmoCenterWorld.add(_worldPos);
       centerCount++;
-
-      // ── 2. Bounding box handles (unless hidden) ──
-      if (!this._hideHandles) {
-        this._drawBoundingBoxHandles(corners, r.mesh, handleSize, edgeSize, white, accent);
-      }
-
-      // ── 5. Anchor crosshair ──
-      this._drawAnchor(worldPos.x, worldPos.y, worldPos.z);
     }
 
-    if (allCorners.length === 0) return;
+    if (centerCount === 0) return;
 
-    // Compute union bounding box of all screen corners
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const c of allCorners) {
-      minX = Math.min(minX, c.x);
-      maxX = Math.max(maxX, c.x);
-      minY = Math.min(minY, c.y);
-      maxY = Math.max(maxY, c.y);
-    }
-    if (!isFinite(minX)) return;
+    // 3. Tool gizmo at selection center
+    gizmoCenterWorld.divideScalar(centerCount);
+    const gizmoScreen = this.cameraManager.worldToScreen(
+      gizmoCenterWorld.x,
+      gizmoCenterWorld.y,
+      gizmoCenterWorld.z,
+    );
 
-    const gizmoCx = worldCenterX / centerCount;
-    const gizmoCy = worldCenterY / centerCount;
-    const gizmoCz = worldCenterZ / centerCount;
-    const gizmoScreen = this.cameraManager.worldToScreen(gizmoCx, gizmoCy, gizmoCz);
-    const gx = gizmoScreen.x, gy = gizmoScreen.y;
-
-    // ── 3. Blender gizmo (L5: only when Move/Rotate/Scale tool active) ──
-    switch (this._gizmoMode) {
-      case 'move':    this._drawMoveGizmo(gx, gy, accent, white); break;
-      case 'rotate':  this._drawRotateGizmo(gx, gy, accent, white); break;
-      case 'scale':   this._drawScaleGizmo(gx, gy, accent, white); break;
+    if (this._gizmoMode) {
+      this._drawGizmo(gizmoScreen.x, gizmoScreen.y);
     }
   }
 
+  // ── Selection outline ─────────────────────────────────────
 
-
-  // ── L2: PowerPoint-style bounding box handles ─────────────
-  private _drawBoundingBoxHandles(
-    corners: ScreenCorner[], _mesh: THREE.Mesh,
-    handleSize: number, edgeSize: number,
-    white: string, accent: string,
+  private _drawSelectionOutline(
+    corners: ScreenPt[],
+    isMulti: boolean,
+    isLastSelected: boolean,
   ): void {
-    // Corners: TL, TR, BR, BL
-    const handlePositions: { pos: HandlePos; cx: number; cy: number }[] = [
-      { pos: 'tl', cx: corners[0].x, cy: corners[0].y },
-      { pos: 'tr', cx: corners[1].x, cy: corners[1].y },
-      { pos: 'br', cx: corners[2].x, cy: corners[2].y },
-      { pos: 'bl', cx: corners[3].x, cy: corners[3].y },
-    ];
+    const g = this._outlineGroup!;
+    const pts = corners.map((c) => `${c.x},${c.y}`).join(' ');
 
-    // Edges: midpoint between each pair of corners
-    const edgePositions: { pos: HandlePos; cx: number; cy: number }[] = [
-      { pos: 'top',    cx: (corners[0].x + corners[1].x) / 2, cy: (corners[0].y + corners[1].y) / 2 },
-      { pos: 'right',  cx: (corners[1].x + corners[2].x) / 2, cy: (corners[1].y + corners[2].y) / 2 },
-      { pos: 'bottom', cx: (corners[2].x + corners[3].x) / 2, cy: (corners[2].y + corners[3].y) / 2 },
-      { pos: 'left',   cx: (corners[3].x + corners[0].x) / 2, cy: (corners[3].y + corners[0].y) / 2 },
-    ];
+    // Shadow outline
+    const shadow = this._createPolygon(pts, 'none', THEME.shadow,
+      isLastSelected ? 4 : 3,
+    );
+    g.appendChild(shadow);
 
-    // Corner handles (10x10 white squares)
-    for (const h of handlePositions) {
-      const hEl = this._rect(
-        h.cx - handleSize / 2, h.cy - handleSize / 2,
-        handleSize, handleSize, accent, 1, white,
-      );
-      hEl.setAttribute('data-handle', h.pos);
-      hEl.style.pointerEvents = 'all';
-      hEl.style.cursor = this._cursorForHandle(h.pos, 0);
-      hEl.style.boxShadow = '0 1px 3px rgba(0,0,0,0.4)';
-      this.svg!.appendChild(hEl);
+    // Color outline
+    let stroke: string;
+    let strokeWidth: number;
+
+    if (isLastSelected) {
+      stroke = THEME.white;
+      strokeWidth = 2.5;
+    } else if (isMulti) {
+      stroke = THEME.accentDim;
+      strokeWidth = 1.5;
+    } else {
+      stroke = THEME.accent;
+      strokeWidth = 1.5;
     }
 
-    // Edge handles (8x8 white squares)
-    for (const h of edgePositions) {
-      const eEl = this._rect(
-        h.cx - edgeSize / 2, h.cy - edgeSize / 2,
-        edgeSize, edgeSize, accent, 1, white,
+    const outline = this._createPolygon(pts, 'none', stroke, strokeWidth);
+    g.appendChild(outline);
+  }
+
+  // ── Bounding box handles ──────────────────────────────────
+
+  private _drawHandles(corners: ScreenPt[], layerId: string): void {
+    if (corners.length < 4) return;
+    const g = this._handleGroup!;
+
+    // Use the first 4 corners as the quad (TL, TR, BR, BL)
+    const [tl, tr, br, bl] = corners;
+
+    const cornerHandles: Array<{ pos: HandlePos; pt: ScreenPt }> = [
+      { pos: 'tl', pt: tl },
+      { pos: 'tr', pt: tr },
+      { pos: 'br', pt: br },
+      { pos: 'bl', pt: bl },
+    ];
+
+    const edgeHandles: Array<{ pos: HandlePos; pt: ScreenPt }> = [
+      { pos: 'top', pt: this._midpoint(tl, tr) },
+      { pos: 'right', pt: this._midpoint(tr, br) },
+      { pos: 'bottom', pt: this._midpoint(br, bl) },
+      { pos: 'left', pt: this._midpoint(bl, tl) },
+    ];
+
+    // Corner handles
+    for (const h of cornerHandles) {
+      const el = this._createHandle(
+        h.pt.x, h.pt.y,
+        THEME.handleSize, THEME.handleSize,
+        h.pos, layerId,
       );
-      eEl.setAttribute('data-handle', h.pos);
-      eEl.style.pointerEvents = 'all';
-      eEl.style.cursor = this._cursorForHandle(h.pos, 0);
-      eEl.style.boxShadow = '0 1px 3px rgba(0,0,0,0.4)';
-      this.svg!.appendChild(eEl);
+      g.appendChild(el);
     }
 
-    // Rotation handle: a circle above the top edge, connected by a thin line
-    const topCenterX = (corners[0].x + corners[1].x) / 2;
-    const topCenterY = (corners[0].y + corners[1].y) / 2;
-    // Direction from TL to TR gives us the "top edge" normal
-    const edgeDx = corners[1].x - corners[0].x;
-    const edgeDy = corners[1].y - corners[0].y;
+    // Edge handles
+    for (const h of edgeHandles) {
+      const el = this._createHandle(
+        h.pt.x, h.pt.y,
+        THEME.edgeHandleSize, THEME.edgeHandleSize,
+        h.pos, layerId,
+      );
+      g.appendChild(el);
+    }
+
+    // Rotation handle
+    this._drawRotationHandle(tl, tr, layerId);
+  }
+
+  private _drawRotationHandle(
+    tl: ScreenPt,
+    tr: ScreenPt,
+    layerId: string,
+  ): void {
+    const g = this._handleGroup!;
+
+    const midTop = this._midpoint(tl, tr);
+    const edgeDx = tr.x - tl.x;
+    const edgeDy = tr.y - tl.y;
     const edgeLen = Math.hypot(edgeDx, edgeDy) || 1;
-    // Normal pointing outward (perpendicular to top edge, pointing away from center)
+
+    // Outward normal from top edge
     const nx = -edgeDy / edgeLen;
     const ny = edgeDx / edgeLen;
-    const offset = 24; // pixels above the top edge
-    const rotX = topCenterX + nx * offset;
-    const rotY = topCenterY + ny * offset;
 
-    // Connector line
-    const line = document.createElementNS(NS, 'line');
-    line.setAttribute('x1', String(topCenterX));
-    line.setAttribute('y1', String(topCenterY));
-    line.setAttribute('x2', String(rotX));
-    line.setAttribute('y2', String(rotY));
-    line.setAttribute('stroke', accent);
-    line.setAttribute('stroke-width', '1');
-    line.setAttribute('stroke-dasharray', '3 2');
-    line.style.pointerEvents = 'none';
-    this.svg!.appendChild(line);
+    const rx = midTop.x + nx * THEME.rotHandleOffset;
+    const ry = midTop.y + ny * THEME.rotHandleOffset;
 
-    // Rotation handle circle (12x12)
-    const rotHandle = document.createElementNS(NS, 'circle');
-    rotHandle.setAttribute('cx', String(rotX));
-    rotHandle.setAttribute('cy', String(rotY));
-    rotHandle.setAttribute('r', '6');
-    rotHandle.setAttribute('fill', white);
-    rotHandle.setAttribute('stroke', accent);
-    rotHandle.setAttribute('stroke-width', '1.5');
-    rotHandle.setAttribute('data-handle', 'rotate');
-    rotHandle.style.pointerEvents = 'all';
-    rotHandle.style.cursor = 'grab';
-    rotHandle.style.boxShadow = '0 1px 3px rgba(0,0,0,0.4)';
-    this.svg!.appendChild(rotHandle);
+    // Connector line (dashed)
+    const connector = document.createElementNS(NS, 'line');
+    this._setAttrs(connector, {
+      x1: midTop.x, y1: midTop.y,
+      x2: rx, y2: ry,
+      stroke: THEME.accent,
+      'stroke-width': 1,
+      'stroke-dasharray': '3 2',
+    });
+    connector.style.pointerEvents = 'none';
+    g.appendChild(connector);
 
-    // Small curved arrow icon inside rotation handle
-    const arrow = document.createElementNS(NS, 'path');
-    arrow.setAttribute('d', `M ${rotX - 2} ${rotY - 1} A 3 3 0 1 1 ${rotX + 2} ${rotY + 1}`);
-    arrow.setAttribute('fill', 'none');
-    arrow.setAttribute('stroke', accent);
-    arrow.setAttribute('stroke-width', '1');
-    arrow.style.pointerEvents = 'none';
-    this.svg!.appendChild(arrow);
-    const arrowHead = document.createElementNS(NS, 'polygon');
-    arrowHead.setAttribute('points', `${rotX + 3},${rotY + 1} ${rotX + 1},${rotY + 0} ${rotX + 1},${rotY + 2}`);
-    arrowHead.setAttribute('fill', accent);
-    arrowHead.style.pointerEvents = 'none';
-    this.svg!.appendChild(arrowHead);
+    // Handle circle
+    const circle = document.createElementNS(NS, 'circle');
+    this._setAttrs(circle, {
+      cx: rx, cy: ry,
+      r: THEME.rotHandleRadius,
+      fill: THEME.white,
+      stroke: THEME.accent,
+      'stroke-width': 1.5,
+      'data-handle': 'rotate',
+      'data-layer-id': layerId,
+    });
+    circle.style.pointerEvents = 'all';
+    circle.style.cursor = 'grab';
+    g.appendChild(circle);
+
+    // Curved arrow icon
+    const iconR = THEME.rotHandleRadius * 0.45;
+    const arc = document.createElementNS(NS, 'path');
+    arc.setAttribute(
+      'd',
+      `M ${rx - iconR} ${ry - iconR * 0.3} A ${iconR} ${iconR} 0 1 1 ${rx + iconR} ${ry + iconR * 0.3}`,
+    );
+    this._setAttrs(arc, {
+      fill: 'none',
+      stroke: THEME.accent,
+      'stroke-width': 1,
+      'stroke-linecap': 'round',
+    });
+    arc.style.pointerEvents = 'none';
+    g.appendChild(arc);
   }
 
-  /** Get cursor for a handle position */
-  private _cursorForHandle(pos: HandlePos, _rotationDeg: number): string {
-    // L6: For now use static cursors. Extension: rotate cursor based on layer rotation.
-    const cursors: Record<HandlePos, string> = {
-      tl: 'nwse-resize', tr: 'nesw-resize',
-      br: 'nwse-resize', bl: 'nesw-resize',
-      top: 'ns-resize', bottom: 'ns-resize',
-      left: 'ew-resize', right: 'ew-resize',
-    };
-    return cursors[pos] || 'default';
+  private _createHandle(
+    cx: number,
+    cy: number,
+    w: number,
+    h: number,
+    pos: HandlePos,
+    layerId: string,
+  ): SVGRectElement {
+    const rect = document.createElementNS(NS, 'rect');
+    this._setAttrs(rect, {
+      x: cx - w / 2,
+      y: cy - h / 2,
+      width: w,
+      height: h,
+      fill: THEME.white,
+      stroke: THEME.accent,
+      'stroke-width': 1,
+      rx: 1,
+      ry: 1,
+      'data-handle': pos,
+      'data-layer-id': layerId,
+    });
+    rect.style.pointerEvents = 'all';
+    rect.style.cursor = HANDLE_CURSORS[pos] ?? 'default';
+    rect.style.filter = 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))';
+    return rect;
   }
 
-  // ── Compute world-space corners for selection outline ─────────────────
-  // For 3D objects: all 8 bounding box corners → convex hull for proper perspective outline
-  // For 2D objects: 4 corners at Z=0 (flat rectangle)
-  // Uses renderer.getWorldBoundingBox() so model3d layers use the actual model geometry
-  private _getWorldCorners(renderer: BaseLayerRenderer): ScreenCorner[] {
-    // Get the LOCAL-space bounding box (pre-world-transform)
+  // ── Gizmo ─────────────────────────────────────────────────
+
+  private _drawGizmo(cx: number, cy: number): void {
+    switch (this._gizmoMode) {
+      case 'move': this._drawMoveGizmo(cx, cy); break;
+      case 'rotate': this._drawRotateGizmo(cx, cy); break;
+      case 'scale': this._drawScaleGizmo(cx, cy); break;
+    }
+  }
+
+  private _drawMoveGizmo(cx: number, cy: number): void {
+    const g = this._gizmoGroup!;
+    const len = THEME.gizmoLength;
+    const head = THEME.gizmoHeadSize;
+
+    // X axis
+    this._appendArrow(g, cx, cy, cx + len, cy, head, THEME.axisX, 'move-x');
+    // Y axis
+    this._appendArrow(g, cx, cy, cx, cy - len, head, THEME.axisY, 'move-y');
+
+    // Z axis (3D only)
+    if (this._is3D) {
+      const zLen = len * 0.65;
+      const zAngle = Math.PI * 0.25;
+      const zx = cx + zLen * Math.cos(zAngle);
+      const zy = cy + zLen * Math.sin(zAngle);
+      this._appendArrow(g, cx, cy, zx, zy, head * 0.7, THEME.axisZ, 'move-z');
+
+      const label = document.createElementNS(NS, 'text');
+      this._setAttrs(label, {
+        x: zx + 8, y: zy + 3,
+        fill: THEME.axisZ,
+        'font-size': 9,
+        'font-weight': 'bold',
+        'font-family': 'system-ui, sans-serif',
+        'data-gizmo': 'move-z',
+      });
+      label.textContent = 'Z';
+      label.style.pointerEvents = 'all';
+      label.style.cursor = 'pointer';
+      g.appendChild(label);
+    }
+
+    // XY plane square
+    const sq = 8;
+    const xyRect = document.createElementNS(NS, 'rect');
+    this._setAttrs(xyRect, {
+      x: cx + sq * 0.5,
+      y: cy - sq * 1.5,
+      width: sq,
+      height: sq,
+      fill: THEME.axisXY,
+      'fill-opacity': 0.4,
+      stroke: THEME.axisXY,
+      'stroke-width': 1,
+      'data-gizmo': 'move-xy',
+    });
+    xyRect.style.pointerEvents = 'all';
+    xyRect.style.cursor = 'move';
+    g.appendChild(xyRect);
+
+    // Center dot
+    this._appendDot(g, cx, cy, 3.5, THEME.white, THEME.accent);
+  }
+
+  private _drawRotateGizmo(cx: number, cy: number): void {
+    const g = this._gizmoGroup!;
+
+    // Z rotation ring
+    const zRing = document.createElementNS(NS, 'circle');
+    this._setAttrs(zRing, {
+      cx, cy, r: 50,
+      fill: 'none',
+      stroke: THEME.axisZ,
+      'stroke-width': 2,
+      'data-gizmo': 'rotate-z',
+    });
+    zRing.style.pointerEvents = 'all';
+    zRing.style.cursor = 'grab';
+    g.appendChild(zRing);
+
+    // Free rotation ring (outer, dashed)
+    const freeRing = document.createElementNS(NS, 'circle');
+    this._setAttrs(freeRing, {
+      cx, cy, r: 62,
+      fill: 'none',
+      stroke: 'rgba(255,255,255,0.2)',
+      'stroke-width': 1,
+      'stroke-dasharray': '4 3',
+      'data-gizmo': 'rotate-free',
+    });
+    freeRing.style.pointerEvents = 'all';
+    freeRing.style.cursor = 'grab';
+    g.appendChild(freeRing);
+
+    // Tick marks at 45° intervals
+    for (let i = 0; i < 8; i++) {
+      const a = (Math.PI * 2 * i) / 8;
+      const inner = 47;
+      const outer = 53;
+      const tick = document.createElementNS(NS, 'line');
+      this._setAttrs(tick, {
+        x1: cx + inner * Math.cos(a),
+        y1: cy + inner * Math.sin(a),
+        x2: cx + outer * Math.cos(a),
+        y2: cy + outer * Math.sin(a),
+        stroke: 'rgba(255,255,255,0.3)',
+        'stroke-width': 1,
+      });
+      tick.style.pointerEvents = 'none';
+      g.appendChild(tick);
+    }
+
+    this._appendDot(g, cx, cy, 3, THEME.white, THEME.accent);
+  }
+
+  private _drawScaleGizmo(cx: number, cy: number): void {
+    const g = this._gizmoGroup!;
+    const len = THEME.gizmoLength;
+    const tip = 7;
+
+    // X axis with square tip
+    this._appendScaleArrow(g, cx, cy, cx + len, cy, tip, THEME.axisX, 'scale-x');
+    // Y axis with square tip
+    this._appendScaleArrow(g, cx, cy, cx, cy - len, tip, THEME.axisY, 'scale-y');
+
+    // Uniform scale handle (center square)
+    const us = 10;
+    const uRect = document.createElementNS(NS, 'rect');
+    this._setAttrs(uRect, {
+      x: cx - us / 2,
+      y: cy - us / 2,
+      width: us,
+      height: us,
+      fill: 'rgba(255,255,255,0.12)',
+      stroke: THEME.white,
+      'stroke-width': 1.5,
+      rx: 1,
+      'data-gizmo': 'scale-uniform',
+    });
+    uRect.style.pointerEvents = 'all';
+    uRect.style.cursor = 'nwse-resize';
+    g.appendChild(uRect);
+
+    this._appendDot(g, cx, cy, 2.5, THEME.accent, THEME.white);
+  }
+
+  // ── Anchor crosshair ──────────────────────────────────────
+
+  private _drawAnchor(
+    worldX: number,
+    worldY: number,
+    worldZ = 0,
+  ): void {
+    const g = this._anchorGroup!;
+    const screen = this.cameraManager.worldToScreen(
+      worldX, worldY, worldZ,
+    );
+    if (!isFinite(screen.x) || !isFinite(screen.y)) return;
+
+    const cs = THEME.anchorSize;
+    const { x, y } = screen;
+
+    // Hit area (invisible, large)
+    const hit = document.createElementNS(NS, 'circle');
+    this._setAttrs(hit, {
+      cx: x, cy: y,
+      r: THEME.anchorHitRadius,
+      fill: 'transparent',
+      'data-anchor': 'true',
+    });
+    hit.style.pointerEvents = 'all';
+    hit.style.cursor = 'move';
+    g.appendChild(hit);
+
+    // White shadow crosshair
+    this._appendCrosshairLines(g, x, y, cs, THEME.white, 2.5, true);
+    // Accent crosshair
+    this._appendCrosshairLines(g, x, y, cs, THEME.accent, 1, true);
+
+    // Center dot
+    const dot = document.createElementNS(NS, 'circle');
+    this._setAttrs(dot, {
+      cx: x, cy: y, r: 3,
+      fill: THEME.white,
+      stroke: THEME.accent,
+      'stroke-width': 0.5,
+    });
+    dot.style.pointerEvents = 'none';
+    g.appendChild(dot);
+  }
+
+  private _appendCrosshairLines(
+    parent: SVGGElement,
+    cx: number,
+    cy: number,
+    size: number,
+    color: string,
+    width: number,
+    noEvents: boolean,
+  ): void {
+    const h = document.createElementNS(NS, 'line');
+    this._setAttrs(h, {
+      x1: cx - size, y1: cy, x2: cx + size, y2: cy,
+      stroke: color, 'stroke-width': width, 'stroke-linecap': 'round',
+    });
+    if (noEvents) h.style.pointerEvents = 'none';
+    parent.appendChild(h);
+
+    const v = document.createElementNS(NS, 'line');
+    this._setAttrs(v, {
+      x1: cx, y1: cy - size, x2: cx, y2: cy + size,
+      stroke: color, 'stroke-width': width, 'stroke-linecap': 'round',
+    });
+    if (noEvents) v.style.pointerEvents = 'none';
+    parent.appendChild(v);
+  }
+
+  // ── Screen corner computation ─────────────────────────────
+
+  private _getScreenCorners(renderer: BaseLayerRenderer): ScreenPt[] {
     const bbox = renderer.getLocalBoundingBox();
     if (!bbox) return [];
 
-    // Ensure the group's world matrix is current
     renderer.group.updateMatrixWorld(true);
+    const matrix = renderer.mesh.matrixWorld;
 
-    // 3D mode: transform all 8 local corners through the renderer's world matrix
-    // so the outline rotates with the object (OBB, not AABB)
     if (this.cameraManager.is3DMode) {
-      const localCorners = [
-        new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.min.z),
-        new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.min.z),
-        new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.min.z),
-        new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.min.z),
-        new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.max.z),
-        new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.max.z),
-        new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.max.z),
-        new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.max.z),
-      ];
+      const corners: ScreenPt[] = [];
+      const xs = [bbox.min.x, bbox.max.x];
+      const ys = [bbox.min.y, bbox.max.y];
+      const zs = [bbox.min.z, bbox.max.z];
 
-      // Apply the renderer's world matrix (includes rotation, scale, position)
-      // so the outline tracks the object's actual orientation
-      const worldMatrix = renderer.group.matrixWorld;
+      for (const x of xs) {
+        for (const y of ys) {
+          for (const z of zs) {
+            _vec3.set(x, y, z).applyMatrix4(matrix);
+            const s = this.cameraManager.worldToScreen(
+              _vec3.x, _vec3.y, _vec3.z,
+            );
+            if (isFinite(s.x) && isFinite(s.y)) {
+              corners.push(s);
+            }
+          }
+        }
+      }
 
-      const screenPoints = localCorners
-        .map(local => {
-          const world = local.clone().applyMatrix4(worldMatrix);
-          return this.cameraManager.worldToScreen(world.x, world.y, world.z);
-        })
-        .filter(p => isFinite(p.x) && isFinite(p.y));
-
-      // Compute convex hull for proper 3D silhouette outline
-      return this._convexHull(screenPoints);
+      return this._convexHull(corners);
     }
 
-    // 2D mode: 4 corners at Z=0 (flat rectangle)
-    const corners = [
-      new THREE.Vector3(bbox.min.x, bbox.min.y, 0),
-      new THREE.Vector3(bbox.max.x, bbox.min.y, 0),
-      new THREE.Vector3(bbox.max.x, bbox.max.y, 0),
-      new THREE.Vector3(bbox.min.x, bbox.max.y, 0),
+    // 2D: 4 corners at Z=0
+    const pts2d: ScreenPt[] = [];
+    const localCorners = [
+      [bbox.min.x, bbox.min.y],
+      [bbox.max.x, bbox.min.y],
+      [bbox.max.x, bbox.max.y],
+      [bbox.min.x, bbox.max.y],
     ];
 
-    return corners.map((c) => {
-      return this.cameraManager.worldToScreen(c.x, c.y);
-    });
+    for (const [lx, ly] of localCorners) {
+      _vec3.set(lx, ly, 0).applyMatrix4(matrix);
+      pts2d.push(
+        this.cameraManager.worldToScreen(_vec3.x, _vec3.y),
+      );
+    }
+
+    return pts2d;
   }
 
-  /**
-   * Andrew's monotone chain convex hull algorithm.
-   * Returns the convex hull of 2D screen points in counter-clockwise order.
-   * This gives the correct silhouette outline for rotated 3D objects.
-   */
-  private _convexHull(points: ScreenCorner[]): ScreenCorner[] {
+  private _convexHull(points: ScreenPt[]): ScreenPt[] {
     if (points.length <= 2) return points;
 
-    // Sort by x, then by y
-    const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+    const sorted = [...points].sort(
+      (a, b) => a.x - b.x || a.y - b.y,
+    );
 
-    const cross = (o: ScreenCorner, a: ScreenCorner, b: ScreenCorner): number =>
+    const cross = (o: ScreenPt, a: ScreenPt, b: ScreenPt) =>
       (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
 
-    // Build lower hull
-    const lower: ScreenCorner[] = [];
+    const lower: ScreenPt[] = [];
     for (const p of sorted) {
-      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) {
+      while (
+        lower.length >= 2 &&
+        cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0
+      ) {
         lower.pop();
       }
       lower.push(p);
     }
 
-    // Build upper hull
-    const upper: ScreenCorner[] = [];
-    for (const p of sorted.reverse()) {
-      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) {
+    const upper: ScreenPt[] = [];
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const p = sorted[i];
+      while (
+        upper.length >= 2 &&
+        cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0
+      ) {
         upper.pop();
       }
       upper.push(p);
     }
 
-    // Remove last point of each half because it's repeated
     lower.pop();
     upper.pop();
 
     return lower.concat(upper);
   }
 
-  // ── MOVE GIZMO ────────────────────────────────────────────
-  private _drawMoveGizmo(cx: number, cy: number, accent: string, white: string): void {
-    const len = 40;
-    const headSize = 8;
-    this._arrow(cx, cy, cx + len, cy, headSize, '#ff3355', white, 'move-x');
-    this._arrow(cx, cy, cx, cy - len, headSize, '#55dd33', white, 'move-y');
-    // Z arrow — shown when 3D layer is selected
-    if (this._is3D) {
-      // Draw Z axis at 45° downward-right (standard ortho convention)
-      const zLen = len * 0.7;
-      const zAngle = Math.PI * 0.25; // 45 degrees
-      const zx = cx + zLen * Math.cos(zAngle);
-      const zy = cy + zLen * Math.sin(zAngle);
-      this._arrow(cx, cy, zx, zy, headSize * 0.7, '#3388ff', white, 'move-z');
-      // Label
-      const label = document.createElementNS(NS, 'text');
-      label.setAttribute('x', String(zx + 6));
-      label.setAttribute('y', String(zy + 2));
-      label.setAttribute('fill', '#3388ff');
-      label.setAttribute('font-size', '9');
-      label.setAttribute('font-weight', 'bold');
-      label.setAttribute('font-family', 'monospace');
-      label.setAttribute('data-gizmo', 'move-z');
-      label.textContent = 'Z';
-      label.style.pointerEvents = 'all';
-      label.style.cursor = 'pointer';
-      this.svg!.appendChild(label);
+  // ── Filtering ─────────────────────────────────────────────
+
+  private _filterVisualRenderers(
+    renderers: BaseLayerRenderer[],
+  ): BaseLayerRenderer[] {
+    const cs = useCompositionStore.getState();
+    const comp = cs.activeCompositionId
+      ? cs.compositions.find((c) => c.id === cs.activeCompositionId)
+      : null;
+
+    if (!comp) return renderers;
+
+    const layerMap = new Map(comp.layers.map((l) => [l.id, l]));
+    const excluded = new Set(['adjustment', 'light', 'camera']);
+
+    return renderers.filter((r) => {
+      const layer = layerMap.get(r.id);
+      return layer && !excluded.has(layer.type);
+    });
+  }
+
+  // ── SVG helpers ───────────────────────────────────────────
+
+  private _createGroup(name: string): SVGGElement {
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('data-group', name);
+    return g;
+  }
+
+  private _clearAllGroups(): void {
+    this._outlineGroup && (this._outlineGroup.innerHTML = '');
+    this._handleGroup && (this._handleGroup.innerHTML = '');
+    this._gizmoGroup && (this._gizmoGroup.innerHTML = '');
+    this._anchorGroup && (this._anchorGroup.innerHTML = '');
+  }
+
+  private _setAttrs(
+    el: SVGElement,
+    attrs: Record<string, string | number>,
+  ): void {
+    for (const [k, v] of Object.entries(attrs)) {
+      el.setAttribute(k, String(v));
     }
-    this._compassRose(cx, cy, 8, accent, white);
-    const sq = 7;
-    const sqEl = this._rect(cx + sq, cy - sq * 1.5, sq, sq, '#ffdd44', 1, '#ffdd44');
-    sqEl.setAttribute('data-gizmo', 'move-xy');
-    sqEl.style.pointerEvents = 'all';
-    sqEl.style.cursor = 'move';
-    this.svg!.appendChild(sqEl);
   }
 
-  // ── ROTATE GIZMO ──────────────────────────────────────────
-  private _drawRotateGizmo(cx: number, cy: number, accent: string, white: string): void {
-    const ringRadius = 50;
-    const outerRadius = 65;
-    const zRing = document.createElementNS(NS, 'circle');
-    zRing.setAttribute('cx', String(cx));
-    zRing.setAttribute('cy', String(cy));
-    zRing.setAttribute('r', String(ringRadius));
-    zRing.setAttribute('fill', 'none');
-    zRing.setAttribute('stroke', '#3388ff');
-    zRing.setAttribute('stroke-width', '2');
-    zRing.setAttribute('data-gizmo', 'rotate-z');
-    zRing.style.pointerEvents = 'all';
-    zRing.style.cursor = 'grab';
-    this.svg!.appendChild(zRing);
-
-    const outerRing = document.createElementNS(NS, 'circle');
-    outerRing.setAttribute('cx', String(cx));
-    outerRing.setAttribute('cy', String(cy));
-    outerRing.setAttribute('r', String(outerRadius));
-    outerRing.setAttribute('fill', 'none');
-    outerRing.setAttribute('stroke', 'rgba(255,255,255,0.3)');
-    outerRing.setAttribute('stroke-width', '1');
-    outerRing.setAttribute('stroke-dasharray', '4 3');
-    outerRing.setAttribute('data-gizmo', 'rotate-free');
-    outerRing.style.pointerEvents = 'all';
-    outerRing.style.cursor = 'grab';
-    this.svg!.appendChild(outerRing);
-
-    this._dot(cx, cy, 4, white, accent);
-    this._compassRose(cx, cy, 6, accent, white);
+  private _createPolygon(
+    points: string,
+    fill: string,
+    stroke: string,
+    strokeWidth: number,
+  ): SVGPolygonElement {
+    const poly = document.createElementNS(NS, 'polygon');
+    this._setAttrs(poly, {
+      points,
+      fill,
+      stroke,
+      'stroke-width': strokeWidth,
+      'stroke-linejoin': 'round',
+    });
+    return poly;
   }
 
-  // ── SCALE GIZMO ───────────────────────────────────────────
-  private _drawScaleGizmo(cx: number, cy: number, accent: string, white: string): void {
-    const len = 40;
-    const tipSize = 9;
-    this._arrowSquare(cx, cy, cx + len, cy, tipSize, '#ff3355', white, 'scale-x');
-    this._arrowSquare(cx, cy, cx, cy - len, tipSize, '#55dd33', white, 'scale-y');
-
-    const uSize = 11;
-    const uEl = this._rect(cx - uSize / 2, cy - uSize / 2, uSize, uSize, '#ffffff', 1.5, 'rgba(255,255,255,0.15)');
-    uEl.setAttribute('data-gizmo', 'scale-uniform');
-    uEl.style.pointerEvents = 'all';
-    uEl.style.cursor = 'nwse-resize';
-    this.svg!.appendChild(uEl);
-
-    this._compassRose(cx, cy, 6, accent, white);
+  private _midpoint(a: ScreenPt, b: ScreenPt): ScreenPt {
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
   }
 
-  // ── N3: Anchor crosshair — larger, double-color for visibility ──
-  private _drawAnchor(worldX: number, worldY: number, worldZ: number = 0): void {
-    const screen = this.cameraManager.worldToScreen(worldX, worldY, worldZ);
-    const cs = 10; // 12px crosshair
-    // White outer lines for contrast on any background
-    this.svg!.appendChild(this._line(screen.x - cs, screen.y, screen.x + cs, screen.y, '#ffffff', 2));
-    this.svg!.appendChild(this._line(screen.x, screen.y - cs, screen.x, screen.y + cs, '#ffffff', 2));
-    // Accent inner lines on top
-    this.svg!.appendChild(this._line(screen.x - cs, screen.y, screen.x + cs, screen.y, '#4772b3', 1));
-    this.svg!.appendChild(this._line(screen.x, screen.y - cs, screen.x, screen.y + cs, '#4772b3', 1));
-    // 4px filled dot at center
-    this._dot(screen.x, screen.y, 4, '#ffffff', '#4772b3');
+  private _appendDot(
+    parent: SVGGElement,
+    cx: number,
+    cy: number,
+    r: number,
+    fill: string,
+    stroke: string,
+  ): void {
+    const dot = document.createElementNS(NS, 'circle');
+    this._setAttrs(dot, {
+      cx, cy, r,
+      fill,
+      stroke,
+      'stroke-width': 0.5,
+    });
+    dot.style.pointerEvents = 'none';
+    parent.appendChild(dot);
   }
 
-  // ── SVG helpers ─────────────────────────────────────────
-  private _rect(x: number, y: number, w: number, h: number,
-                stroke: string, sw: number, fill: string): SVGRectElement {
-    const r = document.createElementNS(NS, 'rect');
-    r.setAttribute('x', String(x));
-    r.setAttribute('y', String(y));
-    r.setAttribute('width', String(w));
-    r.setAttribute('height', String(h));
-    r.setAttribute('stroke', stroke);
-    r.setAttribute('stroke-width', String(sw));
-    r.setAttribute('fill', fill);
-    return r;
-  }
-
-  private _line(x1: number, y1: number, x2: number, y2: number,
-                stroke: string, sw: number): SVGLineElement {
-    const l = document.createElementNS(NS, 'line');
-    l.setAttribute('x1', String(x1));
-    l.setAttribute('y1', String(y1));
-    l.setAttribute('x2', String(x2));
-    l.setAttribute('y2', String(y2));
-    l.setAttribute('stroke', stroke);
-    l.setAttribute('stroke-width', String(sw));
-    return l;
-  }
-
-  private _dot(cx: number, cy: number, r: number, fill: string, stroke: string): void {
-    const d = document.createElementNS(NS, 'circle');
-    d.setAttribute('cx', String(cx));
-    d.setAttribute('cy', String(cy));
-    d.setAttribute('r', String(r));
-    d.setAttribute('fill', fill);
-    if (stroke !== 'none') {
-      d.setAttribute('stroke', stroke);
-      d.setAttribute('stroke-width', '0.5');
-    }
-    this.svg!.appendChild(d);
-  }
-
-  private _arrow(x1: number, y1: number, x2: number, y2: number,
-                 headSize: number, color: string, stroke: string, dataAttr: string): void {
-    const line = this._line(x1, y1, x2, y2, color, 2);
+  private _appendArrow(
+    parent: SVGGElement,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    headSize: number,
+    color: string,
+    dataAttr: string,
+  ): void {
+    // Line
+    const line = document.createElementNS(NS, 'line');
+    this._setAttrs(line, {
+      x1, y1, x2, y2,
+      stroke: color,
+      'stroke-width': 2,
+      'stroke-linecap': 'round',
+      'data-gizmo': dataAttr,
+    });
     line.style.pointerEvents = 'all';
     line.style.cursor = 'pointer';
-    line.setAttribute('data-gizmo', dataAttr);
-    this.svg!.appendChild(line);
+    parent.appendChild(line);
 
+    // Arrowhead
     const angle = Math.atan2(y2 - y1, x2 - x1);
     const tip = document.createElementNS(NS, 'polygon');
-    const px = x2, py = y2;
-    const points = [
-      px + headSize * Math.cos(angle),
-      py + headSize * Math.sin(angle),
-      px + headSize * 0.5 * Math.cos(angle + Math.PI * 0.7),
-      py + headSize * 0.5 * Math.sin(angle + Math.PI * 0.7),
-      px + headSize * 0.5 * Math.cos(angle - Math.PI * 0.7),
-      py + headSize * 0.5 * Math.sin(angle - Math.PI * 0.7),
+    const pts = [
+      x2 + headSize * Math.cos(angle),
+      y2 + headSize * Math.sin(angle),
+      x2 + headSize * 0.45 * Math.cos(angle + Math.PI * 0.72),
+      y2 + headSize * 0.45 * Math.sin(angle + Math.PI * 0.72),
+      x2 + headSize * 0.45 * Math.cos(angle - Math.PI * 0.72),
+      y2 + headSize * 0.45 * Math.sin(angle - Math.PI * 0.72),
     ];
-    tip.setAttribute('points', points.join(' '));
-    tip.setAttribute('fill', color);
-    tip.setAttribute('stroke', stroke);
-    tip.setAttribute('stroke-width', '0.5');
-    tip.setAttribute('data-gizmo', dataAttr);
+    this._setAttrs(tip, {
+      points: pts.join(' '),
+      fill: color,
+      stroke: 'rgba(0,0,0,0.2)',
+      'stroke-width': 0.5,
+      'data-gizmo': dataAttr,
+    });
     tip.style.pointerEvents = 'all';
     tip.style.cursor = 'pointer';
-    this.svg!.appendChild(tip);
+    parent.appendChild(tip);
   }
 
-  private _arrowSquare(x1: number, y1: number, x2: number, y2: number,
-                       tipSize: number, color: string, stroke: string, dataAttr: string): void {
-    const line = this._line(x1, y1, x2, y2, color, 2);
+  private _appendScaleArrow(
+    parent: SVGGElement,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    tipSize: number,
+    color: string,
+    dataAttr: string,
+  ): void {
+    const line = document.createElementNS(NS, 'line');
+    this._setAttrs(line, {
+      x1, y1, x2, y2,
+      stroke: color,
+      'stroke-width': 2,
+      'stroke-linecap': 'round',
+      'data-gizmo': dataAttr,
+    });
     line.style.pointerEvents = 'all';
     line.style.cursor = 'pointer';
-    line.setAttribute('data-gizmo', dataAttr);
-    this.svg!.appendChild(line);
+    parent.appendChild(line);
 
+    // Square tip
     const angle = Math.atan2(y2 - y1, x2 - x1);
+    const tipCx = x2 + (tipSize * 0.5) * Math.cos(angle);
+    const tipCy = y2 + (tipSize * 0.5) * Math.sin(angle);
     const sq = document.createElementNS(NS, 'rect');
-    const px = x2 + tipSize * Math.cos(angle) * 0.7;
-    const py = y2 + tipSize * Math.sin(angle) * 0.7;
-    sq.setAttribute('x', String(px - tipSize / 2));
-    sq.setAttribute('y', String(py - tipSize / 2));
-    sq.setAttribute('width', String(tipSize));
-    sq.setAttribute('height', String(tipSize));
-    sq.setAttribute('fill', color);
-    sq.setAttribute('stroke', stroke);
-    sq.setAttribute('stroke-width', '0.5');
-    sq.setAttribute('data-gizmo', dataAttr);
+    this._setAttrs(sq, {
+      x: tipCx - tipSize / 2,
+      y: tipCy - tipSize / 2,
+      width: tipSize,
+      height: tipSize,
+      fill: color,
+      stroke: 'rgba(0,0,0,0.2)',
+      'stroke-width': 0.5,
+      rx: 1,
+      'data-gizmo': dataAttr,
+    });
     sq.style.pointerEvents = 'all';
     sq.style.cursor = 'pointer';
-    this.svg!.appendChild(sq);
+    parent.appendChild(sq);
   }
-
-  private _compassRose(cx: number, cy: number, radius: number, accent: string, white: string): void {
-    const circle = document.createElementNS(NS, 'circle');
-    circle.setAttribute('cx', String(cx));
-    circle.setAttribute('cy', String(cy));
-    circle.setAttribute('r', String(radius * 0.5));
-    circle.setAttribute('fill', accent);
-    circle.setAttribute('stroke', white);
-    circle.setAttribute('stroke-width', '0.5');
-    circle.setAttribute('data-gizmo', 'pivot');
-    circle.style.pointerEvents = 'all';
-    circle.style.cursor = 'move';
-    this.svg!.appendChild(circle);
-
-    for (let i = 0; i < 8; i++) {
-      const a = (Math.PI * 2 * i) / 8 - Math.PI / 2;
-      const tipX = cx + radius * Math.cos(a);
-      const tipY = cy + radius * Math.sin(a);
-      const baseDist = radius * 0.6;
-      const b1a = a + Math.PI * 0.25;
-      const b2a = a - Math.PI * 0.25;
-      const tri = document.createElementNS(NS, 'polygon');
-      tri.setAttribute('points', [
-        tipX, tipY,
-        cx + baseDist * Math.cos(b1a), cy + baseDist * Math.sin(b1a),
-        cx + baseDist * Math.cos(b2a), cy + baseDist * Math.sin(b2a),
-      ].join(' '));
-      tri.setAttribute('fill', accent);
-      tri.setAttribute('stroke', white);
-      tri.setAttribute('stroke-width', '0.3');
-      this.svg!.appendChild(tri);
-    }
-  }
-
-  // ── Public API ──────────────────────────────────────────
-  show(): void { this._visible = true; }
-  hide(): void { this._visible = false; if (this.svg) this.svg.innerHTML = ''; }
-  get visible(): boolean { return this._visible; }
-
-  dispose(): void { this.unmount(); }
 }

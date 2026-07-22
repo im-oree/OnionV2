@@ -13,6 +13,7 @@ import { useProjectStore } from '../state/projectStore';
 
 import { runMigrations, validateProjectData, CURRENT_VERSION } from './migrations';
 import { assetManager } from './AssetManager';
+import { triggerRequestRender } from '../state/uiStore';
 
 const APP_VERSION = '0.1.0';
 
@@ -195,6 +196,12 @@ export class ProjectSerializer {
       tlStore.setZoom(migrated.ui.timelineState.zoom);
       tlStore.setScrollX(migrated.ui.timelineState.scrollX);
     }
+
+    // Force a render request after all state is restored. This ensures the
+    // viewport renders the loaded composition even if React's effects have a
+    // timing gap (e.g., identity effect fires before layers effect, and the
+    // idle-paused render loop consumed the render request before sync() ran).
+    triggerRequestRender();
   }
 
   /** Run schema migrations if needed */

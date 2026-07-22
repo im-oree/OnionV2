@@ -9,7 +9,7 @@ import type { Asset } from '../storage/AssetManager';
 export interface ResolvedAsset {
   id: string;
   name: string;
-  type: 'image' | 'video' | 'audio';
+  type: 'image' | 'video' | 'audio' | 'model3d';
   naturalWidth: number;
   naturalHeight: number;
   duration?: number;
@@ -39,12 +39,12 @@ export function resolveAsset(assetId: string): ResolvedAsset | null {
   const pa = useProjectStore.getState().project.assets.find((a) => a.id === assetId);
   if (!pa) return null;
 
-  if (pa.type !== 'image' && pa.type !== 'video' && pa.type !== 'audio') return null;
+  if (pa.type !== 'image' && pa.type !== 'video' && pa.type !== 'audio' && pa.type !== 'model3d') return null;
 
   return {
     id: pa.id,
     name: pa.name,
-    type: pa.type as 'image' | 'video' | 'audio',
+    type: pa.type as 'image' | 'video' | 'audio' | 'model3d',
     naturalWidth: pa.naturalWidth ?? 100,
     naturalHeight: pa.naturalHeight ?? 100,
     duration: pa.duration,

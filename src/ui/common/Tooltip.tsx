@@ -1,43 +1,107 @@
 import React,{useState,useRef,useCallback,useEffect} from 'react';
+import {createPortal} from 'react-dom';
 
 type Pos = 'top'|'bottom'|'left'|'right';
 
 interface Props{content:string;position?:Pos;delay?:number;children:React.ReactElement}
 
-export const Tooltip:React.FC<Props> = ({content,position='top',delay=600,children})=>{
-  const [visible,setVisible]=useState(false);
-  const timer=useRef<ReturnType<typeof setTimeout> | null>(null);
-  const show=useCallback(()=>{timer.current=setTimeout(()=>setVisible(true),delay)},[delay]);
-  const hide=useCallback(()=>{if(timer.current)clearTimeout(timer.current);setVisible(false)},[]);
-  useEffect(()=>()=>{if(timer.current)clearTimeout(timer.current)},[]);
+/** Gap between the trigger element and the tooltip popup. */
+const GAP = 8;
 
-  const posClass:Record<Pos,string> = {
-    top:    'bottom-full left-1/2 -translate-x-1/2 mb-2',
-    bottom: 'top-full left-1/2 -translate-x-1/2 mt-2',
-    left:   'right-full top-1/2 -translate-y-1/2 mr-2',
-    right:  'left-full top-1/2 -translate-y-1/2 ml-2',
+/** Read tooltip preferences from localStorage (cached once per session). */
+let _prefsCached: {enabled: boolean; delay: number} | null = null;
+function getTooltipPrefs() {
+  if (_prefsCached) return _prefsCached;
+  _prefsCached = {
+    enabled: localStorage.getItem('pref_showTooltips') !== 'false',
+    delay: Number(localStorage.getItem('pref_tooltipDelay') ?? 600),
+  };
+  return _prefsCached;
+}
+/** Call this when preferences change so the cache refreshes. */
+export function invalidateTooltipPrefs() { _prefsCached = null; }
+
+export const Tooltip:React.FC<Props> = ({content,position='top',delay,children})=>{
+  const [visible,setVisible]=useState(false);
+  const [coords,setCoords]=useState<{top:number;left:number}>({top:0,left:0});
+  const timer=useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wrapperRef=useRef<HTMLSpanElement>(null);
+
+  // Merge user preference delay with the component-level delay prop.
+  // The component prop (from ToolButton etc.) takes precedence if explicitly provided,
+  // otherwise the user preference is used.
+  const prefs = getTooltipPrefs();
+  const effectiveDelay = delay !== undefined ? delay : prefs.delay;
+
+  const show=useCallback(()=>{
+    if(timer.current)clearTimeout(timer.current);
+    if (!prefs.enabled) return;
+    timer.current=setTimeout(()=>{
+      if(!wrapperRef.current)return;
+      const rect=wrapperRef.current.getBoundingClientRect();
+      const cx=rect.left+rect.width/2;
+      const cy=rect.top+rect.height/2;
+
+      switch(position){
+        case 'top':
+          setCoords({top:rect.top-GAP,left:cx});
+          break;
+        case 'bottom':
+          setCoords({top:rect.bottom+GAP,left:cx});
+          break;
+        case 'left':
+          setCoords({top:cy,left:rect.left-GAP});
+          break;
+        case 'right':
+          setCoords({top:cy,left:rect.right+GAP});
+          break;
+      }
+      setVisible(true);
+    },delay);
+  },[effectiveDelay, position, prefs.enabled]);
+
+  const hide=useCallback(()=>{
+    if(timer.current)clearTimeout(timer.current);
+    setVisible(false);
+  },[]);
+
+  // Cleanup on unmount
+  useEffect(()=>()=>{
+    if(timer.current)clearTimeout(timer.current);
+  },[]);
+
+  // Position offsets for centering
+  const offsetX=position==='top'||position==='bottom'?'-50%':'0';
+  const offsetY=position==='left'||position==='right'?'-50%':'0';
+  const translateMap:Record<Pos,string> = {
+    top:    `translate(${offsetX}, 0)`,
+    bottom: `translate(${offsetX}, 0)`,
+    left:   `translate(0, ${offsetY})`,
+    right:  `translate(0, ${offsetY})`,
   };
 
   return(
-    <span className="relative inline-flex" onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}>
-      <span>{children}</span>
-      {visible&&(
+    <span
+      ref={wrapperRef}
+      className="tooltip-wrapper"
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onFocus={show}
+      onBlur={hide}
+    >
+      {children}
+      {visible && createPortal(
         <span
-          className={`absolute z-tooltip pointer-events-none whitespace-nowrap ${posClass[position]}`}
+          className="tooltip-popup portal"
           style={{
-            background: 'var(--color-panel-raised)',
-            color: 'var(--color-text-primary)',
-            fontSize: 'var(--font-size-sm)',
-            padding: '6px 10px',
-            borderRadius: 'var(--radius-sm)',
-            boxShadow: 'var(--shadow-tooltip)',
-            border: '1px solid var(--color-border)',
-            letterSpacing: '0.01em',
-            fontWeight: 500,
+            top: coords.top,
+            left: coords.left,
+            transform: translateMap[position],
           }}
         >
-          {content}
-        </span>
+          <span className="tooltip-content">{content}</span>
+        </span>,
+        document.body,
       )}
     </span>
   );

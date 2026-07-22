@@ -1,0 +1,7 @@
+import type { EffectModule } from './types';import { def, param } from './types';
+const FRAG=`precision highp float;uniform sampler2D uTexture;uniform float uAmount;uniform float uAngle;uniform float uChromatic;varying vec2 vUv;void main(){vec4 c=texture2D(uTexture,vUv);float rad=uAngle*3.14159/180.0;vec2 dir=vec2(cos(rad),sin(rad))*uAmount/500.0;vec3 col=vec3(0.0);float tot=0.0;for(int i=-12;i<=12;i++){float fi=float(i);float w=exp(-0.5*fi*fi/9.0);vec2 off=dir*fi;vec2 rUv=clamp(vUv+off*(1.0+uChromatic),0.0,1.0);vec2 gUv=clamp(vUv+off,0.0,1.0);vec2 bUv=clamp(vUv+off*(1.0-uChromatic),0.0,1.0);col.r+=texture2D(uTexture,rUv).r*w;col.g+=texture2D(uTexture,gUv).g*w;col.b+=texture2D(uTexture,bUv).b*w;tot+=w;}gl_FragColor=vec4(col/tot,c.a);}`;
+export const defocusPrismEffect:EffectModule={definition:def('defocusPrism','Defocus Prism','blurSharpen','Chromatic defocus blur with independent color dispersion.',1,[
+param({id:'amount',name:'Amount',value:5,defaultValue:5,min:0,max:50,step:0.5,uniform:'uAmount'}),
+param({id:'angle',name:'Angle',value:0,defaultValue:0,min:-180,max:180,step:1,uniform:'uAngle'}),
+param({id:'chromatic',name:'Chromatic',value:0.3,defaultValue:0.3,min:-1,max:1,step:0.01,uniform:'uChromatic'}),
+]),fragmentShader:FRAG,};

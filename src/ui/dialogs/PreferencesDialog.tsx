@@ -7,6 +7,7 @@ import React, { useState } from 'react';
 import { getHardwareProfile, redetectHardware, type HardwareConfig } from '../../config/HardwareProfile';
 import { StorageManager } from '../../storage/StorageManager';
 import { useRecentProjectsStore } from '../../state/recentProjectsStore';
+import { useViewportStore } from '../../state/viewportStore';
 import { autoSave } from '../../storage/AutoSave';
 import { themeManager } from '../../styles/ThemeManager';
 import { alertConfirm, alertPrompt } from '../../state/alertModalStore';
@@ -132,11 +133,18 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
   // Persisted settings (load from localStorage on mount, save on change)
   const [uiScale, setUiScale] = useState(() => Number(localStorage.getItem('pref_uiScale') ?? 100));
   const [showTooltips, setShowTooltips] = useState(() => localStorage.getItem('pref_showTooltips') !== 'false');
+  const [tooltipDelay, setTooltipDelay] = useState(() => Number(localStorage.getItem('pref_tooltipDelay') ?? 600));
   const [confirmDangerous, setConfirmDangerous] = useState(() => localStorage.getItem('pref_confirmDangerous') !== 'false');
   const [showGrid, setShowGrid] = useState(() => localStorage.getItem('pref_showGrid') !== 'false');
   const [showRulers, setShowRulers] = useState(() => localStorage.getItem('pref_showRulers') !== 'false');
   const [snapThreshold, setSnapThreshold] = useState(() => Number(localStorage.getItem('pref_snapThreshold') ?? 8));
   const [zoomToCursor, setZoomToCursor] = useState(() => localStorage.getItem('pref_zoomToCursor') !== 'false');
+  const [showTransparencyCheckerboard, setShowTransparencyCheckerboard] = useState(
+    () => localStorage.getItem('pref_showTransparencyCheckerboard') === 'true',
+  );
+  const [outsideBgStyle, setOutsideBgStyle] = useState<'gradient' | 'dark' | 'checkerboard'>(
+    () => (localStorage.getItem('pref_outsideBgStyle') as any) ?? 'gradient',
+  );
   const [exportFormat, setExportFormat] = useState(localStorage.getItem('pref_exportFormat') ?? 'mp4');
   const [exportQuality, setExportQuality] = useState(localStorage.getItem('pref_exportQuality') ?? 'high');
 
@@ -202,8 +210,8 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="flex bg-panel border border-border rounded-lg shadow-2xl max-h-[80vh]"
-        style={{ width: 680 }}
+      <div className="flex bg-panel border border-border rounded-lg shadow-2xl"
+        style={{ width: 680, height: 560 }}
         onClick={(e) => e.stopPropagation()}>
         
         {/* Sidebar */}
@@ -254,6 +262,15 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
                       <span style={labelStyle}>Show Tooltips</span>
                       <input type="checkbox" checked={showTooltips} onChange={e => { const v = e.target.checked; setShowTooltips(v); persist('pref_showTooltips', v); }} className="accent-accent" />
                     </div>
+                    {showTooltips && (
+                      <div className="flex items-center justify-between">
+                        <span style={labelStyle}>Tooltip Delay</span>
+                        <div className="flex items-center gap-2">
+                          <input type="range" min={100} max={2000} step={50} value={tooltipDelay} onChange={e => { const v = Number(e.target.value); setTooltipDelay(v); persist('pref_tooltipDelay', v); }} className="w-24 accent-accent" />
+                          <span style={valueStyle} className="w-12 text-right">{tooltipDelay}ms</span>
+                        </div>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between">
                       <span style={labelStyle}>Confirm Dangerous Actions</span>
                       <input type="checkbox" checked={confirmDangerous} onChange={e => { const v = e.target.checked; setConfirmDangerous(v); persist('pref_confirmDangerous', v); }} className="accent-accent" />
@@ -460,6 +477,47 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
                     </div>
                   </div>
                   <div className="flex items-center justify-between"><span style={labelStyle}>Zoom to Cursor</span><input type="checkbox" checked={zoomToCursor} onChange={e => { const v = e.target.checked; setZoomToCursor(v); persist('pref_zoomToCursor', v); }} className="accent-accent" /></div>
+                  <div className="flex items-center justify-between">
+                    <span style={labelStyle}>Transparency Checkerboard</span>
+                    <input
+                      type="checkbox"
+                      checked={showTransparencyCheckerboard}
+                      onChange={e => {
+                        const v = e.target.checked;
+                        setShowTransparencyCheckerboard(v);
+                        useViewportStore.getState().setShowTransparencyCheckerboard(v);
+                        persist('pref_showTransparencyCheckerboard', v);
+                      }}
+                      className="accent-accent"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+            {activeTab === 'viewport' && (
+              <div style={sectionStyle}>
+                <div className="text-ui-xs font-medium text-text-primary mb-2">Outside Background</div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span style={labelStyle}>Style</span>
+                    <select
+                      value={outsideBgStyle}
+                      onChange={e => {
+                        const v = e.target.value;
+                        setOutsideBgStyle(v as any);
+                        useViewportStore.getState().setOutsideBgStyle(v as any);
+                        persist('pref_outsideBgStyle', v);
+                      }}
+                      className="text-ui-xs bg-surface border border-border rounded-sm px-1 py-0.5 text-text-primary"
+                    >
+                      <option value="gradient">Dark Gradient (default)</option>
+                      <option value="dark">Solid Dark</option>
+                      <option value="checkerboard">Checkerboard</option>
+                    </select>
+                  </div>
+                  <p className="text-[10px] text-text-tertiary mt-1">
+                    Controls the area outside the composition rectangle.
+                  </p>
                 </div>
               </div>
             )}

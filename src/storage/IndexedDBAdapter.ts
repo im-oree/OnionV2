@@ -2,7 +2,7 @@
  * IndexedDBAdapter — Fallback storage using IndexedDB.
  * Used when the File System Access API is unavailable (Firefox, older browsers).
  */
-import type { StorageAdapter, StorageCapabilities, ProjectHandle, WorkspaceHandle, AssetRef, ProjectMetadata, SerializedProject, SaveOptions } from './StorageAdapter';
+import type { StorageAdapter, StorageCapabilities, ProjectHandle, WorkspaceHandle, AssetRef, ProjectMetadata, SerializedProject, SaveOptions, AssetCategory } from './StorageAdapter';
 
 const DB_NAME = 'OnionProjects';
 const DB_VERSION = 1;
@@ -61,13 +61,35 @@ export class IndexedDBAdapter implements StorageAdapter {
 
   async getWorkspace(): Promise<WorkspaceHandle | null> {
     const db = await this.openDB();
-    return new Promise((resolve) => {
+    // Check for a persisted workspace first
+    const persisted = await new Promise<WorkspaceHandle | null>((resolve) => {
       const tx = db.transaction('metadata', 'readonly');
       const store = tx.objectStore('metadata');
       const req = store.get('workspace');
       req.onsuccess = () => resolve(req.result?.value ?? null);
       req.onerror = () => resolve(null);
     });
+    if (persisted) return persisted;
+    // No persisted workspace – create a default one so the app
+    // can work without requiring the user to pick a physical folder.
+    const ws: WorkspaceHandle = {
+      id: 'default_workspace',
+      name: 'Default Workspace',
+      internal: null,
+    };
+    // Persist it so subsequent calls return immediately
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction('metadata', 'readwrite');
+        const store = tx.objectStore('metadata');
+        store.put({ key: 'workspace', value: ws });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch {
+      // Non-critical — workspace will be re-created on next call
+    }
+    return ws;
   }
 
   async listProjects(): Promise<ProjectHandle[]> {
@@ -142,20 +164,32 @@ export class IndexedDBAdapter implements StorageAdapter {
     });
   }
 
-  async saveAsset(blob: Blob, filename: string, projectHandle: ProjectHandle): Promise<AssetRef> {
+  private static inferCategory(mimeType: string, filename: string): AssetCategory {
+    if (mimeType.startsWith('image/')) return 'images';
+    if (mimeType.startsWith('audio/')) return 'audio';
+    if (mimeType.startsWith('video/')) return 'video';
+    const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+    if (['ttf', 'otf', 'woff', 'woff2'].includes(ext)) return 'fonts';
+    if (['glb', 'gltf', 'obj', 'ply', 'stl', 'fbx'].includes(ext)) return '3d-models';
+    return 'images';
+  }
+
+  async saveAsset(blob: Blob, filename: string, projectHandle: ProjectHandle, category?: AssetCategory): Promise<AssetRef> {
     const db = await this.openDB();
-    const id = `asset_${projectHandle.id}_${filename}`;
+    const cat = category ?? IndexedDBAdapter.inferCategory(blob.type || '', filename);
+    const id = `asset_${projectHandle.id}_${cat}_${filename}`;
     const ref: AssetRef = {
       id,
       filename,
       mimeType: blob.type || 'application/octet-stream',
       size: blob.size,
-      relativePath: filename,
+      relativePath: `Media/${cat}/${filename}`,
+      category: cat,
     };
     return new Promise((resolve, reject) => {
       const tx = db.transaction('assets', 'readwrite');
       const store = tx.objectStore('assets');
-      store.put({ id, projectId: projectHandle.id, filename, blob, mimeType: blob.type, size: blob.size });
+      store.put({ id, projectId: projectHandle.id, filename, blob, mimeType: blob.type, size: blob.size, category: cat });
       tx.oncomplete = () => resolve(ref);
       tx.onerror = () => reject(tx.error);
     });

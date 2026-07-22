@@ -323,7 +323,7 @@ const KeyframeDiamond: React.FC<{
   const onClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (e.shiftKey || e.ctrlKey || e.metaKey) useKeyframeStore.getState().toggleKeyframeSelection(kf.id);
-    else if (!isSelected) useKeyframeStore.getState().selectKeyframe(kf.id, false);
+    else useKeyframeStore.getState().selectKeyframe(kf.id, false);
   };
 
   return (

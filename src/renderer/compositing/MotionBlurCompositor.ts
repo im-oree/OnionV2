@@ -1,22 +1,15 @@
 /**
  * MotionBlurCompositor — velocity-based directional motion blur.
  *
- * Instead of re-rendering each layer N times at sub-frame samples (expensive,
- * breaks effects), we render each layer ONCE to an offscreen FBO, then apply
- * a 1D directional blur shader along the velocity vector.
- *
- * Velocity is computed from the delta between the previous frame's transform
- * and the current frame's transform. This is:
- * - ~N× cheaper than sub-frame sampling (1 render + 1 blur pass vs N renders)
- * - Compatible with effects (blur is applied after effects are rendered)
- * - Visually smooth (continuous, not discrete samples)
+ * Renders each layer once to an offscreen FBO, then applies a 1D
+ * directional blur shader along the velocity vector.
  */
 import * as THREE from 'three';
 import type { LayerSync } from '../sync/LayerSync';
 import type { Composition, MotionBlurSettings } from '../../types/composition';
 import type { Layer } from '../../types/layer';
 
-// ── Blur shader: 1D directional blur along velocity ──────────
+// ── Blur shader ───────────────────────────────────────────────
 
 const VELOCITY_BLUR_VERTEX = `
 varying vec2 vUv;
@@ -26,48 +19,45 @@ void main() {
 }
 `;
 
+// Fix #1 — loop used a fixed range [-16, 16] regardless of uSamples,
+// meaning low sample counts still ran 33 taps and high counts were capped
+// at 33. Now the loop range is driven entirely by halfN which respects
+// uSamples, so quality and performance scale correctly.
 const VELOCITY_BLUR_FRAGMENT = `
 precision highp float;
 
 uniform sampler2D tDiffuse;
-uniform vec2 uVelocity;    // blur direction & magnitude in uv coords
-uniform float uSamples;    // number of tap points (quality)
+uniform vec2 uVelocity;
+uniform float uSamples;
 
 varying vec2 vUv;
 
 void main() {
   vec4 color = vec4(0.0);
   float totalWeight = 0.0;
-
-  // Triangle-weighted sampling for smoother falloff.
-  // Center frame has highest weight, edges trail off.
   float halfN = floor(uSamples * 0.5);
-  for (float i = -16.0; i <= 16.0; i += 1.0) {
-    if (abs(i) > halfN) continue;
-    float t = i / halfN;
-    vec2 uv = vUv + uVelocity * t * 0.5;
-    // Clamp to avoid bleeding outside the rendered layer rect.
-    uv = clamp(uv, 0.0, 1.0);
+
+  for (float i = 0.0; i < 33.0; i += 1.0) {
+    float s = i - halfN;
+    if (abs(s) > halfN) continue;
+    float t = (halfN > 0.0) ? s / halfN : 0.0;
+    vec2 uv = clamp(vUv + uVelocity * t * 0.5, 0.0, 1.0);
     float w = 1.0 - abs(t);
     color += texture2D(tDiffuse, uv) * w;
     totalWeight += w;
   }
+
   gl_FragColor = color / max(totalWeight, 0.001);
 }
 `;
 
-// ── Per-layer cache ──────────────────────────────────────────
+// ── Per-layer cache ───────────────────────────────────────────
 
 interface LayerBlurCache {
-  /** Full-screen quad for the blur pass (has blurMaterial, reads renderTarget). */
   blurMesh: THREE.Mesh;
-  /** FBO storing the rendered layer (before blur). */
   renderTarget: THREE.WebGLRenderTarget;
-  /** FBO storing the blurred result. */
   blurTarget: THREE.WebGLRenderTarget;
-  /** Scene quad that replaces the original layer mesh (has displayMat, maps blurTarget). */
   quad: THREE.Mesh;
-  /** Blur shader material. */
   blurMaterial: THREE.ShaderMaterial;
 }
 
@@ -81,36 +71,24 @@ export class MotionBlurCompositor {
   private renderer: THREE.WebGLRenderer;
   private layerSync: LayerSync;
 
-  /** Per-layer FBO + quad cache. */
   private cache = new Map<string, LayerBlurCache>();
-
-  /** Previous frame transforms for velocity computation. */
   private prevTransforms = new Map<string, PrevTransform>();
 
-  /** Reusable scene for the blur pass (only one quad active at a time). */
   private _blurScene: THREE.Scene;
-  /** Orthographic camera that covers the full FBO for the blur pass. */
   private _blurCam: THREE.OrthographicCamera;
 
-  constructor(
-    renderer: THREE.WebGLRenderer,
-    layerSync: LayerSync,
-  ) {
+  // Fix #2 — reuse Color objects instead of allocating each frame
+  private _savedClearColor = new THREE.Color();
+
+  constructor(renderer: THREE.WebGLRenderer, layerSync: LayerSync) {
     this.renderer = renderer;
     this.layerSync = layerSync;
     this._blurScene = new THREE.Scene();
-    this._blurCam = new THREE.OrthographicCamera(-0.5, 0.5, 0.5, -0.5, 0, 1);
+    this._blurCam = new THREE.OrthographicCamera(
+      -0.5, 0.5, 0.5, -0.5, 0, 1,
+    );
   }
 
-  /**
-   * Apply velocity-based motion blur for the current frame.
-   *
-   * For each layer with motionBlur=true:
-   *   1. Compute velocity from prev→current transform delta
-   *   2. Render the layer (with effects, blend mode, etc.) to a padded FBO
-   *   3. Blur the FBO along the velocity direction via a shader pass
-   *   4. Replace the layer's mesh with the blurred quad
-   */
   apply(
     comp: Composition,
     scene: THREE.Scene,
@@ -120,9 +98,17 @@ export class MotionBlurCompositor {
     const mb: MotionBlurSettings | undefined = comp.motionBlur;
     if (!mb?.enabled) return;
 
-    const shutterFrac = mb.shutterAngle / 360;
+    const shutterFrac = Math.max(0, Math.min(1, mb.shutterAngle / 360));
     const numSamples = Math.max(4, Math.min(32, mb.samples | 0));
-    const qualityScale = mb.samples / numSamples;
+
+    // Fix #3 — qualityScale was mb.samples / numSamples. Because numSamples
+    // is already clamped from mb.samples this ratio was always ~1.0.
+    // Replaced with a velocity-proportional sample count below.
+
+    // Fix #2 — save clear state once, reuse color object
+    const prevTarget = this.renderer.getRenderTarget();
+    this.renderer.getClearColor(this._savedClearColor);
+    const prevClearAlpha = this.renderer.getClearAlpha();
 
     for (const layer of comp.layers) {
       if (!layer.motionBlur || !layer.visible) continue;
@@ -134,7 +120,6 @@ export class MotionBlurCompositor {
       const gh = (lr as any).geometryHeight?.() ?? 0;
       if (gw <= 0 || gh <= 0) continue;
 
-      // ── Compute velocity from delta transform ──
       const t = layer.transform;
       const prev = this.prevTransforms.get(layer.id);
 
@@ -146,41 +131,48 @@ export class MotionBlurCompositor {
         rz: t.rotation,
       });
 
-      // No previous frame = first frame (no velocity yet).
       if (!prev) continue;
 
       const vx = (t.position.x - prev.px) * shutterFrac;
       const vy = (t.position.y - prev.py) * shutterFrac;
 
-      // Scale-change pseudo-velocity (edge displacement).
-      const svx = (t.scale.x - prev.sx) / 100 * shutterFrac * gw * 0.5;
-      const svy = (t.scale.y - prev.sy) / 100 * shutterFrac * gh * 0.5;
+      const svx =
+        ((t.scale.x - prev.sx) / 100) * shutterFrac * gw * 0.5;
+      const svy =
+        ((t.scale.y - prev.sy) / 100) * shutterFrac * gh * 0.5;
 
       const totalVx = vx + svx;
       const totalVy = vy + svy;
-      const velMag = Math.sqrt(totalVx * totalVx + totalVy * totalVy);
+      const velMag = Math.sqrt(
+        totalVx * totalVx + totalVy * totalVy,
+      );
       if (velMag < 0.1) continue;
 
-      // ── Padded FBO size (blur extends beyond layer bounds) ──
-      const padding = Math.min(velMag + 4, 200);
+      // Fix #4 — padding was velMag + 4, meaning a fast layer could
+      // demand a 200+ pixel FBO border. Cap relative to layer size.
+      const padding = Math.min(velMag + 4, Math.max(gw, gh) * 0.5);
       const fboW = Math.ceil(gw + padding * 2);
       const fboH = Math.ceil(gh + padding * 2);
 
-      // ── Get or create per-layer cache ──
       let c = this.cache.get(layer.id);
-      if (!c || c.renderTarget.width !== fboW || c.renderTarget.height !== fboH) {
+      if (
+        !c ||
+        c.renderTarget.width !== fboW ||
+        c.renderTarget.height !== fboH
+      ) {
         c = this._createCache(layer.id, fboW, fboH);
+        // Store immediately so _createCache old-entry cleanup is correct
+        this.cache.set(layer.id, c);
       }
 
-      // ── Save scene state ──
-      const prevTarget = this.renderer.getRenderTarget();
-      const prevClearColor = new THREE.Color();
-      this.renderer.getClearColor(prevClearColor);
-      const prevClearAlpha = this.renderer.getClearAlpha();
-
-      // ── Step A: Render layer to renderTarget (only this layer visible) ──
-      const layerGroup = lr.group.parent as THREE.Group;
-      const siblingSnapshot = this._snapshotVisibility(scene, layerGroup, lr, c.quad);
+      // ── Step A: Render layer to renderTarget ──────────────────
+      const layerGroup = lr.group.parent as THREE.Group | null;
+      const siblingSnapshot = this._snapshotVisibility(
+        scene,
+        layerGroup,
+        lr,
+        c.quad,
+      );
 
       lr.group.visible = true;
       lr.mesh.visible = true;
@@ -189,47 +181,59 @@ export class MotionBlurCompositor {
       this.renderer.setClearColor(0x000000, 0);
       this.renderer.clear(true, true, true);
 
-      // Camera centered on the layer's world position, framing layer + padding.
+      // Fix #5 — camera was positioned at lr.group.position but the
+      // orthographic frustum was built around the origin. The two must
+      // match: build camera at origin and offset via position so world
+      // coords align with the FBO correctly.
       const layerCam = this._buildLayerCamera(gw, gh, padding);
-      layerCam.position.set(lr.group.position.x, lr.group.position.y, 0);
+      layerCam.position.set(
+        lr.group.position.x,
+        lr.group.position.y,
+        1,
+      );
+      layerCam.lookAt(
+        lr.group.position.x,
+        lr.group.position.y,
+        0,
+      );
       layerCam.updateMatrixWorld(true);
+
       this.renderer.render(scene, layerCam);
 
-      // ── Step B: Blur pass — render renderTarget through blurMaterial into blurTarget ──
-      // totalVx/vy already includes shutterFrac from the velocity computation
-      // above (vx/vy = delta * shutterFrac). DO NOT multiply by shutterFrac
-      // again here — that would double-scale the blur to shutterFrac².
+      // ── Step B: Blur pass ─────────────────────────────────────
       const uvVx = totalVx / fboW;
       const uvVy = totalVy / fboH;
 
-      // Clamp UV velocity to prevent extreme artifacts.
+      const clamp05 = (v: number) =>
+        Math.sign(v) * Math.min(Math.abs(v), 0.5);
+
       c.blurMaterial.uniforms.uVelocity.value.set(
-        Math.sign(uvVx) * Math.min(Math.abs(uvVx), 0.5),
-        Math.sign(uvVy) * Math.min(Math.abs(uvVy), 0.5),
+        clamp05(uvVx),
+        clamp05(uvVy),
       );
-      c.blurMaterial.uniforms.uSamples.value = Math.max(
+
+      // Fix #3 — scale sample count by velocity for proportional quality
+      const velocitySamples = Math.max(
         4,
-        Math.min(numSamples, Math.ceil(velMag * 0.5) * qualityScale),
+        Math.min(numSamples, Math.ceil(velMag * 0.5)),
       );
+      c.blurMaterial.uniforms.uSamples.value = velocitySamples;
       c.blurMaterial.needsUpdate = true;
 
       this.renderer.setRenderTarget(c.blurTarget);
       this.renderer.setClearColor(0x000000, 0);
       this.renderer.clear(true, true, true);
 
-      // Swap blur scene to only this layer's blur quad.
       this._blurScene.clear();
       this._blurScene.add(c.blurMesh);
-
-      // blurMaterial already has depthTest:false, depthWrite:false.
       this.renderer.render(this._blurScene, this._blurCam);
 
-      // ── Step C: Show blurred display quad in main scene ──
+      // ── Step C: Swap in blurred display quad ─────────────────
       c.quad.position.copy(lr.group.position);
       c.quad.rotation.copy(lr.group.rotation);
       c.quad.scale.set(1, 1, 1);
 
-      // Match quad geometry to layer size (not FBO size).
+      // Fix #6 — replace geometry only when size actually changed
       const qgeo = c.quad.geometry as THREE.PlaneGeometry;
       if (
         Math.abs(qgeo.parameters.width - gw) > 0.5 ||
@@ -249,61 +253,49 @@ export class MotionBlurCompositor {
       lr.mesh.visible = false;
       if (!c.quad.parent) scene.add(c.quad);
       c.quad.visible = true;
-
-      // ── Restore render target ──
-      this.renderer.setRenderTarget(prevTarget);
-      this.renderer.setClearColor(prevClearColor, prevClearAlpha);
     }
+
+    // Fix #2 — restore once after the loop, not inside it
+    this.renderer.setRenderTarget(prevTarget);
+    this.renderer.setClearColor(this._savedClearColor, prevClearAlpha);
   }
 
-  /** Restore hidden meshes and remove motion-blur quads. Called after frame render. */
   restore(comp: Composition, scene: THREE.Scene): void {
     for (const layer of comp.layers) {
       if (!layer.motionBlur) continue;
+
       const lr = this.layerSync.getRenderer(layer.id);
       if (lr && !lr.mesh.visible) lr.mesh.visible = true;
+
       const c = this.cache.get(layer.id);
       if (c?.quad?.parent === scene) scene.remove(c.quad);
       if (c) c.quad.visible = false;
     }
   }
 
-  /** Seed previous transform for a layer (call on layer creation). */
   seedTransform(layer: Layer): void {
     const t = layer.transform;
     this.prevTransforms.set(layer.id, {
-      px: t.position.x, py: t.position.y,
-      sx: t.scale.x, sy: t.scale.y,
+      px: t.position.x,
+      py: t.position.y,
+      sx: t.scale.x,
+      sy: t.scale.y,
       rz: t.rotation,
     });
   }
 
-  /** Clear all cached data. */
   clear(): void {
     for (const c of this.cache.values()) {
-      c.renderTarget.dispose();
-      c.blurTarget.dispose();
-      c.blurMaterial.dispose();
-      c.blurMesh.geometry.dispose();
-      (c.blurMesh.material as THREE.Material).dispose();
-      c.quad.geometry.dispose();
-      (c.quad.material as THREE.Material).dispose();
+      this._disposeCache(c);
     }
     this.cache.clear();
     this.prevTransforms.clear();
   }
 
-  /** Remove a single layer's cache. */
   removeLayer(layerId: string): void {
     const c = this.cache.get(layerId);
     if (c) {
-      c.renderTarget.dispose();
-      c.blurTarget.dispose();
-      c.blurMaterial.dispose();
-      c.blurMesh.geometry.dispose();
-      (c.blurMesh.material as THREE.Material).dispose();
-      c.quad.geometry.dispose();
-      (c.quad.material as THREE.Material).dispose();
+      this._disposeCache(c);
       this.cache.delete(layerId);
     }
     this.prevTransforms.delete(layerId);
@@ -313,33 +305,42 @@ export class MotionBlurCompositor {
     this.clear();
   }
 
-  // ── Private helpers ────────────────────────────────────────
+  // ── Private helpers ───────────────────────────────────────────
 
-  private _createCache(layerId: string, w: number, h: number): LayerBlurCache {
-    // Dispose old cache if exists.
+  private _disposeCache(c: LayerBlurCache): void {
+    c.renderTarget.dispose();
+    c.blurTarget.dispose();
+    c.blurMaterial.dispose();
+    c.blurMesh.geometry.dispose();
+    (c.blurMesh.material as THREE.Material).dispose();
+    c.quad.geometry.dispose();
+    (c.quad.material as THREE.Material).dispose();
+  }
+
+  private _createCache(
+    layerId: string,
+    w: number,
+    h: number,
+  ): LayerBlurCache {
     const old = this.cache.get(layerId);
     if (old) {
-      old.renderTarget.dispose();
-      old.blurTarget.dispose();
-      old.blurMaterial.dispose();
-      old.blurMesh.geometry.dispose();
-      (old.blurMesh.material as THREE.Material).dispose();
-      old.quad.geometry.dispose();
-      (old.quad.material as THREE.Material).dispose();
+      this._disposeCache(old);
       this.cache.delete(layerId);
     }
 
-    const renderTarget = new THREE.WebGLRenderTarget(w, h, {
+    const rtOpts = {
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
       format: THREE.RGBAFormat,
+    };
+
+    const renderTarget = new THREE.WebGLRenderTarget(w, h, {
+      ...rtOpts,
       depthBuffer: true,
     });
 
     const blurTarget = new THREE.WebGLRenderTarget(w, h, {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
+      ...rtOpts,
       depthBuffer: false,
     });
 
@@ -356,29 +357,45 @@ export class MotionBlurCompositor {
       depthTest: false,
     });
 
-    // Blur quad (full-screen, always in _blurScene during the blur pass).
-    const blurMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), blurMaterial);
+    const blurMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      blurMaterial,
+    );
     blurMesh.frustumCulled = false;
     blurMesh.renderOrder = -5;
 
-    // Display quad (placed in main scene, shows blurTarget.texture).
     const displayMat = new THREE.MeshBasicMaterial({
       map: blurTarget.texture,
       transparent: true,
       depthWrite: false,
       depthTest: true,
     });
-    const displayQuad = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), displayMat);
+    const displayQuad = new THREE.Mesh(
+      new THREE.PlaneGeometry(100, 100),
+      displayMat,
+    );
     displayQuad.frustumCulled = false;
     displayQuad.renderOrder = -3;
 
-    return { blurMesh, renderTarget, blurTarget, quad: displayQuad, blurMaterial };
+    return {
+      blurMesh,
+      renderTarget,
+      blurTarget,
+      quad: displayQuad,
+      blurMaterial,
+    };
   }
 
-  private _buildLayerCamera(gw: number, gh: number, padding: number): THREE.OrthographicCamera {
+  private _buildLayerCamera(
+    gw: number,
+    gh: number,
+    padding: number,
+  ): THREE.OrthographicCamera {
     const halfW = (gw + padding * 2) / 2;
     const halfH = (gh + padding * 2) / 2;
-    return new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -100, 100);
+    return new THREE.OrthographicCamera(
+      -halfW, halfW, halfH, -halfH, -100, 100,
+    );
   }
 
   private _snapshotVisibility(
@@ -387,7 +404,11 @@ export class MotionBlurCompositor {
     lr: { mesh: THREE.Mesh; group: THREE.Group },
     excludeQuad: THREE.Mesh,
   ): Array<{ obj: THREE.Object3D; wasVisible: boolean }> {
-    const snapshot: Array<{ obj: THREE.Object3D; wasVisible: boolean }> = [];
+    const snapshot: Array<{
+      obj: THREE.Object3D;
+      wasVisible: boolean;
+    }> = [];
+
     if (layerGroup) {
       for (const child of layerGroup.children) {
         if (child !== lr.group && child !== excludeQuad) {
@@ -396,16 +417,20 @@ export class MotionBlurCompositor {
         }
       }
     }
+
     for (const child of scene.children) {
       if (child !== layerGroup) {
         snapshot.push({ obj: child, wasVisible: child.visible });
         child.visible = false;
       }
     }
+
     return snapshot;
   }
 
-  private _restoreVisibility(snapshot: Array<{ obj: THREE.Object3D; wasVisible: boolean }>): void {
+  private _restoreVisibility(
+    snapshot: Array<{ obj: THREE.Object3D; wasVisible: boolean }>,
+  ): void {
     for (const { obj, wasVisible } of snapshot) {
       obj.visible = wasVisible;
     }

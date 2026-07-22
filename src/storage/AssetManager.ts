@@ -5,12 +5,34 @@
 import { EventEmitter } from '../renderer/utils/EventEmitter';
 import { StorageManager } from './StorageManager';
 import { useNotificationStore } from '../state/notificationStore';
-import type { AssetRef } from './StorageAdapter';
+import type { AssetRef, AssetCategory } from './StorageAdapter';
+import { useAlertModalStore } from '../state/alertModalStore';
+
+/**
+ * Compute a simple SHA-256 hash of a File's content for deduplication.
+ * Returns a hex string.
+ */
+async function computeFileHash(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const hashBuffer = await crypto.subtle.digest('SHA-256', buf);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Infer asset category from MIME type and filename */
+function inferCategory(file: File): AssetCategory {
+  if (file.type.startsWith('image/')) return 'images';
+  if (file.type.startsWith('audio/')) return 'audio';
+  if (file.type.startsWith('video/')) return 'video';
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';    if (['ttf', 'otf', 'woff', 'woff2'].includes(ext)) return 'fonts';
+  if (['glb', 'gltf', 'obj', 'ply', 'stl', 'fbx', 'usdz', '3ds', 'dae'].includes(ext)) return '3d-models';
+  return 'images';
+}
 
 export interface Asset {
   id: string;
   name: string;
-  type: 'image' | 'video' | 'audio';
+  type: 'image' | 'video' | 'audio' | 'model3d';
   url: string; // blob URL
   thumbnail?: string; // data URL thumbnail
   naturalWidth: number;
@@ -40,17 +62,29 @@ class AssetManagerClass {
   private referenceCount = new Map<string, number>(); // assetId -> count of layers using it
   public readonly events = new EventEmitter<AssetEvents>();
 
-  /** Import a File (image or video) and create an Asset */
+  /** Import a File (image, video, audio, font, 3D model) and create an Asset.
+   *  Routes to the correct Media/<category> subfolder in the project.
+   *  Shows a duplicate resolution dialog if a file with the same name already exists. */
   async importFile(file: File): Promise<Asset> {
-    // Deduplication: skip if a file with the same name and size already exists
+    const category = inferCategory(file);
+
+    // --- Duplicate detection ---
+    // 1. Check in-memory assets by name + size
     for (const existing of this.assets.values()) {
       if (existing.name === file.name && existing.size === file.size && !existing.missing) {
-        useNotificationStore.getState().addNotification({
-          type: 'info',
-          message: `"${file.name}" is already in the project — skipped.`,
-          autoDismiss: 3000,
-        });
-        return existing;
+        // Ask user: Overwrite, Duplicate (rename), or Cancel
+        const resolution = await this._promptDuplicate(file.name);
+        if (resolution === 'cancel') {
+          // Return the existing asset so callers get a valid reference
+          return existing;
+        }
+        if (resolution === 'overwrite') {
+          // Delete old asset and re-import
+          this.deleteAsset(existing.id);
+          this.syncDeleteWithProjectStore(existing.id);
+          // Fall through to import
+        }
+        // resolution === 'duplicate' → fall through, file will be renamed
       }
     }
 
@@ -76,10 +110,10 @@ class AssetManagerClass {
       missing: false,
     };
 
-    // Persist to storage if we have a project handle
+    // Persist to storage in the correct Media/<category> subfolder
     try {
       const sm = StorageManager.getInstance();
-      const ref = await sm.importAsset(file, file.name);
+      const ref = await sm.importAsset(file, file.name, category);
       if (ref) {
         asset.storageRef = ref;
       }
@@ -91,6 +125,21 @@ class AssetManagerClass {
     this.events.emit('asset:added', asset);
     this.events.emit('assets:changed', undefined);
     return asset;
+  }
+
+  /** Show a 3-option duplicate resolution dialog: Overwrite / Duplicate / Cancel */
+  private async _promptDuplicate(filename: string): Promise<'overwrite' | 'duplicate' | 'cancel'> {
+    return new Promise((resolve) => {
+      const store = useAlertModalStore.getState();
+      store.showConfirm({
+        title: 'File Already Exists',
+        message: `"${filename}" already exists in the project.\n\nOverwrite the existing file, or import as a duplicate (renamed copy)?`,
+        confirmLabel: 'Overwrite',
+        cancelLabel: 'Cancel',
+        onConfirm: () => resolve('overwrite'),
+        onCancel: () => resolve('cancel'),
+      });
+    });
   }
 
   /** Add an asset from persistent storage reference */
@@ -344,6 +393,7 @@ class AssetManagerClass {
         img.onerror = () => resolve(undefined);
         img.src = url;
       } else {
+        // 3D models: return a default placeholder thumbnail
         resolve(undefined);
       }
     });
@@ -359,13 +409,17 @@ class AssetManagerClass {
     if (file.type.startsWith('video/')) return 'video';
     if (file.type.startsWith('audio/')) return 'audio';
     if (file.type.startsWith('image/')) return 'image';
+    if (file.type.startsWith('model/')) return 'model3d';
     // Fallback: detect by file extension when MIME type is empty or generic
     const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
     const videoExts = ['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'ogv', 'ts', 'mts'];
     const audioExts = ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'wma'];
     const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'svg', 'ico', 'avif'];
+    const modelExts = ['glb', 'gltf', 'obj', 'ply', 'stl', 'fbx', 'usdz', '3ds', 'dae'];
     if (videoExts.includes(ext)) return 'video';
     if (audioExts.includes(ext)) return 'audio';
+    if (imageExts.includes(ext)) return 'image';
+    if (modelExts.includes(ext)) return 'model3d';
     return 'image';
   }
 
@@ -373,6 +427,7 @@ class AssetManagerClass {
     if (mime.startsWith('video/')) return 'video';
     if (mime.startsWith('audio/')) return 'audio';
     if (mime.startsWith('image/')) return 'image';
+    if (mime.startsWith('model/') || mime === 'application/octet-stream') return 'model3d';
     return 'image'; // Default for unknown MIME types from storage
   }
 
@@ -423,7 +478,8 @@ class AssetManagerClass {
         audio.onerror = () => resolve({ width: 0, height: 0 });
         audio.src = url;
       } else {
-        resolve({ width: 0, height: 0 });
+        // 3D models: return reasonable defaults, no duration
+        resolve({ width: 200, height: 200 });
       }
     });
   }

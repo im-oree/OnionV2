@@ -80,20 +80,171 @@
 .row:hover { background: var(--color-panel-hover) }
 .row.selected { background: var(--color-panel-active); color: var(--color-text-primary) }
 
+/* â”€â”€ TOOLBAR (left rail) â€” SOLID + BORDER â”€â”€ */
+.toolbar-root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 0;
+  overflow-y: auto;
+  user-select: none;
+  height: 100%;
+  background: var(--color-panel);
+  border-right: 1px solid var(--color-border-strong);
+  box-shadow: 1px 0 0 rgba(0,0,0,0.4), inset -1px 0 0 rgba(255,255,255,0.02);
+  gap: 0;
+  position: relative;
+  z-index: 5;
+}
+
+.toolbar-groups {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  width: 100%;
+}
+
+.toolbar-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  width: 100%;
+  padding: 4px 0;
+}
+
+.toolbar-divider {
+  width: 20px;
+  height: 1px;
+  background: var(--color-border-strong);
+  margin: 4px 0;
+  flex-shrink: 0;
+  border-radius: 1px;
+}
+
 .toolbar-btn {
-  width: 34px; height: 34px;
-  display: flex; align-items: center; justify-content: center;
-  border: none; cursor: pointer;
-  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out);
   color: var(--color-text-secondary);
   border-radius: var(--radius-md);
-  margin: 1px 0;
   background: transparent;
+  position: relative;
+  outline: none;
 }
-.toolbar-btn:hover { background: var(--color-panel-hover); color: var(--color-text-primary) }
-.toolbar-btn:active { transform: scale(0.92) }
+.toolbar-btn:hover {
+  background: var(--color-panel-hover);
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
+}
+.toolbar-btn:active {
+  transform: scale(0.9);
+}
 .toolbar-btn.active {
-  background: var(--color-accent-muted); color: var(--color-accent);
+  background: var(--color-accent-muted);
+  color: var(--color-accent);
+  border-color: rgba(88, 101, 255, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(88, 101, 255, 0.25);
+}
+.toolbar-btn.active:hover {
+  background: rgba(88, 101, 255, 0.22);
+}
+
+.toolbar-btn-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.toolbar-btn:hover .toolbar-btn-icon {
+  transform: scale(1.05);
+}
+.toolbar-btn:active .toolbar-btn-icon {
+  transform: scale(0.85);
+}
+
+.toolbar-btn-indicator {
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 16px;
+  border-radius: 0 2px 2px 0;
+  background: var(--color-accent);
+  transition: opacity var(--dur-fast) var(--ease-out);
+  opacity: 1;
+}
+
+.toolbar-btn.active .toolbar-btn-indicator {
+  animation: indicator-pulse 2.4s ease-in-out infinite;
+  box-shadow: 0 0 6px rgba(88, 101, 255, 0.5), 0 0 12px rgba(88, 101, 255, 0.2);
+}
+
+@keyframes indicator-pulse {
+  0%, 100% {
+    box-shadow: 0 0 4px rgba(88, 101, 255, 0.4), 0 0 8px rgba(88, 101, 255, 0.15);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 8px rgba(88, 101, 255, 0.7), 0 0 16px rgba(88, 101, 255, 0.3);
+    opacity: 0.85;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toolbar-btn.active .toolbar-btn-indicator { animation: none; }
+}
+
+/* â”€â”€ Tooltip â”€â”€ */
+.tooltip-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.tooltip-popup.portal {
+  position: fixed;
+  z-index: var(--z-tooltip);
+  pointer-events: none;
+  white-space: nowrap;
+  opacity: 0;
+  animation: tooltip-fade-in 100ms ease-out forwards;
+}
+
+@keyframes tooltip-fade-in {
+  from {
+    opacity: 0;
+    transform: inherit;
+    margin-top: -4px;
+  }
+  to {
+    opacity: 1;
+    transform: inherit;
+    margin-top: 0;
+  }
+}
+
+.tooltip-content {
+  display: block;
+  background: var(--color-panel-raised);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-tooltip);
+  border: 1px solid var(--color-border);
+  letter-spacing: 0.01em;
+  font-weight: 500;
 }
 
 .viewport-grid {
@@ -119,4 +270,41 @@
 }
 .layer-bar-pill:active {
   cursor: grabbing;
+}
+
+/* â”€â”€ Viewport right-rail (Blender-style) â”€â”€ */
+.viewport-rail {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 30;
+  pointer-events: auto;
+}
+.viewport-rail-btn {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(28, 30, 36, 0.85);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.6);
+  cursor: pointer;
+  transition: all 0.12s ease;
+  backdrop-filter: blur(8px);
+}
+.viewport-rail-btn:hover {
+  background: rgba(50, 55, 68, 0.95);
+  color: rgba(255,255,255,0.95);
+  border-color: rgba(255,255,255,0.18);
+}
+.viewport-rail-btn.active {
+  background: rgba(88, 101, 255, 0.25);
+  color: #8b95ff;
+  border-color: rgba(88, 101, 255, 0.45);
 }

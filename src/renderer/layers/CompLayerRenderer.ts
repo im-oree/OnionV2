@@ -26,6 +26,13 @@ export class CompLayerRenderer extends BaseLayerRenderer {
     }
   }
 
+  /** Set texture from a CanvasTexture (used by PreProcessManager baked frames) */
+  setPreBakedTexture(texture: THREE.CanvasTexture): void {
+    const mat = this.material as THREE.MeshBasicMaterial;
+    mat.map = texture;
+    mat.needsUpdate = true;
+  }
+
   setSize(width: number, height: number): void {
     if (this._width === width && this._height === height) return;
     this._width = width;

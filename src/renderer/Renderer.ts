@@ -27,6 +27,7 @@ import { useKeyframeStore } from '../state/keyframeStore';
 import { useCompositionStore } from '../state/compositionStore';
 import { useTimelineStore } from '../state/timelineStore';
 import { useToolStore } from '../state/toolStore';
+import { useViewportStore } from '../state/viewportStore';
 import { TOOLS } from '../config/constants';
 import type { Composition } from '../types/composition';
 import type { CompData, VideoData, AudioData, TransitionData } from '../types/layer';
@@ -36,7 +37,9 @@ import { AdjustmentCompositor } from './compositing/AdjustmentCompositor';
 import { AdjustmentLayerRenderer } from './layers/AdjustmentLayerRenderer';
 import { MotionBlurCompositor } from './compositing/MotionBlurCompositor';
 import { TransitionCompositor } from './transitions/TransitionCompositor';
+import { TonemapPass, type TonemapMode } from './compositing/TonemapPass';
 import { getTransitionById } from './transitions/library';
+import { preProcessManager } from './PreProcessManager';
 import { Scene3DManager } from './Scene3DManager';
 import { ModifierEngine } from './ModifierEngine';
 import { LightLayerRenderer } from './layers/LightLayerRenderer';
@@ -83,6 +86,7 @@ export class Renderer {
   public readonly motionBlurCompositor: MotionBlurCompositor;
   public readonly texturePreloader: TexturePreloader;
   public readonly transitionCompositor: TransitionCompositor;
+  public readonly tonemapPass: TonemapPass;
   public readonly scene3D: Scene3DManager;
 
   private _state: RendererState = { fps: 0, zoom: 1, frameCount: 0 };
@@ -109,7 +113,6 @@ export class Renderer {
   private _nestedRenderers = new Map<string, NestedCompRenderer>();
   private _audioRenderers = new Map<string, AudioLayerRenderer>();
   private _lightRenderers = new Map<string, LightLayerRenderer>();
-  private _model3dRenderers = new Map<string, Model3DLayerRenderer>();
   public readonly adjustmentCompositor: AdjustmentCompositor;
 
   private _cachedFrameQuad: THREE.Mesh | null = null;
@@ -147,6 +150,7 @@ export class Renderer {
       antialias: true,
       alpha: true,
       preserveDrawingBuffer: true, // needed for readPixels reliability
+      premultipliedAlpha: false, // straight-alpha canvas so layer textures blend correctly
     });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.setClearColor(0x000000, 0);
@@ -189,6 +193,7 @@ export class Renderer {
     this.propertyBinder = new PropertyBinder(useKeyframeStore.getState().engine);
     this.motionBlurCompositor = new MotionBlurCompositor(this.renderer, this.layerSync);
     this.transitionCompositor = new TransitionCompositor(this.renderer);
+    this.tonemapPass = new TonemapPass(this.renderer);
     this.texturePreloader = new TexturePreloader();
     this.scene3D = new Scene3DManager();
     this.scene3D.setRenderer(this.renderer);
@@ -308,9 +313,16 @@ export class Renderer {
         return;
       }
 
-      // ── Clear the drawing buffer at the start of every frame ──
-      // Use composition background color; transparent when bg is black
-      // so the dark area behind the grid doesn't appear as a black rectangle.
+      const effectiveTime =
+        this._cacheRenderTimeOverride !== null
+          ? this._cacheRenderTimeOverride
+          : comp.currentTime;
+      const isPlayingLive = useTimelineStore.getState().playbackState === 'playing';
+      const frame = Math.floor(effectiveTime * comp.fps);
+
+      // ── First: transparent full-canvas clear (lets CSS gradient show outside) ──
+      const bgColor = comp.backgroundColor ?? '#000000';
+      const bgHex = parseInt(bgColor.replace('#', '0x'), 16);
       {
         const canvas = this.renderer.domElement;
         const oldTarget = this.renderer.getRenderTarget();
@@ -318,38 +330,72 @@ export class Renderer {
         this.renderer.getClearColor(oldClearColor);
         const oldClearAlpha = this.renderer.getClearAlpha();
         this.renderer.setRenderTarget(null);
+
         this.renderer.setScissorTest(false);
         this.renderer.setScissor(0, 0, canvas.width, canvas.height);
         this.renderer.setViewport(0, 0, canvas.width, canvas.height);
-
-        // Clear with the composition's background color
-        const bgColor = comp.backgroundColor ?? '#000000';
-        const bgHex = parseInt(bgColor.replace('#', '0x'), 16);
-        this.renderer.setClearColor(bgHex, 1);
-
+        this.renderer.setClearColor(0x000000, 0);
         this.renderer.clear(true, true, true);
+
+        if (!comp.perspective3D) {
+          this._applyCompositionScissor(comp);
+          if (this._compositionScissorActive) {
+            this.renderer.setClearColor(bgHex, 1);
+            this.renderer.clear(true, true, true);
+          }
+        } else {
+          this.renderer.setClearColor(bgHex, 1);
+          this.renderer.clear(true, true, true);
+        }
+
         this.renderer.setClearColor(oldClearColor, oldClearAlpha);
         this.renderer.setRenderTarget(oldTarget);
       }
 
-      const effectiveTime =
-        this._cacheRenderTimeOverride !== null
-          ? this._cacheRenderTimeOverride
-          : comp.currentTime;
-      const frame = Math.floor(effectiveTime * comp.fps);
+      // ── FAST PATH: playback + cache hit → blit cached texture and stop ──
+      // No scene sync, no keyframe eval, no effects pipeline, no adjustment
+      // compositor. Just draw the cached frame. This is the difference between
+      // 8 fps and 30+ fps on integrated GPUs.
+      if (isPlayingLive && !comp.perspective3D && this._cacheRenderTimeOverride === null) {
+        const gpuTex = this.gpuTextureCache.get(comp.id, frame);
+        if (gpuTex) {
+          this.renderer.setRenderTarget(null);
+          this._displayCachedFrameGPU(gpuTex, comp.id, frame);
+          this.perfMonitor.recordCacheAccess(true);
+          this._applyCompositionScissor(comp);
+          (window as any).__lastFramePath = 'cache';
+          return;
+        }
+        const cached = this.frameCache.get(comp.id, frame);
+        if (cached?.imageBitmap) {
+          this.renderer.setRenderTarget(null);
+          this._displayCachedFrame(cached.imageBitmap, comp.id, frame);
+          this.perfMonitor.recordCacheAccess(true);
+          this._applyCompositionScissor(comp);
+          (window as any).__lastFramePath = 'cache';
+          return;
+        }
+        // Cache miss during playback — fall through to full path but note it.
+        (window as any).__lastFramePath = 'live';
+      } else {
+        (window as any).__lastFramePath = isPlayingLive ? 'live' : 'idle';
+      }
+
+      // ── HDR / Tonemapping setup ──
+      this.tonemapPass.mode = (comp.tonemapMode ?? 0) as TonemapMode;
+      {
+        const canvas = this.renderer.domElement;
+        this.tonemapPass.beforeRender(canvas.width, canvas.height, bgHex, 1);
+      }
 
       const isInCacheBuild = this._cacheRenderTimeOverride !== null;
 
-      // Sync video volume/mute always (even when stopped)
       if (!isInCacheBuild) {
         this._syncVideoAudio(comp);
       }
 
-      // Sync video playback to composition time (skip when stopped)
       const playbackState = useTimelineStore.getState().playbackState;
 
-      // Texture preloader: during playback, kick off loads for image layers
-      // that will become visible within the lookahead window.
       if (!isInCacheBuild) {
         this.texturePreloader.isPlaying = playbackState === 'playing';
         this.texturePreloader.update(comp, frame);
@@ -358,19 +404,11 @@ export class Renderer {
         this._syncVideoLayers(comp, effectiveTime);
       }
 
-    // Sync audio layers — ONLY treat "playing" as playing.
-      // Passing paused/stopped as "isPlaying" causes audio to be re-seeked
-      // every frame while HTMLAudioElement is still playing, producing a
-      // stutter-loop, and leaves the element playing if the RAF loop stops
-      // (e.g. tab switch).
       if (!isInCacheBuild) {
         this._syncAudioLayers(comp, effectiveTime, playbackState === 'playing');
       }
 
-      // ── Detect active transition layers ──
-      // MUST run before the cached-frame early return so transitions work during
-      // RAM preview playback. Collects ALL overlapping transition layers and
-      // chains them in startFrame order for stacked blending.
+      // Detect transitions (unchanged)
       this._activeTransitions = null;
       this._transitionLayerIds = [];
       for (const l of comp.layers) {
@@ -381,7 +419,7 @@ export class Renderer {
       const activeTransLayers = comp.layers
         .filter(l => l.type === 'transition' && l.visible && frame >= l.startFrame && frame <= l.endFrame)
         .sort((a, b) => a.startFrame - b.startFrame);
-      
+
       if (activeTransLayers.length > 0) {
         const collected: Renderer['_activeTransitions'] = [];
         for (const layer of activeTransLayers) {
@@ -411,21 +449,24 @@ export class Renderer {
         }
       }
 
-      // GPU-accelerated cached frame display — skip when transitions are active
-      // because transitions need live A/B frame renders.
+      // Cached-frame display for scrub / idle (was previously here too)
       if (!this._activeTransitions && !isInCacheBuild && !ModalTransform.activeAnywhere && !comp.perspective3D) {
         const gpuTex = this.gpuTextureCache.get(comp.id, frame);
         if (gpuTex) {
+          this.renderer.setRenderTarget(null);
           this._displayCachedFrameGPU(gpuTex, comp.id, frame);
           this.perfMonitor.recordCacheAccess(true);
           this._applyCompositionScissor(comp);
+          (window as any).__lastFramePath = 'cache';
           return;
         }
         const cached = this.frameCache.get(comp.id, frame);
         if (cached?.imageBitmap) {
+          this.renderer.setRenderTarget(null);
           this._displayCachedFrame(cached.imageBitmap, comp.id, frame);
           this.perfMonitor.recordCacheAccess(true);
           this._applyCompositionScissor(comp);
+          (window as any).__lastFramePath = 'cache';
           return;
         }
       }
@@ -448,7 +489,6 @@ export class Renderer {
       this.effectsRenderer.setCurrentTime(effectiveTime);
       this._processEffects();
 
-      // Adjustment layers: composite everything-below through their effect chains.
       this.adjustmentCompositor.prepareFrame(comp.layers, comp.width, comp.height, frame);
       if (this.adjustmentCompositor.hasActiveAdjustments) {
         for (const layer of comp.layers) {
@@ -461,78 +501,64 @@ export class Renderer {
         this.adjustmentCompositor.execute(comp.layers, comp.width, comp.height);
       }
 
-      // Motion blur: render moving layers at sub-frame samples and accumulate.
       if (comp.motionBlur?.enabled && !isInCacheBuild && !ModalTransform.activeAnywhere) {
         this.motionBlurCompositor.apply(comp, this.sceneManager.scene, this.cameraManager.camera as any, frame);
       }
 
-      // 3D Perspective mode — use composition settings instead of camera layers
       if (comp.perspective3D) {
         this._applyPerspectiveCamera(comp);
       } else {
         this.scene3D.isActive = false;
         this.cameraManager.setPerspectiveCamera(null);
         this.renderLoop.setCamera(this.cameraManager.camera);
-        // Clear 3D perspective flags for ModalTransform
         (window as any).__perspectiveActive = false;
         (window as any).__perspectiveCamera = null;
       }
 
-      // Ensure transition layers are hidden from normal rendering
-      // (they don't render geometry, only affect compositing)
       for (const id of this._transitionLayerIds) {
         const r = this.layerSync.getRenderer(id);
         if (r) r.setVisible(false);
       }
 
-      // Sync lights (works independently of camera layers)
       this.scene3D.setupDefaultLights(this.sceneManager.scene);
       this.scene3D.syncLights(comp.layers, this.sceneManager.scene);
 
-      // Apply ModifierEngine transforms and handle 3D layer positioning
       const overridesActive = this.layerSync.isRuntimeOverridesActive;
       for (const layer of comp.layers) {
         const layerRenderer = this.layerSync.getRenderer(layer.id);
         if (layerRenderer) {
-          // When runtime overrides are active (keyframe animation), skip the
-          // transform update for animated layers — applyRuntimeOverrides already
-          // set the correct interpolated transforms. Overwriting here would
-          // replace the animated values with the base layer.transform values,
-          // effectively killing the animation.
           const hasOverride = overridesActive && this.propertyBinder.overrides.has(layer.id);
           if (!hasOverride) {
-            // Apply Modifiers (wiggle, etc.)
-            const modifiedTransform = ModifierEngine.apply(layer, comp.currentTime);
+            const modifiedTransform = ModifierEngine.apply(layer, effectiveTime);
             layerRenderer.updateTransform(modifiedTransform);
           }
-
-          // Handle 3D switch — use updateTransform3D for full position/rotation/scale/extrusion
           if (layer.is3D && layer.transform3D) {
             layerRenderer.updateTransform3D(layer.transform3D);
           }
         }
-
-        // Sync light layers (separate from BaseLayerRenderer)
         if (layer.type === 'light') {
           this._syncLightLayer(layer);
         }
-
-        // Sync 3D model layers
         if (layer.type === 'model3d' && layer.is3D) {
           this._syncModel3DLayer(layer);
         }
       }
 
-      // AE-style clipping: after all offscreen/effect prep is done, restrict the
-      // final visible WebGL render to the composition rectangle. DOM overlays
-      // like selection outlines/gizmos remain visible outside the comp.
-      // Only apply composition scissor in 2D/orthographic mode — in 3D perspective
-      // mode the scissor would clip incorrectly because worldToScreen uses ortho projection.
+      this.layerSync.recomputeWorldTransforms(comp.layers);
+
       if (!comp.perspective3D) {
         this._applyCompositionScissor(comp);
       } else {
         this._disableCompositionScissor();
       }
+    };
+
+    this.renderLoop.afterRender = () => {
+      // Don't tonemap cached frames — they're already in display-ready (sRGB) format.
+      // _lastCachedFrameNum is set to frame (>=0) in the cached-frame path and
+      // reset to -1 in the live-render path, so this guard correctly distinguishes.
+      if (this._lastCachedFrameNum >= 0) return;
+      this.tonemapPass.afterRender();
     };
 
     this.renderLoop.onFrame = (stats: FrameStats) => {
@@ -807,7 +833,6 @@ export class Renderer {
     const isFree = !!(window as any).__freeViewMode;
     const camMode = comp.cameraMode ?? 'perspective';
 
-    // Orthographic mode: use the regular 2D camera but allow 3D layer transforms
     if (camMode === 'orthographic') {
       this.scene3D.isActive = false;
       this.renderLoop.setCamera(this.cameraManager.camera);
@@ -820,12 +845,14 @@ export class Renderer {
     this.scene3D.isActive = true;
     const cam = this.scene3D.perspectiveCamera;
 
-    // Set wide clip planes to prevent objects from disappearing at extreme angles
     cam.near = 0.1;
     cam.far = 50000;
 
+    // Read UI-only "camera view zoom" (Blender-style — zooms the FOV,
+    // does NOT move the actual camera).
+    const uiZoom = useViewportStore.getState().settings.cameraViewZoom ?? 1;
+
     if (isFree) {
-      // ── Free View: Blender-style orbit camera (focal point + yaw/pitch + distance) ──
       const yaw = (window as any).__freeOrbitY ?? 0.5;
       const pitch = (window as any).__freeOrbitX ?? 0.3;
       const dist = (window as any).__freeDistance ?? 500;
@@ -836,7 +863,6 @@ export class Renderer {
       cam.fov = 50;
       cam.aspect = this.cameraManager.viewportWidth / this.cameraManager.viewportHeight;
 
-      // Camera position orbits around the focal point
       const camX = lookAtX + dist * Math.sin(yaw) * Math.cos(pitch);
       const camY = lookAtY + dist * Math.sin(pitch);
       const camZ = lookAtZ + dist * Math.cos(yaw) * Math.cos(pitch);
@@ -844,22 +870,20 @@ export class Renderer {
       cam.position.set(camX, camY, camZ);
       cam.lookAt(lookAtX, lookAtY, lookAtZ);
 
-      // Sync legacy globals so other systems (scroll, WASD) stay consistent
       (window as any).__freeCamX = camX;
       (window as any).__freeCamY = camY;
       (window as any).__freeCamZ = camZ;
     } else {
-      // ── Active Camera: use comp camera settings ──
-      const fov = comp.cameraFOV ?? 50;
+      const baseFov = comp.cameraFOV ?? 50;
+      // uiZoom acts as a visual telephoto in Active Camera view.
+      const effectiveFov = Math.max(1, Math.min(170, baseFov / uiZoom));
       const camZ = comp.cameraPositionZ ?? 1000;
-      // FIX: use cameraRotationX/Y (written by CameraPanel + orbit handler)
-      // NOT cameraOrbitX/Y (which were never set)
       const orbitX = comp.cameraRotationX ?? 0;
       const orbitY = comp.cameraRotationY ?? 0;
       const panX = comp.cameraPositionX ?? 0;
       const panY = comp.cameraPositionY ?? 0;
 
-      cam.fov = fov;
+      cam.fov = effectiveFov;
       cam.aspect = this.cameraManager.viewportWidth / this.cameraManager.viewportHeight;
 
       const x = camZ * Math.sin(orbitY) * Math.cos(orbitX) + panX;
@@ -874,7 +898,6 @@ export class Renderer {
     this.cameraManager.setPerspectiveCamera(cam, this.renderer.domElement.width, this.renderer.domElement.height);
     this.renderLoop.setCamera(cam);
 
-    // Expose camera for ModalTransform 3D-aware movement
     (window as any).__perspectiveActive = true;
     (window as any).__perspectiveCamera = cam;
   }
@@ -935,7 +958,7 @@ export class Renderer {
         this._nestedRenderers.set(source.id, nested);
       }
 
-      nested.syncLayers(source.layers);
+      // Compute local frame first (needed for both baked and live paths)
       const nestedTotalFrames = Math.floor(source.duration * source.fps);
       const localFrame = NestedCompRenderer.computeLocalFrame(
         parentFrame,
@@ -945,15 +968,33 @@ export class Renderer {
         data,
         nestedTotalFrames,
       );
-      nested.updateFrameVisibility(Math.floor(localFrame), source.layers);
-      nested.applyKeyframes(Math.floor(localFrame));
-      nested.render();
-      renderedCount++;
+      const localFrameNum = Math.floor(localFrame);
 
-      const parentRenderer = this.layerSync.getRenderer(layer.id);
-      if (parentRenderer instanceof CompLayerRenderer) {
-        parentRenderer.setTexture(nested.texture);
-        parentRenderer.setSize(source.width, source.height);
+      // Check if this comp is pre-processed (baked to textures)
+      const bakedTexture = preProcessManager.get(source.id, localFrameNum);
+
+      if (!bakedTexture) {
+        // Normal live render path
+        nested.syncLayers(source.layers);
+        nested.updateFrameVisibility(localFrameNum, source.layers);
+        nested.applyKeyframes(localFrameNum);
+        nested.render();
+        renderedCount++;
+
+        const parentRenderer = this.layerSync.getRenderer(layer.id);
+        if (parentRenderer instanceof CompLayerRenderer) {
+          parentRenderer.setTexture(nested.texture);
+          parentRenderer.setSize(source.width, source.height);
+        }
+      } else {
+        // Pre-processed path — use baked texture, skip NestedCompRenderer
+        renderedCount++;
+        const parentRenderer = this.layerSync.getRenderer(layer.id);
+        if (parentRenderer instanceof CompLayerRenderer) {
+          const size = preProcessManager.getSize(source.id);
+          parentRenderer.setTexture(bakedTexture);
+          if (size) parentRenderer.setSize(size.width, size.height);
+        }
       }
     }
 
@@ -1021,8 +1062,8 @@ export class Renderer {
         let localTime = (timeS - layerStartSec) * videoRate;
 
         // Apply Time Remapping if enabled
-        if (vdata?.timeRemap && vdata?.timeRemapKeyframes?.length) {
-          const sourceFrame = this._interpolateRemap(vdata.timeRemapKeyframes, Math.floor(timeS * fps));
+        if (vdata?.timeRemap) {
+          const sourceFrame = this._getTimeRemapSourceFrame(layer.id, vdata, timeS, fps);
           localTime = sourceFrame / fps;
         }
 
@@ -1051,8 +1092,8 @@ export class Renderer {
           let localTime = timeS - layerStartSec;
 
           // Apply Time Remapping if enabled
-          if (vdata?.timeRemap && vdata?.timeRemapKeyframes?.length) {
-            const sourceFrame = this._interpolateRemap(vdata.timeRemapKeyframes, Math.floor(timeS * fps));
+          if (vdata?.timeRemap) {
+            const sourceFrame = this._getTimeRemapSourceFrame(layer.id, vdata, timeS, fps);
             localTime = sourceFrame / fps;
           }
           const compFrame = Math.floor(timeS * fps);
@@ -1185,17 +1226,32 @@ private _syncModel3DLayer(layer: any): void {
   const data = layer.data as Model3DData;
   if (!data) return;
 
-  let lr = this._model3dRenderers.get(layer.id);
-  if (!lr) {
-    lr = new Model3DLayerRenderer(layer.id, data.url ?? '');
-    this._model3dRenderers.set(layer.id, lr);
-    this.sceneManager.layerGroup.add(lr.group);
-    // Load the model asynchronously
+  // Use the LayerSync renderer — this is the canonical renderer that receives
+  // transform updates from the render loop. The old approach created a SECOND
+  // renderer in this._model3dRenderers that never got its transform updated,
+  // so dragging/rotating/scaling the model had no effect.
+  let lr = this.layerSync.getRenderer(layer.id) as Model3DLayerRenderer | undefined;
+  if (!lr) return;
+
+  // If the model hasn't been loaded yet, load it asynchronously
+  if (lr.getModelGroup() === null && data.url) {
     this._loadModel3D(lr, data);
   }
 
+  // Apply the current transform EVERY frame (same as the render loop does
+  // for other layer types). The render loop's transform pass also updates
+  // this renderer via layerSync.getRenderer(layer.id), but the explicit
+  // call here handles the is3D/transform3D case and the first-frame setup.
+  if (layer.transform3D) {
+    lr.updateTransform3D(layer.transform3D);
+  } else {
+    const modifiedTransform = ModifierEngine.apply(layer, useCompositionStore.getState().compositions
+      .find(c => c.id === useCompositionStore.getState().activeCompositionId)?.currentTime ?? 0);
+    lr.updateTransform(modifiedTransform);
+  }
+
   // Auto-rotate per frame
-  if (lr && data.autoRotate) {
+  if (data.autoRotate) {
     lr.updateAutoRotate(performance.now(), data.autoRotateSpeed ?? 1);
   }
 }
@@ -1222,6 +1278,28 @@ private _syncModel3DLayer(layer: any): void {
   }
 
   // Cleanup light and model renderers on dispose
+  /**
+   * Get the source frame for time remapping at the given composition time.
+   * Prefers KeyframeEngine (timeline-editable), falls back to legacy
+   * vdata.timeRemapKeyframes for backward compatibility.
+   */
+  private _getTimeRemapSourceFrame(layerId: string, vdata: VideoData, timeS: number, fps: number): number {
+    const frame = Math.floor(timeS * fps);
+    // Try KeyframeEngine first (new system — timeline visible)
+    const engine = useKeyframeStore.getState().engine;
+    const engineKfs = engine.getKeyframesForProperty(layerId, 'timeRemap');
+    if (engineKfs.length >= 2) {
+      const result = engine.evaluate(layerId, 'timeRemap', frame);
+      const val = typeof result.value === 'number' ? result.value : frame;
+      return Math.max(0, Math.round(val));
+    }
+    // Fallback to legacy layer data keyframes
+    if (vdata?.timeRemapKeyframes?.length) {
+      return this._interpolateRemap(vdata.timeRemapKeyframes, frame);
+    }
+    return frame;
+  }
+
   /** Interpolate time remap keyframes to compute source frame from timeline frame */
   private _interpolateRemap(keyframes: Array<{time:number;sourceFrame:number}>, frame: number): number {
     if (!keyframes || keyframes.length === 0) return frame;
@@ -1244,11 +1322,7 @@ private _syncModel3DLayer(layer: any): void {
       r.dispose();
     }
     this._lightRenderers.clear();
-    for (const [, r] of this._model3dRenderers) {
-      this.sceneManager.layerGroup.remove(r.group);
-      r.dispose();
-    }
-    this._model3dRenderers.clear();
+    // Model3D renderers are now managed by LayerSync — nothing to clean up here.
   }
 
   private _processEffects(): void {
@@ -1386,8 +1460,23 @@ private _syncModel3DLayer(layer: any): void {
   renderSynchronous(): void {
     // Scissor is a viewer-only concern. Force disable for synchronous cache render.
     this._disableCompositionScissor();
+
+    // Apply tonemapping for cache builds too, so cached frames match the live view.
+    if (this.tonemapPass.mode > 0) {
+      const canvas = this.renderer.domElement;
+      const comp = this._composition;
+      const bgHex = comp?.backgroundColor
+        ? parseInt(comp.backgroundColor.replace('#', '0x'), 16)
+        : 0x000000;
+      this.tonemapPass.beforeRender(canvas.width, canvas.height, bgHex, 1);
+    }
+
     // Use the renderLoop's camera (perspective in 3D mode, ortho in 2D)
     this.renderer.render(this.sceneManager.scene, this.renderLoop.getCamera());
+
+    if (this.tonemapPass.mode > 0) {
+      this.tonemapPass.afterRender();
+    }
   }
 
   /**

@@ -60,6 +60,12 @@ export const CustomEffectPanel: React.FC = () => {
     setCompileResult({ ok: true });
   }, [selectedId]);
 
+  // Watch for gallery request from sidebar context menu
+  const showGalleryRequest = useCustomEffectsStore(s => s.showGalleryRequest);
+  useEffect(() => {
+    if (showGalleryRequest > 0) setShowGallery(true);
+  }, [showGalleryRequest]);
+
   const selectEffect = useCallback((id: string | null) => {
     setSelectedId(id);
   }, []);

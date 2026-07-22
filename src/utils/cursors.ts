@@ -28,13 +28,13 @@ const toolCursors: Partial<Record<string, CursorState>> = {
   [TOOLS.ZOOM]:          'zoom-in',
   [TOOLS.ROTATE]:        'grab',
   [TOOLS.SCALE]:         'nwse-resize',
-  [TOOLS.SHAPE_RECT]:    'crosshair',
-  [TOOLS.SHAPE_ELLIPSE]: 'crosshair',
-  [TOOLS.SHAPE_POLYGON]: 'crosshair',
+  [TOOLS.SHAPE]: 'crosshair',
   [TOOLS.PEN]:           'crosshair',
   [TOOLS.TEXT]:          'text',
   [TOOLS.NULL]:          'default',
   [TOOLS.GRADIENT]:      'crosshair',
+  [TOOLS.MASK]:          'crosshair',
+  [TOOLS.PERSPECTIVE]:   'crosshair',
 };
 
 export function cursorForTool(tool: ToolId): CursorState {

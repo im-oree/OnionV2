@@ -8,12 +8,12 @@ export class CompBoundsOverlay {
   private glowLine: THREE.LineSegments | null = null;
   private darkOutside: THREE.Mesh | null = null;
   private bgQuad: THREE.Mesh | null = null;
-  private _visible = true;
+  private _visible = false;
 
   constructor() {
     this.group = new THREE.Group();
     this.group.name = 'comp-bounds-overlay';
-    this.group.visible = false; // Disabled — CSS layer handles this now
+    this.group.visible = false; // CSS layer (CompBoundsCSS) draws the comp box
   }
 
   update(width: number, height: number, bgColor: string): void {
@@ -23,8 +23,10 @@ export class CompBoundsOverlay {
     const halfH = height / 2;
     const worldSize = Math.max(width, height) * 10;
 
-    // Outside area — matches the app background (darker charcoal)
-    const outsideColor = getCSSColor('--viewport-outside', `#${APP_BG_COLOR.toString(16).padStart(6, '0')}`);
+    const outsideColor = getCSSColor(
+      '--viewport-outside',
+      `#${APP_BG_COLOR.toString(16).padStart(6, '0')}`,
+    );
     const outsideGeo = this._buildOutsideQuad(worldSize, halfW, halfH);
     const outsideMat = new THREE.MeshBasicMaterial({
       color: outsideColor,
@@ -35,17 +37,9 @@ export class CompBoundsOverlay {
     this.darkOutside.renderOrder = -20;
     this.group.add(this.darkOutside);
 
-    // Composition background — ALWAYS visible.
-    // If user hasn't set a bg color (or it matches app bg), use a slightly
-    // lighter fill so the comp area is always distinct from outside.
-    let effectiveBg = bgColor;
-    const isDefaultOrEmpty = !bgColor
-      || bgColor.toLowerCase() === '#000000'
-      || bgColor.toLowerCase() === '#000';
-    if (isDefaultOrEmpty) {
-      // Use viewport-bg (defined in theme.css) for that "canvas surface" look
-      effectiveBg = getCSSColor('--viewport-bg', '#13151a');
-    }
+    // Comp bg quad â€” use EXACTLY the user's chosen color.
+    const effectiveBg =
+      (bgColor && bgColor.trim() !== '') ? bgColor : '#000000';
 
     const bgMat = new THREE.MeshBasicMaterial({
       color: effectiveBg,
@@ -57,7 +51,6 @@ export class CompBoundsOverlay {
     this.bgQuad.renderOrder = -18;
     this.group.add(this.bgQuad);
 
-    // Comp border — subtle indigo hairline, always visible
     const borderPos = [
       -halfW, -halfH, 0, halfW, -halfH, 0,
       halfW, -halfH, 0, halfW, halfH, 0,
@@ -71,15 +64,14 @@ export class CompBoundsOverlay {
       color: borderColor,
       depthTest: false,
       transparent: true,
-      opacity: 0.35,
-      linewidth: 1,
+      opacity: 0.9,
+      linewidth: 2,
     });
     this.border = new THREE.LineSegments(borderGeo, borderMat);
     this.border.renderOrder = -16;
     this.group.add(this.border);
 
-    // Soft outer shadow line (subtle depth)
-    const glowOffset = 2;
+    const glowOffset = 3;
     const glowPos = [
       -halfW - glowOffset, -halfH - glowOffset, 0, halfW + glowOffset, -halfH - glowOffset, 0,
       halfW + glowOffset, -halfH - glowOffset, 0, halfW + glowOffset, halfH + glowOffset, 0,
@@ -92,13 +84,15 @@ export class CompBoundsOverlay {
       color: 0x000000,
       depthTest: false,
       transparent: true,
-      opacity: 0.4,
+      opacity: 0.55,
     });
     this.glowLine = new THREE.LineSegments(glowGeo, glowMat);
     this.glowLine.renderOrder = -19;
     this.group.add(this.glowLine);
 
-    this.group.visible = false; // Disabled — CSS layer handles this now
+    // Kept hidden â€” CSS overlay handles this in 2D. WebGL only clears the
+    // comp rect via scissor, so we don't want a second bg quad fighting it.
+    this.group.visible = false;
   }
 
   show(): void { this._visible = true; this.group.visible = true; }

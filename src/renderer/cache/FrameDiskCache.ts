@@ -1,11 +1,7 @@
 /**
  * FrameDiskCache — persists cached frames to IndexedDB.
  *
- * FIX: Changed encoding from PNG to JPEG (quality 0.85).
- * PNG encoding is extremely slow for large frames — a single 1920×1080
- * frame can take 200-500ms to encode as PNG. JPEG at 0.85 quality
- * takes ~20ms and produces much smaller files. For an animation cache,
- * slight lossy compression is perfectly acceptable.
+ * Uses JPEG (0.85 quality) for fast encoding and smaller storage.
  */
 import { FrameCache, type CacheQuality } from './FrameCache';
 
@@ -34,7 +30,10 @@ export class FrameDiskCache {
 
   constructor(frameCache: FrameCache) {
     this._frameCache = frameCache;
-    this._available = typeof indexedDB !== 'undefined';
+    this._available =
+      typeof indexedDB !== 'undefined' &&
+      typeof IDBKeyRange !== 'undefined';
+
     if (this._available) {
       this._openDB().catch(() => {
         this._available = false;
@@ -45,120 +44,178 @@ export class FrameDiskCache {
   set onWriteError(cb: ((err: Error) => void) | null) {
     this._onWriteError = cb;
   }
-  get available(): boolean { return this._available; }
+
+  get available(): boolean {
+    return this._available;
+  }
 
   private async _openDB(): Promise<IDBDatabase> {
     if (this._db) return this._db;
+
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
+
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
-          const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+          const store = db.createObjectStore(STORE_NAME, {
+            keyPath: 'id',
+          });
           store.createIndex('compId', 'compId', { unique: false });
         }
       };
+
       req.onsuccess = () => {
         this._db = req.result;
-        this._db.onclose = () => { this._db = null; };
+
+        this._db.onclose = () => {
+          this._db = null;
+        };
+
         this._db.onversionchange = () => {
           this._db?.close();
           this._db = null;
         };
+
         resolve(this._db);
       };
+
       req.onerror = () => reject(req.error);
     });
   }
 
   async getDiskUsage(compId: string): Promise<number> {
     if (!this._available) return 0;
+
     try {
       const db = await this._openDB();
+
       return new Promise((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readonly');
         const index = tx.objectStore(STORE_NAME).index('compId');
         const req = index.openCursor(IDBKeyRange.only(compId));
+
         let total = 0;
+
         req.onsuccess = () => {
           const cursor = req.result;
           if (cursor) {
-            total += (cursor.value as DiskFrameEntry).byteSize;
+            total += (cursor.value as DiskFrameEntry).blob.size;
             cursor.continue();
-          } else resolve(total);
+          } else {
+            resolve(total);
+          }
         };
+
         req.onerror = () => reject(req.error);
       });
-    } catch { return 0; }
+    } catch {
+      return 0;
+    }
   }
 
   async loadIntoCache(compId: string): Promise<number> {
     if (!this._available) return 0;
+
     try {
       const db = await this._openDB();
+
       const entries = await new Promise<DiskFrameEntry[]>(
         (resolve, reject) => {
           const tx = db.transaction(STORE_NAME, 'readonly');
           const index = tx.objectStore(STORE_NAME).index('compId');
           const req = index.getAll(IDBKeyRange.only(compId));
+
           req.onsuccess = () => resolve(req.result ?? []);
           req.onerror = () => reject(req.error);
         },
       );
 
       let loaded = 0;
+
       for (const entry of entries) {
-        if (this._frameCache.has(compId, entry.frame, entry.quality)) continue;
+        if (
+          this._frameCache.has(
+            compId,
+            entry.frame,
+            entry.quality,
+          )
+        ) {
+          continue;
+        }
+
         try {
           const bitmap = await createImageBitmap(entry.blob);
-          this._frameCache.store(compId, entry.frame, bitmap, entry.quality);
+          this._frameCache.store(
+            compId,
+            entry.frame,
+            bitmap,
+            entry.quality,
+          );
           loaded++;
         } catch {
-          this._deleteEntry(entry.id).catch(() => {});
+          await this._deleteEntry(entry.id).catch(() => {});
         }
       }
+
       return loaded;
-    } catch { return 0; }
+    } catch {
+      return 0;
+    }
   }
 
   scheduleStore(compId: string, frame: number): void {
     if (!this._available) return;
-    this._pendingKeys.add(JSON.stringify([compId, frame]));
+    if (!Number.isFinite(frame)) return;
+
+    this._pendingKeys.add(`${compId}|${frame}`);
+
     if (!this._flushTimer) {
-      // Debounce: flush after 800ms of inactivity
       this._flushTimer = setTimeout(() => this._flush(), 800);
     }
   }
 
   private async _flush(): Promise<void> {
     this._flushTimer = null;
+
     if (this._pendingKeys.size === 0 || this._flushing) return;
+
     this._flushing = true;
 
     const keys = Array.from(this._pendingKeys);
     this._pendingKeys.clear();
 
     const entries: DiskFrameEntry[] = [];
+
     for (const key of keys) {
-      const [compId, frame] = JSON.parse(key) as [string, number];
-      // Use peek() — disk cache reading should not affect LRU order
+      const [compId, frameStr] = key.split('|');
+      const frame = Number(frameStr);
+      if (!Number.isFinite(frame)) continue;
+
       const cached = this._frameCache.peek(compId, frame);
       if (!cached?.imageBitmap) continue;
 
       try {
-        // FIX: Use JPEG instead of PNG — ~10x faster encoding
-        const blob = await this._bitmapToBlob(cached.imageBitmap, 'image/jpeg', 0.85);
+        const blob = await this._bitmapToBlob(
+          cached.imageBitmap,
+          'image/jpeg',
+          0.85,
+        );
+
         if (!blob) continue;
+
         entries.push({
           id: `${compId}_${frame}`,
           compId,
           frame,
           quality: cached.quality,
           blob,
-          byteSize: cached.byteSize,
+          byteSize: blob.size,
           timestamp: Date.now(),
         });
-      } catch {}
+      } catch {
+        // ignore encode failure
+      }
     }
 
     this._flushing = false;
@@ -167,10 +224,15 @@ export class FrameDiskCache {
 
     try {
       const db = await this._openDB();
+
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
-        for (const entry of entries) store.put(entry);
+
+        for (const entry of entries) {
+          store.put(entry);
+        }
+
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
@@ -188,14 +250,36 @@ export class FrameDiskCache {
   ): Promise<Blob | null> {
     try {
       if (typeof OffscreenCanvas !== 'undefined') {
-        const oc = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const oc = new OffscreenCanvas(
+          bitmap.width,
+          bitmap.height,
+        );
         const ctx = oc.getContext('2d');
         if (!ctx) return null;
+
         ctx.drawImage(bitmap, 0, 0);
         return await oc.convertToBlob({ type, quality });
       }
+
+      // Fallback for environments without OffscreenCanvas
+      if (typeof document !== 'undefined') {
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+
+        ctx.drawImage(bitmap, 0, 0);
+
+        return await new Promise<Blob | null>((resolve) =>
+          canvas.toBlob(resolve, type, quality),
+        );
+      }
+
       return null;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
   async invalidate(
@@ -204,6 +288,7 @@ export class FrameDiskCache {
     toFrame?: number,
   ): Promise<void> {
     if (!this._available) return;
+
     try {
       const db = await this._openDB();
       const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -211,24 +296,40 @@ export class FrameDiskCache {
       const index = store.index('compId');
       const req = index.openCursor(IDBKeyRange.only(compId));
 
+      const start =
+        fromFrame !== undefined && Number.isFinite(fromFrame)
+          ? Math.floor(fromFrame)
+          : undefined;
+
+      const end =
+        toFrame !== undefined && Number.isFinite(toFrame)
+          ? Math.floor(toFrame)
+          : undefined;
+
       await new Promise<void>((resolve, reject) => {
         req.onsuccess = () => {
           const cursor = req.result;
+
           if (cursor) {
             const entry = cursor.value as DiskFrameEntry;
+
             const match =
-              fromFrame === undefined ||
-              toFrame === undefined ||
-              (entry.frame >= fromFrame && entry.frame <= toFrame);
+              start === undefined ||
+              end === undefined ||
+              (entry.frame >= start && entry.frame <= end);
+
             if (match) cursor.delete();
             cursor.continue();
           } else {
             resolve();
           }
         };
+
         req.onerror = () => reject(req.error);
       });
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   async clearComposition(compId: string): Promise<void> {
@@ -237,48 +338,65 @@ export class FrameDiskCache {
 
   async clearAll(): Promise<void> {
     if (!this._available) return;
+
     try {
       const db = await this._openDB();
+
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         tx.objectStore(STORE_NAME).clear();
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   async getTotalDiskUsage(): Promise<number> {
     if (!this._available) return 0;
+
     try {
       const db = await this._openDB();
+
       return new Promise((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readonly');
         const req = tx.objectStore(STORE_NAME).openCursor();
+
         let total = 0;
+
         req.onsuccess = () => {
           const cursor = req.result;
           if (cursor) {
-            total += (cursor.value as DiskFrameEntry).byteSize;
+            total += (cursor.value as DiskFrameEntry).blob.size;
             cursor.continue();
-          } else resolve(total);
+          } else {
+            resolve(total);
+          }
         };
+
         req.onerror = () => reject(req.error);
       });
-    } catch { return 0; }
+    } catch {
+      return 0;
+    }
   }
 
   private async _deleteEntry(id: string): Promise<void> {
     if (!this._available) return;
+
     try {
       const db = await this._openDB();
+
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         tx.objectStore(STORE_NAME).delete(id);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   dispose(): void {
@@ -286,6 +404,7 @@ export class FrameDiskCache {
       clearTimeout(this._flushTimer);
       this._flushTimer = null;
     }
+
     this._pendingKeys.clear();
     this._db?.close();
     this._db = null;

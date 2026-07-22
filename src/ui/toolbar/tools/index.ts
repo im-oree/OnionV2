@@ -5,28 +5,30 @@ import { TOOLS } from '../../../config/constants';
 export interface ToolDefinition { id:ToolId; icon:IconName; label:string; shortcut?:string }
 
 /**
- * L1: Blender-style tool groups.
+ * L1: Clean tool groups — 4 logical sections.
  * Group 1: Selection & Transform
- * Group 2: Shapes
- * Group 3: Drawing
- * Group 4: Navigation
- * 
- * Zoom tool removed — user zooms via Ctrl+Scroll (industry standard).
+ * Group 2: Create
+ * Group 3: Adjust
+ * Group 4: Navigate
  */
 export const TOOL_GROUPS: ToolDefinition[][] = [
+  // ── Selection & Transform ──
   [{ id:TOOLS.SELECT as ToolId, icon:'select', label:'Select', shortcut:'V' },
    { id:TOOLS.MOVE as ToolId, icon:'move', label:'Move', shortcut:'G' },
    { id:TOOLS.ROTATE as ToolId, icon:'rotate', label:'Rotate', shortcut:'R' },
    { id:TOOLS.SCALE as ToolId, icon:'scale', label:'Scale', shortcut:'S' }],
-  [{ id:TOOLS.SHAPE_RECT as ToolId, icon:'rectangle', label:'Rectangle', shortcut:'Shift+R' },
-   { id:TOOLS.SHAPE_ELLIPSE as ToolId, icon:'ellipse', label:'Ellipse', shortcut:'Shift+E' },
-   { id:TOOLS.SHAPE_POLYGON as ToolId, icon:'polygon', label:'Polygon', shortcut:'Shift+P' }],
-  [{ id:TOOLS.PEN as ToolId, icon:'pen', label:'Pen', shortcut:'P' },
-   { id:TOOLS.TEXT as ToolId, icon:'text', label:'Text', shortcut:'T' },
-   { id:TOOLS.GRADIENT as ToolId, icon:'gradient', label:'Gradient', shortcut:'Shift+G' }],
-  // Mask & Perspective tools
-  [{ id:TOOLS.MASK as ToolId, icon:'mask', label:'Mask Tool', shortcut:'M' },
+
+  // ── Create ──
+  [{ id:TOOLS.SHAPE as ToolId, icon:'polygon', label:'Shape', shortcut:'Shift+S' },
+   { id:TOOLS.PEN as ToolId, icon:'pen', label:'Pen', shortcut:'P' },
+   { id:TOOLS.TEXT as ToolId, icon:'text', label:'Text', shortcut:'T' }],
+
+  // ── Adjust ──
+  [{ id:TOOLS.MASK as ToolId, icon:'mask', label:'Mask', shortcut:'M' },
+   { id:TOOLS.GRADIENT as ToolId, icon:'gradient', label:'Gradient', shortcut:'Shift+G' },
    { id:TOOLS.PERSPECTIVE as ToolId, icon:'perspective', label:'Perspective', shortcut:'Shift+M' }],
-  [{ id:TOOLS.HAND as ToolId, icon:'hand', label:'Hand', shortcut:'H' }],
-  [{ id:TOOLS.PICK_WHIP as ToolId, icon:'link', label:'Pick Whip', shortcut:'W' }],
+
+  // ── Navigate & Util ──
+  [{ id:TOOLS.HAND as ToolId, icon:'hand', label:'Hand', shortcut:'H' },
+   { id:TOOLS.PICK_WHIP as ToolId, icon:'link', label:'Pick Whip', shortcut:'W' }],
 ];

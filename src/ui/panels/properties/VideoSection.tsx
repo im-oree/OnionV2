@@ -6,25 +6,11 @@ import { CheckboxInput } from './inputs/CheckboxInput';
 import { Button } from '../../common/Button';
 import type { Layer, VideoData } from '../../../types/layer';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { useKeyframeStore } from '../../../state/keyframeStore';
 
 interface Props {
   layer: Layer;
   compId: string;
-}
-
-function interpolateRemap(keyframes: Array<{time:number;sourceFrame:number}>, frame: number): number {
-  if (!keyframes || keyframes.length === 0) return frame;
-  if (keyframes.length === 1) return keyframes[0].sourceFrame;
-  const sorted = [...keyframes].sort((a, b) => a.time - b.time);
-  if (frame <= sorted[0].time) return sorted[0].sourceFrame;
-  if (frame >= sorted[sorted.length - 1].time) return sorted[sorted.length - 1].sourceFrame;
-  for (let i = 0; i < sorted.length - 1; i++) {
-    if (frame >= sorted[i].time && frame <= sorted[i + 1].time) {
-      const t = (frame - sorted[i].time) / (sorted[i + 1].time - sorted[i].time || 1);
-      return Math.round(sorted[i].sourceFrame + t * (sorted[i + 1].sourceFrame - sorted[i].sourceFrame));
-    }
-  }
-  return frame;
 }
 
 function formatDuration(seconds: number): string {
@@ -168,15 +154,30 @@ export const VideoSection: React.FC<Props> = ({ layer, compId }) => {
           <CheckboxInput
             value={data.timeRemap ?? false}
             onChange={v => {
-              const patch: Partial<VideoData> = { timeRemap: v };
-              if (v && !data.timeRemapKeyframes) {
+              const ks = useKeyframeStore.getState();
+              if (v) {
                 const totalFrames = Math.floor(data.duration * 30);
-                patch.timeRemapKeyframes = [
-                  { time: 0, sourceFrame: 0 },
-                  { time: totalFrames, sourceFrame: totalFrames },
-                ];
+                const kf1 = { id: `kf_tr_${Date.now()}_0`, property: 'timeRemap', layerId: layer.id, time: 0, value: 0, interpolation: 'linear' as const };
+                const kf2 = { id: `kf_tr_${Date.now()}_1`, property: 'timeRemap', layerId: layer.id, time: totalFrames, value: totalFrames, interpolation: 'linear' as const };
+                ks.engine.removeAllForProperty(layer.id, 'timeRemap');
+                ks.addKeyframe(layer.id, kf1);
+                ks.addKeyframe(layer.id, kf2);
+                updateData({ timeRemap: true, timeRemapKeyframes: [{ time: 0, sourceFrame: 0 }, { time: totalFrames, sourceFrame: totalFrames }] });
+              } else {
+                ks.engine.removeAllForProperty(layer.id, 'timeRemap');
+                // Remove only the timeRemap property (not the whole layer!)
+                useKeyframeStore.setState(s => {
+                  const m = new Map(s.animatedProperties);
+                  const layerProps = m.get(layer.id);
+                  if (layerProps) {
+                    layerProps.delete('timeRemap');
+                    if (layerProps.size === 0) m.delete(layer.id);
+                    else m.set(layer.id, new Set(layerProps));
+                  }
+                  return { animatedProperties: m, revision: s.revision + 1 };
+                });
+                updateData({ timeRemap: false, timeRemapKeyframes: undefined });
               }
-              updateData(patch);
             }}
           />
         </PropRow>
@@ -184,36 +185,58 @@ export const VideoSection: React.FC<Props> = ({ layer, compId }) => {
           <>
             <PropRow label="Add KF">
               <Button onClick={() => {
-                const kfs = [...(data.timeRemapKeyframes ?? [])];
-                const sourceFrame = interpolateRemap(kfs, currentFrame);
-                kfs.push({ time: currentFrame, sourceFrame: Math.round(sourceFrame) });
-                kfs.sort((a, b) => a.time - b.time);
-                updateData({ timeRemapKeyframes: kfs });
+                const ks = useKeyframeStore.getState();
+                const existing_kfs = ks.engine.getKeyframesForProperty(layer.id, 'timeRemap');
+                let sourceVal: number;
+                if (existing_kfs.length >= 2) {
+                  const result = ks.engine.evaluate(layer.id, 'timeRemap', currentFrame);
+                  sourceVal = typeof result.value === 'number' ? result.value : currentFrame;
+                } else {
+                  sourceVal = currentFrame;
+                }
+                const kf = { id: `kf_tr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, property: 'timeRemap', layerId: layer.id, time: currentFrame, value: Math.round(sourceVal), interpolation: 'linear' as const };
+                ks.addKeyframe(layer.id, kf);
+                // Sync to layer data for renderer fallback
+                const allKfs = ks.engine.getKeyframesForProperty(layer.id, 'timeRemap');
+                const remapKfs = allKfs.map(k => ({ time: k.time, sourceFrame: typeof k.value === 'number' ? k.value : k.time }));
+                updateData({ timeRemapKeyframes: remapKfs });
               }} size="sm">+ KF</Button>
             </PropRow>
-            {(data.timeRemapKeyframes ?? []).map((kf, i) => (
-              <PropRow key={i} label={`Kf${i+1}`}>
-                <div style={{ display: 'flex', gap: 3, alignItems: 'center', flex: 1 }}>
-                  <NumberInput value={kf.time} min={0} max={9999} step={1} precision={0}
-                    onChange={v => {
-                      const kfs = [...(data.timeRemapKeyframes ?? [])];
-                      kfs[i] = { ...kfs[i], time: v };
-                      updateData({ timeRemapKeyframes: kfs });
-                    }} label="T" />
-                  <NumberInput value={kf.sourceFrame} min={0} max={9999} step={1} precision={0}
-                    onChange={v => {
-                      const kfs = [...(data.timeRemapKeyframes ?? [])];
-                      kfs[i] = { ...kfs[i], sourceFrame: v };
-                      updateData({ timeRemapKeyframes: kfs });
-                    }} label="F" />
-                  <button onClick={() => {
-                    const kfs = (data.timeRemapKeyframes ?? []).filter((_, j) => j !== i);
-                    updateData({ timeRemapKeyframes: kfs });
-                  }} style={{ background: 'none', border: 'none', color: 'var(--color-danger)',
-                    cursor: 'pointer', fontSize: 10, padding: 0 }}>×</button>
-                </div>
-              </PropRow>
-            ))}
+            {(() => {
+              // Read from KeyframeEngine for consistency
+              const ks = useKeyframeStore.getState();
+              const engineKfs = ks.engine.getKeyframesForProperty(layer.id, 'timeRemap');
+              return engineKfs.map((kf, i) => (
+                <PropRow key={kf.id} label={`Kf${i+1}`}>
+                  <div style={{ display: 'flex', gap: 3, alignItems: 'center', flex: 1 }}>
+                    <NumberInput value={kf.time} min={0} max={9999} step={1} precision={0}
+                      onChange={v => {
+                        const store = useKeyframeStore.getState();
+                        store.updateKeyframe(kf.id, { time: v });
+                        const allKfs = store.engine.getKeyframesForProperty(layer.id, 'timeRemap');
+                        const remapKfs = allKfs.map(k => ({ time: k.time, sourceFrame: typeof k.value === 'number' ? k.value : k.time }));
+                        updateData({ timeRemapKeyframes: remapKfs });
+                      }} label="T" />
+                    <NumberInput value={typeof kf.value === 'number' ? kf.value : 0} min={0} max={9999} step={1} precision={0}
+                      onChange={v => {
+                        const store = useKeyframeStore.getState();
+                        store.updateKeyframe(kf.id, { value: v });
+                        const allKfs = store.engine.getKeyframesForProperty(layer.id, 'timeRemap');
+                        const remapKfs = allKfs.map(k => ({ time: k.time, sourceFrame: typeof k.value === 'number' ? k.value : k.time }));
+                        updateData({ timeRemapKeyframes: remapKfs });
+                      }} label="F" />
+                    <button onClick={() => {
+                      const store = useKeyframeStore.getState();
+                      store.removeKeyframe(kf.id);
+                      const allKfs = store.engine.getKeyframesForProperty(layer.id, 'timeRemap');
+                      const remapKfs = allKfs.map(k => ({ time: k.time, sourceFrame: typeof k.value === 'number' ? k.value : k.time }));
+                      updateData({ timeRemapKeyframes: remapKfs.length > 0 ? remapKfs : undefined });
+                    }} style={{ background: 'none', border: 'none', color: 'var(--color-danger)',
+                      cursor: 'pointer', fontSize: 10, padding: 0 }}>×</button>
+                  </div>
+                </PropRow>
+              ));
+            })()}
           </>
         )}
       </Section>

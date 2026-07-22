@@ -9,6 +9,7 @@ import type { Layer } from '../../types/layer';
 import { useTimelineStore } from '../../state/timelineStore';
 import { useKeyframeStore } from '../../state/keyframeStore';
 import { autoKeyTransform } from './KeyframeHelpers';
+import type { RuntimeTransformOverride } from '../../animation/PropertyBinder';
 
 export type TransformMode = 'grab' | 'rotate' | 'scale' | 'perspective';
 
@@ -108,14 +109,31 @@ export class ModalTransform {
     const comp = compState.compositions.find((c) => c.id === compId);
     if (!comp) return;
 
+    // Read runtime overrides from the propertyBinder so we capture the
+    // interpolated keyframe values instead of the stale base transform.
+    // Without this, dragging a keyframed layer at a mid-frame would start
+    // from the last manually-set keyframe value instead of the current
+    // interpolated position — causing a visible jump/teleport.
+    const pb = (window as any).__renderer?.propertyBinder as
+      | { overrides: Map<string, RuntimeTransformOverride> }
+      | undefined;
+    const overrides = pb?.overrides;
+
     const startTransforms = new Map<string, LayerSnapshot>();
     for (const id of layerIds) {
       const layer = comp.layers.find((l) => l.id === id);
       if (layer) {
+        // Prefer interpolated override values (from keyframe animation)
+        // over the raw store values which may be stale.
+        const ov = overrides?.get(id);
         const snap: LayerSnapshot = {
-          pos: { ...layer.transform.position },
-          scale: { ...layer.transform.scale },
-          rotation: layer.transform.rotation,
+          pos: ov?.position
+            ? { ...ov.position }
+            : { ...layer.transform.position },
+          scale: ov?.scale
+            ? { ...ov.scale }
+            : { ...layer.transform.scale },
+          rotation: ov?.rotation ?? layer.transform.rotation,
         };
         if (layer.is3D && layer.transform3D) {
           snap.pos3d = { ...layer.transform3D.position };
@@ -155,7 +173,7 @@ export class ModalTransform {
     this._cachedSnapTargets = this._buildSnapTargets(comp, layerIds);
 
     // Capture undo snapshot at drag start (the "before" state)
-    this._captureUndoSnapshot();
+    this._undoBeforeSnapshot = this._captureUndoSnapshot();
 
     if (canvas) {
       this._canvas = canvas;
@@ -220,13 +238,15 @@ export class ModalTransform {
     (window as any).__pendingBlenderKey = null;
     (window as any).__3DAxisLock = null;
 
-    // Push a single undo entry for the complete drag operation
-    const snapshot = this._captureUndoSnapshot();
-    if (snapshot) {
+    // Push the "before" snapshot captured at drag start — NOT the current
+    // (after) state. This ensures undo restores to the pre-drag position,
+    // not the final drag position (which would be a no-op undo).
+    if (this._undoBeforeSnapshot) {
       import('../../state/historyStore').then(m => {
-        m.useHistoryStore.getState().pushEntry('Transform', snapshot);
+        m.useHistoryStore.getState().pushEntry('Transform', this._undoBeforeSnapshot!);
       });
     }
+    this._undoBeforeSnapshot = null;
   }
 
   /** Insert keyframes for any transform values that changed after a drag.
@@ -243,7 +263,7 @@ export class ModalTransform {
     const comp = compState.compositions.find(c => c.id === compId);
     if (!comp) return;
 
-    const currentFrame = Math.round(comp.currentTime * comp.fps);
+    const globalFrame = Math.round(comp.currentTime * comp.fps);
     const autoKey = useTimelineStore.getState().autoKey;
     const engine = useKeyframeStore.getState().engine;
 
@@ -289,6 +309,12 @@ export class ModalTransform {
 
       if (changedProps.length === 0) continue;
 
+      // Convert global frame → local frame for this layer.
+      // The keyframe engine evaluates at localFrame = frame - layer.startFrame,
+      // so keyframe times must be in local-frame space. Using the global frame
+      // caused keyframe time mismatch for layers that don't start at frame 0.
+      const localFrame = Math.max(0, globalFrame - layer.startFrame);
+
       // For each changed property, decide whether to insert a keyframe:
       //   - autoKey ON: always insert
       //   - autoKey OFF but property already has keyframes: insert (prevent override)
@@ -296,7 +322,7 @@ export class ModalTransform {
         const hasKeyframes = engine.getKeyframesForProperty(layerId, prop).length > 0;
         if (!autoKey && !hasKeyframes) continue;
 
-        autoKeyTransform(layerId, layer.transform, start, currentFrame, start, (layer as any).transform3D ?? null);
+        autoKeyTransform(layerId, layer.transform, start, localFrame, start, (layer as any).transform3D ?? null);
         break; // autoKeyTransform handles all changed props for this layer
       }
     }
@@ -343,6 +369,7 @@ export class ModalTransform {
     this._cachedSnapTargets = null;
     this._handlePivotWorld = null;
     this._startRotateAngle = null;
+    this._undoBeforeSnapshot = null;
     this._emitState();
   }
 

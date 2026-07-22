@@ -8,14 +8,18 @@
  * - Drag-and-drop onto layers (outliner) or timeline empty area
  * - Double-click applies to currently selected layer
  */
-import React, { useEffect, useMemo, useState } from 'react';
-import { Search, X, Sparkles, Save } from 'lucide-react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { Search, X, Sparkles, Save, Layers, Square } from 'lucide-react';
 import { effectRegistry } from '../../../renderer/effects/EffectRegistry';
 import { effectThumbnailGenerator, THUMB_SIZE } from '../../../renderer/effects/EffectThumbnailGenerator';
 import { useEffectsStore } from '../../../state/effectsStore';
 import { useSelectionStore } from '../../../state/selectionStore';
+import { useCompositionStore } from '../../../state/compositionStore';
 import { useNotificationStore } from '../../../state/notificationStore';
 import { EffectPresetsPanel } from './EffectPresetsPanel';
+import { createLayerInstance } from '../../../utils/createLayerInstance';
+import { useContextMenu } from '../../common/useContextMenu';
+import { ContextMenu } from '../../common/ContextMenu';
 import type { EffectCategory, EffectDefinition, EffectType } from '../../../types/effect';
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -34,10 +38,12 @@ export const EffectLibraryPanel: React.FC = () => {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<CategoryFilter>('all');
   const [genProgress, setGenProgress] = useState<{ done: number; total: number } | null>(null);
+  const [activeEffect, setActiveEffect] = useState<EffectType | null>(null);
   const addNotif = useNotificationStore((s) => s.addNotification);
   const selectedLayers = useSelectionStore((s) =>
     s.selected.filter((x) => x.type === 'layer'),
   );
+  const ctx = useContextMenu();
 
   const allDefs = useMemo(() => effectRegistry.list().filter((d) => d.passes > 0), []);
   const cats = useMemo(() => effectRegistry.listCategories(), []);
@@ -66,10 +72,46 @@ export const EffectLibraryPanel: React.FC = () => {
     });
   }, [allDefs, category, search]);
 
+  const createAdjustmentLayer = useCallback((type: EffectType) => {
+    const cs = useCompositionStore.getState();
+    const compId = cs.activeCompositionId;
+    const comp = compId ? cs.compositions.find(c => c.id === compId) : null;
+    if (!comp) {
+      addNotif({ type: 'warning', message: 'No composition — create one first', autoDismiss: 2500 });
+      return;
+    }
+    const adjLayer = createLayerInstance('adjustment', comp, {
+      name: `Adjustment: ${effectRegistry.get(type)?.displayName ?? type}`,
+      zIndex: comp.layers.length + 1,
+    });
+    cs.addLayer(compId!, adjLayer);
+    useEffectsStore.getState().addEffect(adjLayer.id, type);
+    useSelectionStore.getState().select({ type: 'layer', id: adjLayer.id, compositionId: compId! });
+    addNotif({ type: 'success', message: `Created adjustment layer with ${effectRegistry.get(type)?.displayName ?? type}`, autoDismiss: 2500 });
+    try { (window as any).__renderer?.renderLoop?.requestRender?.(); } catch {}
+  }, [addNotif]);
+
+  // Keyboard shortcut: Ctrl+Shift+E → create adjustment layer with the active (last-hovered) effect
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'e' || e.key === 'E')) {
+        const type = activeEffect ?? filtered[0]?.type ?? null;
+        if (type) {
+          e.preventDefault();
+          e.stopPropagation();
+          createAdjustmentLayer(type);
+        }
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [activeEffect, filtered, createAdjustmentLayer]);
+
   const applyToSelected = (type: EffectType) => {
     const sel = useSelectionStore.getState().selected.filter((x) => x.type === 'layer');
+    // If no layer is selected, fall back to creating an adjustment layer
     if (sel.length === 0) {
-      addNotif({ type: 'warning', message: 'Select a layer to apply effect', autoDismiss: 2500 });
+      createAdjustmentLayer(type);
       return;
     }
     for (const s of sel) {
@@ -77,6 +119,28 @@ export const EffectLibraryPanel: React.FC = () => {
     }
     addNotif({ type: 'success', message: `Applied ${type} to ${sel.length} layer${sel.length > 1 ? 's' : ''}`, autoDismiss: 2000 });
   };
+
+  const openEffectContext = useCallback((e: React.MouseEvent, def: EffectDefinition) => {
+    const sel = useSelectionStore.getState().selected.filter((x) => x.type === 'layer');
+    ctx.open(e, [
+      { id: 'efx.hdr', label: def.displayName, disabled: true },
+      { id: 'efx.d1', divider: true },
+      {
+        id: 'efx.apply',
+        label: 'Apply to Selected Layer',
+        icon: <Square size={12} strokeWidth={2} />,
+        disabled: sel.length === 0,
+        onClick: () => applyToSelected(def.type),
+      },
+      {
+        id: 'efx.adj',
+        label: 'Create Adjustment Layer',
+        icon: <Layers size={12} strokeWidth={2} />,
+        disabled: false,
+        onClick: () => createAdjustmentLayer(def.type),
+      },
+    ]);
+  }, [ctx, createAdjustmentLayer]);
 
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--color-panel)' }}>
@@ -147,10 +211,15 @@ export const EffectLibraryPanel: React.FC = () => {
           }}
         >
           {filtered.map((def) => (
-            <EffectCard key={def.type} def={def} onDoubleClick={() => applyToSelected(def.type)} />
+            <EffectCard key={def.type} def={def}
+              onDoubleClick={() => applyToSelected(def.type)}
+              onContext={(e) => openEffectContext(e, def)}
+              onHover={() => setActiveEffect(def.type)} />
           ))}
         </div>
       </div>
+
+      {ctx.menu && <ContextMenu items={ctx.menu.items} position={ctx.menu.position} onClose={ctx.close} />}
 
       {/* Presets section */}
       <div style={{ borderTop: '1px solid var(--color-border)', marginTop: 4 }}>
@@ -188,7 +257,7 @@ const CategoryButton: React.FC<{ active: boolean; onClick: () => void; label: st
   </button>
 );
 
-const EffectCard: React.FC<{ def: EffectDefinition; onDoubleClick: () => void }> = ({ def, onDoubleClick }) => {
+const EffectCard: React.FC<{ def: EffectDefinition; onDoubleClick: () => void; onContext: (e: React.MouseEvent) => void; onHover: () => void }> = ({ def, onDoubleClick, onContext, onHover }) => {
   const [thumb, setThumb] = useState<string | null>(null);
   const [hover, setHover] = useState(false);
 
@@ -229,9 +298,10 @@ const EffectCard: React.FC<{ def: EffectDefinition; onDoubleClick: () => void }>
       draggable
       onDragStart={onDragStart}
       onDoubleClick={onDoubleClick}
-      onMouseEnter={() => setHover(true)}
+      onContextMenu={onContext}
+      onMouseEnter={() => { setHover(true); onHover(); }}
       onMouseLeave={() => setHover(false)}
-      title={`${def.displayName}\n${def.description}\n\nDouble-click: apply to selected layer\nDrag: drop on layer or timeline`}
+      title={`${def.displayName}\n${def.description}\n\nDouble-click: apply to selected layer\nRight-click: more options\nCtrl+Shift+E: create adjustment layer\nDrag: drop on layer or timeline`}
       style={{
         borderRadius: 'var(--radius-sm)',
         padding: 4,

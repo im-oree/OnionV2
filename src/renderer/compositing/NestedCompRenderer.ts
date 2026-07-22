@@ -7,6 +7,7 @@ import { PropertyBinder } from '../../animation/PropertyBinder';
 import { useKeyframeStore } from '../../state/keyframeStore';
 import type { RuntimeTransformOverride } from '../../animation/PropertyBinder';
 import type { BaseLayerRenderer } from '../layers/BaseLayerRenderer';
+import { EffectsRenderer } from '../effects/EffectsRenderer';
 
 /**
  * Renders a nested composition into an offscreen render target and exposes it as a texture.
@@ -24,6 +25,7 @@ export class NestedCompRenderer {
   public readonly width: number;
   public readonly height: number;
   private propertyBinder: PropertyBinder;
+  private effectsRenderer: EffectsRenderer;
   private compId: string;
   private layerMap = new Map<string, Layer>();
 
@@ -52,6 +54,7 @@ export class NestedCompRenderer {
     this.factory = new LayerFactory(this.sceneManager);
     this.compId = comp.id;
     this.propertyBinder = new PropertyBinder(useKeyframeStore.getState().engine);
+    this.effectsRenderer = new EffectsRenderer(this.webglRenderer);
 
     // Orthographic camera framing the comp exactly
     const hw = comp.width / 2;
@@ -167,11 +170,55 @@ export class NestedCompRenderer {
 
   /** Render the nested comp to its texture. Call each frame. */
   render(): void {
+    // Apply effects BEFORE rendering the scene so effect quads are present
+    // in each layer group when the scene renders.
+    this._processEffects();
+
     const prevTarget = this.webglRenderer.getRenderTarget();
     this.webglRenderer.setRenderTarget(this.renderTarget);
     this.webglRenderer.clear();
     this.webglRenderer.render(this.scene, this.camera);
     this.webglRenderer.setRenderTarget(prevTarget);
+  }
+
+  /** Process effects on nested comp layers */
+  private _processEffects(): void {
+    const layerIds: string[] = [];
+    for (const [id] of this.layerRenderers) {
+      layerIds.push(id);
+    }
+
+    this.effectsRenderer.prepareFrame(layerIds);
+
+    for (const [id, r] of this.layerRenderers) {
+      const layer = this.layerMap.get(id);
+      if (!layer) continue;
+
+      const gw = (r as any).geometryWidth?.() ?? 0;
+      const gh = (r as any).geometryHeight?.() ?? 0;
+
+      if (this.effectsRenderer.hasEffects(id) && gw > 0 && gh > 0) {
+        try {
+          const success = this.effectsRenderer.renderLayer(id, r.mesh, gw, gh, r.group);
+          if (success) {
+            // Hide original mesh — the effect quad replaces it
+            if (r.mesh.visible) r.mesh.visible = false;
+          } else {
+            // Effect rendering failed — show original mesh
+            this.effectsRenderer.removeLayerEffects(id);
+            r.mesh.visible = true;
+          }
+        } catch (err) {
+          console.warn(`[NestedCompRenderer] effects error for ${id}:`, err);
+          this.effectsRenderer.removeLayerEffects(id);
+          r.mesh.visible = true;
+        }
+      } else {
+        // No effects or zero-size — show original mesh
+        if (!r.mesh.visible) r.mesh.visible = true;
+        this.effectsRenderer.removeLayerEffects(id);
+      }
+    }
   }
 
   /** Compute the local frame for the nested comp given parent frame + layer data */
@@ -195,6 +242,7 @@ export class NestedCompRenderer {
   dispose(): void {
     for (const r of this.layerRenderers.values()) this.factory.remove(r);
     this.layerRenderers.clear();
+    this.effectsRenderer.dispose();
     this.sceneManager.dispose();
     this.renderTarget.dispose();
   }

@@ -8,31 +8,51 @@ export type EffectType =
   // Blur
   | 'gaussianBlur' | 'boxBlur' | 'directionalBlur' | 'radialBlur' | 'sharpen'
   | 'motionBlur' | 'lensBlur' | 'cameraLensBlur'
-  | 'unsharpMask'
+  | 'unsharpMask' | 'cameraLensBlur' | 'ccRadialBlur' | 'channelBlur' | 'bccBlur' | 'defocusPrism' | 'opticalFlowBlur'
   // Color
   | 'colorCorrection' | 'levels' | 'hueSaturation' | 'tint' | 'invert'
   | 'threshold' | 'fill' | 'chromaKey' | 'tritone' | 'colorBalance'
   | 'exposure' | 'vibrance' | 'curves' | 'posterize'
   | 'duotone' | 'sepia' | 'solarize'
+  | 'ccColorOffset' | 'ccColorama' | 'ccCoolWarm' | 'blackAndWhite' | 'leaveColor'
+  | 'channelMixer' | 'photoFilter' | 'shadowHighlight' | 'threeWayColorGrade' | 'broadcastSafe'
   // Stylize
+  | 'cinemaBars'
   | 'glow' | 'dropShadow' | 'vignette' | 'chromaticAberration' | 'bevelAlpha'
   | 'cartoon' | 'glitch' | 'edgeDetect' | 'innerGlow' | 'outerGlow' | 'stroke'
   | 'filmGrain' | 'feedback' | 'scanLines' | 'badTv' | 'timeEcho'
   | 'crossHatch' | 'halftone' | 'asciiArt'  | 'emboss'
   | 'deepGlow' | 'bloom'
   | 'mosaic' | 'roughenEdges' | 'echo' | 'posterizeTime'
+  | 'ccBurnFilm' | 'ccGlass' | 'ccHexagon' | 'ccThresholdRGB'
+  | 'brushStrokes' | 'colorEmboss' | 'scatter'
+  | 'vintageCam' | 'damagedFilm' | 'filmBloom'
+  | 'grunge' | 'digitalDamage' | 'pixelSort' | 'flysEyesHex'
+  | 'denoise' | 'deflicker' | 'scratchRemoval' | 'stabilization'
+  | 'skinSmoothing' | 'freezeFrame' | 'cartoonLook'
   // Distort
   | 'liquify' | 'meshWarp'
   | 'wave' | 'bulge' | 'twirl' | 'ripple' | 'turbulentDisplace'
   | 'lensDistortion' | 'pixelate' | 'mirror' | 'kaleidoscope'
   | 'ccSphere' | 'displacementMap' | 'displacementMap2'
+  | 'ccBendIt' | 'ccFloMotion' | 'ccGriddler' | 'ccLens' | 'ccPowerPin' | 'ccSlant' | 'ccSplit' | 'ccTiler'
+  | 'bendTaperTwist' | 'imageShatter' | 'distortChroma' | 'distortRGB'
   // Generate
   | 'gradient' | 'noise' | 'fractalNoise' | 'motionTile'
-  | 'ccLightSweep' | 'lensFlare' | 'radioWaves' | 'ccParticleWorld'
+  | 'ccLightSweep' | 'lensFlare' | 'radioWaves' | 'ccParticleWorld' | 'ccGodray'
+  | 'ccLightBurst' | 'ccKaleida' | 'ccRain' | 'ccSnow' | 'checkerboard' | 'gridTile'
+  | 'artistsPoster' | 'chalk'
+  | 'edgeGlow' | 'raysGlow' | 'glare' | 'glint' | 'streaks' | 'bokehLights' | 'flashbulbs' | 'spotlight' | 'eyeLight' | 'superLED' | 'haloBur'
+  | 'clouds' | 'aurora' | 'starfield' | 'zaps' | 'sparkles' | 'brick' | 'caustics'
+  | 'particleIllusion' | 'alphaProcess' | 'applyModes' | 'tracery'
   // Transition
   | 'radialWipe' | 'radialReveal' | 'irisReveal'
+  | 'blockDissolve' | 'cardWipe' | 'gradientWipe' | 'venetianBlinds'
+  | 'blobsWipe' | 'rippleDissolve' | 'tileWipe' | 'lightWipe' | 'twisterWipe'
+  | 'dissolveGlow' | 'dissolveDigitalDamage' | 'dissolveShake' | 'dissolvePixelSort'
+  | 'ccPageTurn'
   // Keying
-  | 'autoCutout'
+  | 'autoCutout' | 'linearColorKey' | 'spillSuppressor' | 'primatteKey'
   // Blend Mode
   | 'blendMode';
 

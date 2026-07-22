@@ -46,8 +46,17 @@ export class StorageManager {
       const { FileSystemAPIAdapter } = await import('./FileSystemAPIAdapter');
       const adapter = new FileSystemAPIAdapter();
       if (await adapter.adapterAvailable()) {
-        this.adapter = adapter;
-        return adapter;
+        // Check if workspace is already configured before committing to FS adapter
+        // If the FS adapter has no persisted workspace handle, fall back to
+        // IndexedDB so the app works immediately without requiring the user
+        // to pick a physical folder first.
+        const hasWs = await adapter.ensureWorkspace();
+        if (hasWs) {
+          this.adapter = adapter;
+          return adapter;
+        }
+        // FS adapter is available but no workspace → fall through to IndexedDB
+        // The user can still opt into a workspace later via File > Pick Workspace.
       }
     }
     // Fallback to IndexedDB
@@ -55,10 +64,6 @@ export class StorageManager {
     const adapter = new IndexedDBAdapter();
     if (await adapter.adapterAvailable()) {
       this.adapter = adapter;
-      useNotificationStore.getState().addNotification({
-        type: 'info', message: 'Using IndexedDB storage — File System API not available.',
-        autoDismiss: 5000,
-      });
       return adapter;
     }
     // Last resort: Download adapter

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { CompositionMarker } from '../types/marker';
 import { defaultMarker } from '../types/marker';
+import { captureSnapshot, useHistoryStore } from './historyStore';
 
 export interface MarkerState {
   markersByComposition: Record<string, CompositionMarker[]>;
@@ -15,7 +16,8 @@ export interface MarkerState {
 export const useMarkerStore = create<MarkerState>((set, get) => ({
   markersByComposition: {},
 
-  addMarker: (compId, time, frame, label) =>
+  addMarker: (compId, time, frame, label) => {
+    const snapshot = captureSnapshot();
     set((s) => {
       const existing = s.markersByComposition[compId] ?? [];
       const marker = defaultMarker(time, frame);
@@ -26,9 +28,12 @@ export const useMarkerStore = create<MarkerState>((set, get) => ({
           [compId]: [...existing, marker],
         },
       };
-    }),
+    });
+    useHistoryStore.getState().pushEntry('Add Marker', snapshot);
+  },
 
-  removeMarker: (compId, markerId) =>
+  removeMarker: (compId, markerId) => {
+    const snapshot = captureSnapshot();
     set((s) => {
       const existing = s.markersByComposition[compId] ?? [];
       return {
@@ -37,9 +42,12 @@ export const useMarkerStore = create<MarkerState>((set, get) => ({
           [compId]: existing.filter((m) => m.id !== markerId),
         },
       };
-    }),
+    });
+    useHistoryStore.getState().pushEntry('Remove Marker', snapshot);
+  },
 
-  updateMarker: (compId, markerId, patch) =>
+  updateMarker: (compId, markerId, patch) => {
+    const snapshot = captureSnapshot();
     set((s) => {
       const existing = s.markersByComposition[compId] ?? [];
       return {
@@ -48,15 +56,20 @@ export const useMarkerStore = create<MarkerState>((set, get) => ({
           [compId]: existing.map((m) => (m.id === markerId ? { ...m, ...patch } : m)),
         },
       };
-    }),
+    });
+    useHistoryStore.getState().pushEntry('Update Marker', snapshot);
+  },
 
-  clearAllMarkers: (compId) =>
+  clearAllMarkers: (compId) => {
+    const snapshot = captureSnapshot();
     set((s) => ({
       markersByComposition: {
         ...s.markersByComposition,
         [compId]: [],
       },
-    })),
+    }));
+    useHistoryStore.getState().pushEntry('Clear Markers', snapshot);
+  },
 
   getMarkersForComposition: (compId) => get().markersByComposition[compId] ?? [],
 }));

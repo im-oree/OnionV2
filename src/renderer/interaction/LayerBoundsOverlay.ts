@@ -1,17 +1,18 @@
 /**
- * LayerBoundsOverlay — draws a thin outline for every unselected layer whose
+ * LayerBoundsOverlay â€” draws a thin outline for every unselected layer whose
  * bounding box is partially or fully outside the composition rectangle.
- * Makes it obvious where off-canvas layers live (AE-style).
  *
- * Rendered on its own SVG so it doesn't interfere with SelectionOverlay.
- * Non-interactive (pointer-events: none). Hit-testing goes through the
- * regular canvas HitTester.
+ * Now respects `viewportStore.settings.showLayerBounds` â€” off by default, so
+ * unselected layers do NOT get the blueish/black dashed rectangle drawn
+ * around them. Only draws when the user explicitly enables it AND the layer
+ * actually exits the composition bounds.
  */
 import * as THREE from 'three';
 import type { CameraManager } from '../CameraManager';
 import type { BaseLayerRenderer } from '../layers/BaseLayerRenderer';
 import { useCompositionStore } from '../../state/compositionStore';
 import { useSelectionStore } from '../../state/selectionStore';
+import { useViewportStore } from '../../state/viewportStore';
 
 const NS = 'http://www.w3.org/2000/svg';
 
@@ -32,7 +33,6 @@ export class LayerBoundsOverlay {
     svg.style.position = 'absolute';
     svg.style.inset = '0';
     svg.style.pointerEvents = 'none';
-    // Sit BELOW SelectionOverlay (z=25) so selection handles remain on top.
     svg.style.zIndex = '22';
     svg.style.width = '100%';
     svg.style.height = '100%';
@@ -46,17 +46,22 @@ export class LayerBoundsOverlay {
   }
 
   show(): void { this._visible = true; }
-  hide(): void { this._visible = false; if (this.svg) this.svg.innerHTML = ''; }
+  hide(): void {
+    this._visible = false;
+    if (this.svg) this.svg.innerHTML = '';
+  }
   get visible(): boolean { return this._visible; }
 
-  /**
-   * Draw outlines for every renderer whose bounding box exits the composition
-   * rect. Selected layers are skipped (SelectionOverlay handles them).
-   */
   update(renderers: BaseLayerRenderer[]): void {
     if (!this.svg) return;
     this.svg.innerHTML = '';
+
+    // Gate 1: overlay hidden by internal state
     if (!this._visible || renderers.length === 0) return;
+
+    // Gate 2: user setting â€” OFF by default. This is the black outline fix.
+    const showBounds = useViewportStore.getState().settings.showLayerBounds;
+    if (!showBounds) return;
 
     const cs = useCompositionStore.getState();
     const comp = cs.activeCompositionId
@@ -74,14 +79,13 @@ export class LayerBoundsOverlay {
     const halfH = comp.height / 2;
 
     for (const r of renderers) {
-      if (selected.has(r.id)) continue;              // handled by SelectionOverlay
-      if (!r.group.visible) continue;                // hidden layers
-      if (!(r as any).mesh?.visible) continue;       // invisible mesh
+      if (selected.has(r.id)) continue;
+      if (!r.group.visible) continue;
+      if (!(r as any).mesh?.visible) continue;
 
       const worldCorners = this._getWorldCornersRaw(r);
       if (!worldCorners) continue;
 
-      // Bounding box of the layer in world space
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
       for (const c of worldCorners) {
         if (c.x < minX) minX = c.x;
@@ -90,18 +94,15 @@ export class LayerBoundsOverlay {
         if (c.y > maxY) maxY = c.y;
       }
 
-      // Fully inside comp → no outline needed
       const fullyInside =
         minX >= -halfW && maxX <= halfW &&
         minY >= -halfH && maxY <= halfH;
       if (fullyInside) continue;
 
-      // Fully outside comp → dimmer outline
       const fullyOutside =
         maxX < -halfW || minX > halfW ||
         maxY < -halfH || minY > halfH;
 
-      // Draw the (rotated) polygon outline in screen space
       const screenCorners = worldCorners.map(c =>
         this.cameraManager.worldToScreen(c.x, c.y),
       );
@@ -119,9 +120,8 @@ export class LayerBoundsOverlay {
     }
   }
 
-  /** Get 4 world-space corners of a renderer's mesh (no screen mapping). */
   private _getWorldCornersRaw(renderer: BaseLayerRenderer): { x: number; y: number }[] | null {
-    renderer.mesh.updateMatrixWorld(true);
+    renderer.group.updateMatrixWorld(true);
     const geo = renderer.mesh.geometry;
     geo.computeBoundingBox();
     const bbox = geo.boundingBox;

@@ -2,7 +2,7 @@
  * FileSystemAPIAdapter — Primary storage using the File System Access API.
  * Works in Chromium-based browsers. Each project is a folder on the user's disk.
  */
-import type { StorageAdapter, StorageCapabilities, ProjectHandle, WorkspaceHandle, AssetRef, ProjectMetadata, SerializedProject, SaveOptions } from './StorageAdapter';
+import type { StorageAdapter, StorageCapabilities, ProjectHandle, WorkspaceHandle, AssetRef, ProjectMetadata, SerializedProject, SaveOptions, AssetCategory } from './StorageAdapter';
 
 const WORKSPACE_DB = 'OnionWorkspaceHandle';
 const WORKSPACE_STORE = 'handles';
@@ -280,50 +280,125 @@ export class FileSystemAPIAdapter implements StorageAdapter {
     }
   }
 
-  async saveAsset(blob: Blob, filename: string, projectHandle: ProjectHandle): Promise<AssetRef> {
+  /** Category → subfolder mapping */
+  private static CATEGORY_FOLDER: Record<AssetCategory, string> = {
+    'images': 'Media/images',
+    'audio': 'Media/audio',
+    'video': 'Media/video',
+    'fonts': 'Media/fonts',
+    '3d-models': 'Media/3d-models',
+  };
+
+  /** Resolve category from MIME type if not explicitly provided */
+  private static inferCategory(mimeType: string, filename: string): AssetCategory {
+    if (mimeType.startsWith('image/')) return 'images';
+    if (mimeType.startsWith('audio/')) return 'audio';
+    if (mimeType.startsWith('video/')) return 'video';
+    const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+    if (['ttf', 'otf', 'woff', 'woff2'].includes(ext)) return 'fonts';
+    if (['glb', 'gltf', 'obj', 'ply', 'stl', 'fbx'].includes(ext)) return '3d-models';
+    return 'images'; // fallback
+  }
+
+  async saveAsset(blob: Blob, filename: string, projectHandle: ProjectHandle, category?: AssetCategory): Promise<AssetRef> {
     await this._ensurePermission();
     const dirHandle = await this._getProjectDir(projectHandle);
-    const assetsDir = await dirHandle.getDirectoryHandle('assets', { create: true });
-    const fileHandle = await assetsDir.getFileHandle(filename, { create: true });
+    const cat = category ?? FileSystemAPIAdapter.inferCategory(blob.type || '', filename);
+    const subfolder = FileSystemAPIAdapter.CATEGORY_FOLDER[cat];
+
+    // Create nested Media/<category> folder structure
+    const mediaDir = await dirHandle.getDirectoryHandle('Media', { create: true });
+    const catDir = await mediaDir.getDirectoryHandle(cat, { create: true });
+
+    const fileHandle = await catDir.getFileHandle(filename, { create: true });
     const writable = await fileHandle.createWritable({ keepExistingData: false });
     await writable.write(blob);
     await writable.close();
+
     return {
       id: `asset_${Date.now()}_${filename}`,
       filename,
       mimeType: blob.type || 'application/octet-stream',
       size: blob.size,
-      relativePath: `assets/${filename}`,
+      relativePath: `${subfolder}/${filename}`,
+      category: cat,
     };
   }
 
   async loadAsset(ref: AssetRef, projectHandle: ProjectHandle): Promise<Blob> {
     await this._ensurePermission();
     const dirHandle = await this._getProjectDir(projectHandle);
-    const assetsDir = await dirHandle.getDirectoryHandle('assets');
-    const fileHandle = await assetsDir.getFileHandle(ref.filename);
-    const file = await fileHandle.getFile();
-    return file;
+
+    // Try new Media/ structure first, then fall back to legacy assets/
+    if (ref.relativePath?.startsWith('Media/')) {
+      try {
+        const { dir, filename } = this._splitPath(ref.relativePath);
+        const dirH = await this._resolveDir(dirHandle, dir, false);
+        const fileHandle = await dirH.getFileHandle(filename);
+        return await fileHandle.getFile();
+      } catch { /* fall through to legacy */ }
+    }
+
+    // Legacy: assets/ folder
+    try {
+      const assetsDir = await dirHandle.getDirectoryHandle('assets');
+      const fileHandle = await assetsDir.getFileHandle(ref.filename);
+      return await fileHandle.getFile();
+    } catch {
+      throw new Error(`Asset "${ref.filename}" not found at ${ref.relativePath}`);
+    }
   }
 
   async deleteAsset(ref: AssetRef, projectHandle: ProjectHandle): Promise<void> {
     await this._ensurePermission();
     const dirHandle = await this._getProjectDir(projectHandle);
     try {
-      const assetsDir = await dirHandle.getDirectoryHandle('assets');
-      await assetsDir.removeEntry(ref.filename);
-    } catch {
-      // File may not exist — ignore
-    }
+      if (ref.relativePath?.startsWith('Media/')) {
+        const { dir, filename } = this._splitPath(ref.relativePath);
+        const dirH = await this._resolveDir(dirHandle, dir, false);
+        await dirH.removeEntry(filename);
+      } else {
+        const assetsDir = await dirHandle.getDirectoryHandle('assets');
+        await assetsDir.removeEntry(ref.filename);
+      }
+    } catch { /* File may not exist — ignore */ }
   }
 
   async listAssets(projectHandle: ProjectHandle): Promise<AssetRef[]> {
     const dirHandle = await this._getProjectDir(projectHandle);
     const assets: AssetRef[] = [];
+
+    // Scan new Media/ structure
+    const categories: AssetCategory[] = ['images', 'audio', 'video', 'fonts', '3d-models'];
+    try {
+      const mediaDir = await dirHandle.getDirectoryHandle('Media');
+      for (const cat of categories) {
+        try {
+          const catDir = await mediaDir.getDirectoryHandle(cat);
+          for await (const [name, entry] of (catDir as any).entries()) {
+            if (entry.kind === 'file') {
+              const file = await entry.getFile();
+              assets.push({
+                id: `asset_${cat}_${name}`,
+                filename: name,
+                mimeType: file.type || 'application/octet-stream',
+                size: file.size,
+                relativePath: `Media/${cat}/${name}`,
+                category: cat,
+              });
+            }
+          }
+        } catch { /* category folder may not exist */ }
+      }
+    } catch { /* Media/ folder may not exist */ }
+
+    // Also scan legacy assets/ folder for backwards compatibility
     try {
       const assetsDir = await dirHandle.getDirectoryHandle('assets');
       for await (const [name, entry] of (assetsDir as any).entries()) {
         if (entry.kind === 'file') {
+          // Skip if already found in Media/
+          if (assets.some(a => a.filename === name)) continue;
           const file = await entry.getFile();
           assets.push({
             id: `asset_${name}`,
@@ -334,9 +409,8 @@ export class FileSystemAPIAdapter implements StorageAdapter {
           });
         }
       }
-    } catch {
-      // assets/ folder may not exist
-    }
+    } catch { /* legacy assets/ folder may not exist */ }
+
     return assets;
   }
 

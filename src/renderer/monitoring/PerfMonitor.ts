@@ -1,40 +1,30 @@
 /**
- * PerfMonitor — continuous performance stats collection.
- *
- * Collects rolling averages for FPS, frame render time, cache hit rate,
- * memory usage, dropped frames, and worker queue depth.
- * Exposes stats for display in Viewport HUD.
+ * PerfMonitor â€” continuous performance stats collection.
+ * O(1) rolling averages; no array spreads.
  */
 import { FrameCache } from '../cache/FrameCache';
 
 export interface PerfStats {
-  /** Rolling average FPS over last 60 frames */
   fps: number;
-  /** Target FPS (from composition) */
   targetFps: number;
-  /** Rolling average frame render time in ms */
   frameTimeMs: number;
-  /** Minimum frame time in current window */
   frameTimeMin: number;
-  /** Maximum frame time in current window */
   frameTimeMax: number;
-  /** Number of dropped frames since last reset */
   droppedFrames: number;
-  /** Cache hit rate (0-1) during playback */
   cacheHitRate: number;
-  /** RAM cache memory usage in bytes */
   cacheMemoryBytes: number;
-  /** Total cache budget in bytes */
   cacheBudgetBytes: number;
-  /** Render quality */
   quality: string;
-  /** Quality scale factor (1, 0.5, 0.25) */
   qualityScale: number;
 }
 
 export class PerfMonitor {
-  private _frameTimes: number[] = [];
   private _maxSamples = 60;
+  private _frameTimes: Float32Array;
+  private _writeIdx = 0;
+  private _filled = 0;
+  private _sum = 0;
+
   private _fps = 0;
   private _droppedFrames = 0;
   private _cacheHits = 0;
@@ -45,65 +35,64 @@ export class PerfMonitor {
   private _frameCache: FrameCache | null = null;
   private _cacheBudgetBytes = 2 * 1024 * 1024 * 1024;
 
-  /** Set the frame cache to query memory usage */
-  setFrameCache(fc: FrameCache): void {
-    this._frameCache = fc;
+  constructor() {
+    this._frameTimes = new Float32Array(this._maxSamples);
   }
 
-  setTargetFps(fps: number): void {
-    this._targetFps = fps;
-  }
-
+  setFrameCache(fc: FrameCache): void { this._frameCache = fc; }
+  setTargetFps(fps: number): void { this._targetFps = fps; }
   setQuality(quality: string, scale: number): void {
     this._quality = quality;
     this._qualityScale = scale;
   }
+  setCacheBudget(bytes: number): void { this._cacheBudgetBytes = bytes; }
 
-  setCacheBudget(bytes: number): void {
-    this._cacheBudgetBytes = bytes;
-  }
-
-  /** Record a frame's render time */
   recordFrameTime(ms: number): void {
-    this._frameTimes.push(ms);
-    if (this._frameTimes.length > this._maxSamples) {
-      this._frameTimes.shift();
+    if (this._filled === this._maxSamples) {
+      this._sum -= this._frameTimes[this._writeIdx];
+    } else {
+      this._filled++;
     }
+    this._frameTimes[this._writeIdx] = ms;
+    this._sum += ms;
+    this._writeIdx = (this._writeIdx + 1) % this._maxSamples;
 
-    // Update rolling FPS
-    if (this._frameTimes.length >= 2) {
-      const total = this._frameTimes.reduce((a, b) => a + b, 0);
-      const avg = total / this._frameTimes.length;
-      this._fps = avg > 0 ? Math.round(1000 / avg) : 0;
-    }
+    const avg = this._sum / this._filled;
+    this._fps = avg > 0 ? Math.round(1000 / avg) : 0;
   }
 
-  /** Mark a dropped frame */
-  recordDroppedFrame(): void {
-    this._droppedFrames++;
-  }
+  recordDroppedFrame(): void { this._droppedFrames++; }
 
-  /** Record a cache access */
   recordCacheAccess(hit: boolean): void {
-    if (hit) this._cacheHits++;
-    else this._cacheMisses++;
+    if (hit) this._cacheHits++; else this._cacheMisses++;
   }
 
-  /** Reset all counters */
   reset(): void {
-    this._frameTimes = [];
+    this._writeIdx = 0;
+    this._filled = 0;
+    this._sum = 0;
     this._droppedFrames = 0;
     this._cacheHits = 0;
     this._cacheMisses = 0;
   }
 
-  /** Get current stats snapshot */
   getStats(): PerfStats {
-    const avg = this._frameTimes.length > 0
-      ? this._frameTimes.reduce((a, b) => a + b, 0) / this._frameTimes.length
-      : 0;
-    const min = this._frameTimes.length > 0 ? Math.min(...this._frameTimes) : 0;
-    const max = this._frameTimes.length > 0 ? Math.max(...this._frameTimes) : 0;
+    const avg = this._filled > 0 ? this._sum / this._filled : 0;
+
+    // Compute min/max only if requested and cache result briefly.
+    let min = Infinity;
+    let max = 0;
+    if (this._filled > 0) {
+      for (let i = 0; i < this._filled; i++) {
+        const v = this._frameTimes[i];
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      if (!isFinite(min)) min = 0;
+    } else {
+      min = 0;
+    }
+
     const totalCache = this._cacheHits + this._cacheMisses;
     const hitRate = totalCache > 0 ? this._cacheHits / totalCache : 0;
     const memBytes = this._frameCache?.getMemoryUsage() ?? 0;
@@ -124,7 +113,6 @@ export class PerfMonitor {
   }
 
   dispose(): void {
-    this._frameTimes = [];
     this._frameCache = null;
   }
 }

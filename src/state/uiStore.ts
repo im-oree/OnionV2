@@ -3,7 +3,7 @@ import { PANEL_TYPES, WORKSPACES } from '../config/constants';
 
 export type PanelType = typeof PANEL_TYPES[keyof typeof PANEL_TYPES];
 export type WorkspaceType = typeof WORKSPACES[keyof typeof WORKSPACES];
-export type RightSidebarTab = 'properties' | 'effects' | 'effectLibrary' | 'transitionLibrary' | 'align' | 'info' | 'render' | 'character' | 'performance' | 'graph' | 'camera';
+export type RightSidebarTab = 'properties' | 'effects' | 'effectLibrary' | 'transitionLibrary' | 'customEffects' | 'effectsHub' | 'align' | 'info' | 'render' | 'character' | 'performance' | 'graph' | 'camera';
 
 export interface PanelLayout { id: string; type: PanelType; label: string }
 export type SplitDirection = 'horizontal' | 'vertical';

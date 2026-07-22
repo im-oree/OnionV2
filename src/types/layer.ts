@@ -276,6 +276,8 @@ export interface CompData {
   /** Frame Blending */
   frameBlending?: boolean;
   frameBlendingType?: 'frameMix' | 'pixelMotion';
+  /** Pre-processed: nested comp frames are baked to textures for fast playback */
+  preProcessed?: boolean;
 }
 
 export interface TransitionData {

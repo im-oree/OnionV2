@@ -2,10 +2,8 @@
  * CacheInvalidator — subscribes to store changes and invalidates
  * affected frame ranges in the FrameCache.
  *
- * FIX: All invalidate() calls now use explicit fromFrame+toFrame,
- * or invalidateAll() directly. The old code was calling
- * invalidate(id, 0) with no toFrame, which hit the "undefined toFrame"
- * branch and called invalidateAll() unintentionally.
+ * All invalidate() calls use explicit fromFrame+toFrame,
+ * or invalidateAll() directly.
  */
 import { FrameCache } from './FrameCache';
 import { useCompositionStore } from '../../state/compositionStore';
@@ -14,18 +12,18 @@ import { useEffectsStore } from '../../state/effectsStore';
 import { useMaskStore } from '../../state/maskStore';
 import { KeyframeEngine } from '../../animation/KeyframeEngine';
 
+type Keyframe = { time: number };
+
+const EPSILON = 0.0001;
+
 export class CacheInvalidator {
   private frameCache: FrameCache;
   private unsubs: Array<() => void> = [];
   private _lastEffectsInvalidation = 0;
   private _lastMaskInvalidation = 0;
   private readonly _THROTTLE_MS = 150;
-  private _getEngine: () => KeyframeEngine;
+  private _getEngine: () => KeyframeEngine | undefined;
 
-  /**
-   * Called whenever frameCache.invalidateAll(compId) is triggered.
-   * The Renderer sets this to also invalidate the GPU texture cache.
-   */
   public onInvalidateAll: ((compId: string) => void) | null = null;
 
   constructor(frameCache: FrameCache) {
@@ -54,13 +52,16 @@ export class CacheInvalidator {
         return;
       }
 
-      // Layers added/removed/reordered → invalidate ALL
-      if (!prevComp || prevComp.layers.length !== currComp.layers.length) {
+      // Layers added/removed OR reordered → invalidate ALL
+      if (
+        !prevComp ||
+        prevComp.layers.length !== currComp.layers.length ||
+        prevComp.layers.some((l, i) => l.id !== currComp.layers[i]?.id)
+      ) {
         this._invalidateAll(activeId);
         return;
       }
 
-      // Layer-level comparison
       for (const currL of currComp.layers) {
         const prevL = prevComp.layers.find((l) => l.id === currL.id);
         if (!prevL) {
@@ -89,17 +90,23 @@ export class CacheInvalidator {
 
     const unsub2 = useKeyframeStore.subscribe((state, prevState) => {
       if (state.revision === prevState.revision) return;
+
       const activeId = useCompositionStore.getState().activeCompositionId;
       if (!activeId) return;
 
       const mutation = state.lastKeyframeMutation;
-      if (mutation) {
+      if (
+        mutation &&
+        typeof mutation.time === 'number' &&
+        typeof mutation.layerId === 'string'
+      ) {
         const narrowRange = this._narrowAffectedRange(
           mutation.layerId,
           mutation.property,
           mutation.time,
           mutation.oldTime,
         );
+
         if (narrowRange) {
           this.frameCache.invalidate(
             activeId,
@@ -110,7 +117,6 @@ export class CacheInvalidator {
         }
       }
 
-      // Fallback: invalidate everything — safer than leaving stale frames
       this._invalidateAll(activeId);
     });
 
@@ -118,8 +124,10 @@ export class CacheInvalidator {
       const now = Date.now();
       if (now - this._lastEffectsInvalidation < this._THROTTLE_MS) return;
       this._lastEffectsInvalidation = now;
+
       const activeId = useCompositionStore.getState().activeCompositionId;
       if (!activeId) return;
+
       this._invalidateAll(activeId);
     });
 
@@ -127,8 +135,10 @@ export class CacheInvalidator {
       const now = Date.now();
       if (now - this._lastMaskInvalidation < this._THROTTLE_MS) return;
       this._lastMaskInvalidation = now;
+
       const activeId = useCompositionStore.getState().activeCompositionId;
       if (!activeId) return;
+
       this._invalidateAll(activeId);
     });
 
@@ -138,43 +148,39 @@ export class CacheInvalidator {
   deactivate(): void {
     for (const u of this.unsubs) u();
     this.unsubs = [];
+    this._lastEffectsInvalidation = 0;
+    this._lastMaskInvalidation = 0;
   }
 
-  private _transformChanged(
-    a: {
-      position: { x: number; y: number };
-      scale: { x: number; y: number };
-      rotation: number;
-      anchorPoint: { x: number; y: number };
-    },
-    b: typeof a,
-  ): boolean {
+  private _transformChanged(a: any, b: any): boolean {
+    if (!a || !b) return true;
+
     return (
-      a.position.x !== b.position.x ||
-      a.position.y !== b.position.y ||
-      a.scale.x !== b.scale.x ||
-      a.scale.y !== b.scale.y ||
+      a.position?.x !== b.position?.x ||
+      a.position?.y !== b.position?.y ||
+      a.scale?.x !== b.scale?.x ||
+      a.scale?.y !== b.scale?.y ||
       a.rotation !== b.rotation ||
-      a.anchorPoint.x !== b.anchorPoint.x ||
-      a.anchorPoint.y !== b.anchorPoint.y
+      a.anchorPoint?.x !== b.anchorPoint?.x ||
+      a.anchorPoint?.y !== b.anchorPoint?.y
     );
   }
 
-  /** Invalidate both frame cache and GPU texture cache. */
   private _invalidateAll(compId: string): void {
     this.frameCache.invalidateAll(compId);
     this.onInvalidateAll?.(compId);
   }
 
-  private _invalidateTransformRange(
-    compId: string,
-    layerId: string,
-  ): void {
+  private _invalidateTransformRange(compId: string, layerId: string): void {
     const engine = this._getEngine();
-    const properties = engine.getAllAnimatedProperties(layerId);
+    if (!engine) {
+      this._invalidateAll(compId);
+      return;
+    }
 
+    const properties = engine.getAllAnimatedProperties(layerId);
     if (properties.length === 0) {
-      this.frameCache.invalidateAll(compId);
+      this._invalidateAll(compId);
       return;
     }
 
@@ -182,17 +188,24 @@ export class CacheInvalidator {
     let maxTo = -Infinity;
 
     for (const prop of properties) {
-      const kfs = engine.getKeyframesForProperty(layerId, prop) as any[];
-      if (kfs.length === 0) continue;
+      const kfs = engine.getKeyframesForProperty(
+        layerId,
+        prop,
+      ) as Keyframe[];
+
+      if (!kfs || kfs.length < 2) {
+        this._invalidateAll(compId);
+        return;
+      }
+
       kfs.sort((a, b) => a.time - b.time);
-      const pad = Math.max(
-        1,
-        Math.ceil(
-          ((kfs[1]?.time ?? kfs[0].time + 2) - kfs[0].time) * 0.5,
-        ),
-      );
-      minFrom = Math.min(minFrom, Math.max(0, kfs[0].time - pad));
-      maxTo = Math.max(maxTo, kfs[kfs.length - 1].time + pad);
+
+      const first = kfs[0].time;
+      const last = kfs[kfs.length - 1].time;
+      const pad = Math.max(1, Math.ceil((last - first) * 0.05));
+
+      minFrom = Math.min(minFrom, Math.max(0, first - pad));
+      maxTo = Math.max(maxTo, last + pad);
     }
 
     if (minFrom < Infinity) {
@@ -213,40 +226,65 @@ export class CacheInvalidator {
     oldTime?: number,
   ): { from: number; to: number } | null {
     const engine = this._getEngine();
-    const kfs = engine.getKeyframesForProperty(layerId, property) as any[];
-    if (kfs.length === 0) return null;
+    if (!engine) return null;
 
-    kfs.sort((a: any, b: any) => a.time - b.time);
+    const kfs = engine.getKeyframesForProperty(
+      layerId,
+      property,
+    ) as Keyframe[];
 
-    const idx = kfs.findIndex((k: any) => k.time === newTime);
+    if (!kfs || kfs.length < 2) return null;
+
+    kfs.sort((a, b) => a.time - b.time);
+
+    const findExactIndex = (time: number) =>
+      kfs.findIndex((k) => Math.abs(k.time - time) < EPSILON);
+
+    const idx = findExactIndex(newTime);
+
     let from: number;
     let to: number;
 
     if (idx >= 0) {
-      from = idx > 0 ? kfs[idx - 1].time : 0;
-      to =
-        idx < kfs.length - 1 ? kfs[idx + 1].time : kfs[idx].time + 2;
+      from = idx > 0 ? kfs[idx - 1].time : kfs[0].time;
+      to = idx < kfs.length - 1 ? kfs[idx + 1].time : kfs[idx].time;
     } else {
       const time = oldTime ?? newTime;
-      const nearest = kfs.findIndex((k: any) => k.time >= time);
-      from = nearest > 0 ? kfs[nearest - 1].time : 0;
-      to =
-        nearest < kfs.length ? kfs[nearest].time : time + 2;
+
+      const nearest = kfs.findIndex((k) => k.time > time);
+
+      if (nearest === -1) {
+        from = kfs[kfs.length - 2].time;
+        to = kfs[kfs.length - 1].time;
+      } else if (nearest === 0) {
+        from = kfs[0].time;
+        to = kfs[1].time;
+      } else {
+        from = kfs[nearest - 1].time;
+        to = kfs[nearest].time;
+      }
     }
 
-    if (oldTime !== undefined && oldTime !== newTime) {
-      const oldNearest = kfs.findIndex((k: any) => k.time >= oldTime);
-      const oldFrom = oldNearest > 0 ? kfs[oldNearest - 1].time : 0;
-      const oldTo =
-        oldNearest < kfs.length ? kfs[oldNearest].time : oldTime + 2;
-      from = Math.min(from, oldFrom);
-      to = Math.max(to, oldTo);
+    if (oldTime !== undefined && Math.abs(oldTime - newTime) > EPSILON) {
+      const oldIdx = findExactIndex(oldTime);
+      if (oldIdx >= 0) {
+        const oldFrom =
+          oldIdx > 0 ? kfs[oldIdx - 1].time : kfs[0].time;
+        const oldTo =
+          oldIdx < kfs.length - 1
+            ? kfs[oldIdx + 1].time
+            : kfs[oldIdx].time;
+
+        from = Math.min(from, oldFrom);
+        to = Math.max(to, oldTo);
+      }
     }
 
     const pad = Math.max(1, Math.ceil((to - from) * 0.1));
+
     return {
-      from: Math.max(0, Math.floor(from) - pad),
-      to: Math.ceil(to) + pad,
+      from: Math.max(0, Math.floor(from - pad)),
+      to: Math.ceil(to + pad),
     };
   }
 

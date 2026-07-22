@@ -28,6 +28,7 @@ export const TimelinePanel: React.FC = () => {
   const setZoom = useTimelineStore(s => s.setZoom);
   const scrollX = useTimelineStore(s => s.scrollX);
   const setScrollX = useTimelineStore(s => s.setScrollX);
+  const playbackStateForPoll = useTimelineStore(s => s.playbackState);
 
   const [outlinerWidth, setOutlinerWidth] = useState(350);
   const tracksScrollRef = useRef<HTMLDivElement>(null);
@@ -115,9 +116,29 @@ export const TimelinePanel: React.FC = () => {
     return () => { document.removeEventListener('kfmodal:grab', g); document.removeEventListener('kfmodal:scale', s); };
   }, []);
 
+  // Position the playhead. During idle/pause we read from currentFrame prop.
+  // During playback we run our own RAF loop reading animationClock directly —
+  // because playback silently mutates currentTime (no Zustand notification)
+  // to avoid the React re-render cascade at 30fps.
   useEffect(() => {
-    if (playheadRef.current) playheadRef.current.style.left = `${currentFrame * zoom - scrollX}px`;
+    if (playheadRef.current) {
+      playheadRef.current.style.left = `${currentFrame * zoom - scrollX}px`;
+    }
   }, [currentFrame, zoom, scrollX]);
+
+  useEffect(() => {
+    if (playbackStateForPoll !== 'playing') return;
+    let rafId = 0;
+    const tick = () => {
+      if (playheadRef.current) {
+        const f = animationClock.currentFrame;
+        playheadRef.current.style.left = `${f * zoom - scrollX}px`;
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [playbackStateForPoll, zoom, scrollX]);
 
   const onOutlinerScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     if (tracksScrollRef.current) tracksScrollRef.current.scrollTop = e.currentTarget.scrollTop;

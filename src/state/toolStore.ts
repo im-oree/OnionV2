@@ -8,6 +8,8 @@ export interface ToolSettings {
   snapToGrid: boolean; bezierHandles: boolean;
   /** Currently selected shape preset when using shape tool */
   currentShapePresetId: string;
+  /** Mask shape mode: rectangle or ellipse */
+  maskShape: 'rectangle' | 'ellipse';
 }
 
 export interface ToolState {
@@ -30,6 +32,7 @@ export const useToolStore = create<ToolState>((set, get) => ({
     polygonSides: 6, starRatio: 0.5,
     snapToGrid: true, bezierHandles: true,
     currentShapePresetId: 'rectangle',
+    maskShape: 'rectangle',
   },
   isTransforming: false, transformMode: null,
   setActiveTool: (tool) => set({ activeTool: tool }),

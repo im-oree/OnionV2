@@ -1,5 +1,6 @@
 export function formatPropertyLabel(path: string): string {
   if (path === 'opacity') return 'Opacity';
+  if (path === 'timeRemap') return 'Time Remap';
   if (path.startsWith('transform.')) {
     const field = path.slice('transform.'.length);
     switch (field) {

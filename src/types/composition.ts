@@ -74,6 +74,9 @@ export interface Composition {
   /** Folder assignment in the project browser tree. */
   folderId?: string | null;
 
+  /** Tonemapping mode: 0=Linear (None), 1=ACES, 2=Reinhard */
+  tonemapMode?: 0 | 1 | 2;
+
   /** 3D perspective mode — built-in camera, no camera layer needed */
   perspective3D?: boolean;
 

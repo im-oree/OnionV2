@@ -4,6 +4,7 @@ import { useCompositionStore } from '../../../../state/compositionStore';
 import { useSelectionStore } from '../../../../state/selectionStore';
 import { useViewportStore } from '../../../../state/viewportStore';
 import { useToolStore } from '../../../../state/toolStore';
+import { useMaskStore } from '../../../../state/maskStore';
 import { setRequestRender } from '../../../../state/uiStore';
 import { TOOLS } from '../../../../config/constants';
 import type { GizmoMode } from '../../../../renderer/interaction/SelectionOverlay';
@@ -53,7 +54,6 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
     return comp?.fps ?? 30;
   });
 
-  // Subscribe to identity-affecting fields individually so playback frame ticks don't retrigger
   const compId = useCompositionStore(s => s.activeCompositionId);
   const compWidth = useCompositionStore((s) => {
     if (!s.activeCompositionId) return 0;
@@ -83,8 +83,19 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
     const renderer = new Renderer(container);
     renderer.onStateChange = (newState: RendererState) => setState(newState);
     rendererRef.current = renderer;
-    setReady(true);
     setRequestRender(() => renderer.renderLoop.requestRender());
+
+    // Apply current composition + layers immediately, don't wait for effects.
+    const cs = useCompositionStore.getState();
+    const activeId = cs.activeCompositionId;
+    const activeComp = activeId ? cs.compositions.find(c => c.id === activeId) : null;
+    if (activeComp) {
+      renderer.applyComposition(activeComp);
+      renderer.layerSync.sync(activeComp.layers);
+      renderer.renderLoop.requestRender();
+    }
+
+    setReady(true);
 
     return () => {
       renderer.dispose();
@@ -94,29 +105,60 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
   }, [container]);
 
   // Apply composition identity changes (dimensions, fps, bg color)
-  // Depend only on identity-affecting fields so playback frame ticks don't retrigger.
-  // `composition` is intentionally omitted from deps — the individual selectors above
-  // capture all identity-affecting fields. Stale `composition` is harmless because
-  // the identity string check prevents any spurious applyComposition call.
   const compIdentityRef = useRef('');
   useEffect(() => {
     const r = rendererRef.current;
-    if (!r || !composition) return;
+    if (!r || !composition) {
+      if (!composition) compIdentityRef.current = '';
+      return;
+    }
     const identity = `${compId}_${compWidth}_${compHeight}_${compFps}_${compBgColor}`;
     if (compIdentityRef.current === identity) return;
     compIdentityRef.current = identity;
     r.applyComposition(composition);
-  }, [compId, compWidth, compHeight, compFps, compBgColor]);
+    // Immediately sync layers after applyComposition so nothing is missed.
+    r.layerSync.sync(composition.layers);
+    r.renderLoop.requestRender();
+  }, [compId, compWidth, compHeight, compFps, compBgColor, ready, composition]);
 
   // Sync layers whenever they change
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r) return;
+    r.layerSync.sync(layers);
+    r.renderLoop.requestRender();
+  }, [layers, composition?.id, ready]);
+
+  // Subscribe directly to the composition store as a safety net —
+  // guarantees that any layers array change (add/remove/update) syncs to the renderer,
+  // even if the selector-driven effect above misses a tick due to reference equality quirks.
+  useEffect(() => {
+    if (!ready) return;
+    let lastLayersRef: unknown = null;
+    const unsub = useCompositionStore.subscribe((s) => {
+      const r = rendererRef.current;
+      if (!r) return;
+      const activeId = s.activeCompositionId;
+      if (!activeId) return;
+      const comp = s.compositions.find(c => c.id === activeId);
+      if (!comp) return;
+      if (comp.layers === lastLayersRef) return;
+      lastLayersRef = comp.layers;
+      r.layerSync.sync(comp.layers);
+      r.renderLoop.requestRender();
+    });
+    return unsub;
+  }, [ready]);
+
+  // Re-apply masks and re-render whenever the mask store revision changes
+  const maskRevision = useMaskStore(s => s.revision);
   useEffect(() => {
     const r = rendererRef.current;
     if (!r || !composition) return;
     r.layerSync.sync(layers);
     r.renderLoop.requestRender();
-  }, [layers, composition?.id]);
+  }, [maskRevision, composition?.id, layers]);
 
-  // Request render when currentTime changes (Renderer.beforeRender handles evaluation)
   useEffect(() => {
     const r = rendererRef.current;
     if (!r || !composition) return;
@@ -134,12 +176,13 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
       else if (mt.mode === 'rotate') gizmo = 'rotate';
       else if (mt.mode === 'scale') gizmo = 'scale';
     } else {
-      if (activeTool === (TOOLS.MOVE as string)) gizmo = 'move';
-      else if (activeTool === (TOOLS.ROTATE as string)) gizmo = 'rotate';
+      if (activeTool === (TOOLS.ROTATE as string)) gizmo = 'rotate';
       else if (activeTool === (TOOLS.SCALE as string)) gizmo = 'scale';
+      else gizmo = 'move'; // default — select/move show move gizmo
     }
     r.selectionOverlay.gizmoMode = gizmo;
-    r.selectionOverlay.hideHandles = mt.active || gizmo === null;
+    // Only hide handles during an active modal transform (mid-drag).
+    r.selectionOverlay.hideHandles = mt.active;
   }, [activeTool, ready, transformMode]);
 
   // Selection overlay
@@ -152,7 +195,6 @@ export function useRenderer(container: HTMLElement | null): UseRendererResult {
       return;
     }
     r.selectionOverlay.show();
-    // Last-selected layer gets brighter outline
     const lastId = selectedIds[selectedIds.length - 1];
     r.selectionOverlay.lastSelectedId = lastId;
     const renderers = selectedIds

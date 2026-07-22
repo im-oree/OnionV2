@@ -24,7 +24,10 @@ interface CustomEffectsState {
   effects: CustomEffectDefinition[];
   /** Effects that failed to load — kept for user visibility. */
   brokenIds: string[];
+  /** Non-zero signals CustomEffectPanel to open the gallery dialog. */
+  showGalleryRequest: number;
 
+  requestGallery: () => void;
   create: (name?: string) => CustomEffectDefinition;
   createFromTemplate: (template: Omit<CustomEffectDefinition, 'id' | 'created' | 'modified'>) => CustomEffectDefinition;
   update: (id: string, patch: Partial<CustomEffectDefinition>) => { ok: boolean; error?: string };
@@ -50,6 +53,7 @@ function filePath(id: string): string {
 export const useCustomEffectsStore = create<CustomEffectsState>((set, get) => ({
   effects: [],
   brokenIds: [],
+  showGalleryRequest: 0,
 
   create: (name = 'New Custom Effect') => {
     const def = makeDefaultCustomEffect(genIdSuffix(), name);
@@ -156,6 +160,8 @@ export const useCustomEffectsStore = create<CustomEffectsState>((set, get) => ({
   },
 
   getById: (id) => get().effects.find(e => e.id === id),
+
+  requestGallery: () => set({ showGalleryRequest: Date.now() }),
 
   importFromFile: async (file) => {
     try {

@@ -227,7 +227,7 @@ export const TransformSection: React.FC<Props> = ({ layer, compId }) => {
       </PropRow>
 
       {/* Position with per-axis toggle */}
-      <PropRow label="Position" animatable="transform.position" layer={layer} currentFrame={currentFrame} compId={compId} lockPath="transform.position">
+      <PropRow label="Position" animatable="transform.position" layer={layer} currentFrame={currentFrame} compId={compId} lockPath="transform.position" hideDiamond={perAxisPosition} hideStopwatch={perAxisPosition}>
         <div className="flex items-center gap-1">
           <PerAxisToggle
             enabled={perAxisPosition}
@@ -257,7 +257,7 @@ export const TransformSection: React.FC<Props> = ({ layer, compId }) => {
       </PropRow>
 
       {/* Scale with per-axis toggle */}
-      <PropRow label="Scale" animatable="transform.scale" layer={layer} currentFrame={currentFrame} compId={compId} lockPath="transform.scale">
+      <PropRow label="Scale" animatable="transform.scale" layer={layer} currentFrame={currentFrame} compId={compId} lockPath="transform.scale" hideDiamond={perAxisScale} hideStopwatch={perAxisScale}>
         <div className="flex items-center gap-1">
           <PerAxisToggle
             enabled={perAxisScale}

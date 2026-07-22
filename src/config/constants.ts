@@ -19,6 +19,7 @@ export const TOOLS = {
   SELECT:'select', MOVE:'move', HAND:'hand', ZOOM:'zoom',
   ROTATE:'rotate', SCALE:'scale',
   SHAPE_RECT:'shapeRect', SHAPE_ELLIPSE:'shapeEllipse', SHAPE_POLYGON:'shapePolygon',
+  SHAPE:'shape',
   PEN:'pen', TEXT:'text', NULL:'null', GRADIENT:'gradient', PICK_WHIP:'pickWhip',
   ORBIT:'orbit', TRACKXY:'trackXY', DOLLY:'dolly',
   MASK:'mask',              // ← ADD THIS

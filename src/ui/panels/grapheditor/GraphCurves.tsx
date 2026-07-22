@@ -8,6 +8,8 @@ export interface FlatCurve {
   keyframes: Keyframe[];
   color: string;
   label: string;
+  /** For speed graph: pre-computed (time, velocity) sample points */
+  speedSamples?: { time: number; value: number }[];
 }
 
 interface Props {
@@ -22,6 +24,16 @@ function getVal(kf: Keyframe, dim: number): number {
 
 function buildPath(curve: FlatCurve, toPx: (f: number, v: number) => { px: number; py: number }): string {
   const { keyframes, dimension } = curve;
+  // Speed graph: render from sampled polyline data
+  if (curve.speedSamples && curve.speedSamples.length > 0) {
+    const pts = curve.speedSamples.map(s => toPx(s.time, s.value));
+    let d = `M${pts[0].px.toFixed(1)},${pts[0].py.toFixed(1)}`;
+    for (let i = 1; i < pts.length; i++) {
+      d += ` L${pts[i].px.toFixed(1)},${pts[i].py.toFixed(1)}`;
+    }
+    return d;
+  }
+  // Value graph: render using keyframe interpolation
   if (keyframes.length < 2) return '';
   const pts = keyframes.map(kf => toPx(kf.time, getVal(kf, dimension)));
   let d = `M${pts[0].px.toFixed(1)},${pts[0].py.toFixed(1)}`;
@@ -79,8 +91,10 @@ export const GraphCurves: React.FC<Props> = ({ curves, toPx, selectedKfIds }) =>
               const v = getVal(kf, curve.dimension);
               const p = toPx(kf.time, v);
               const sel = selectedKfIds.has(kf.id);
-              return <KfPoint key={kf.id} kf={kf} p={p} val={v}
-                color={curve.color} selected={sel} toPx={toPx} />;
+              const hasSamples = !!(curve.speedSamples && curve.speedSamples.length > 0);
+              return <KfPoint key={kf.id} kf={kf} p={p}
+                color={curve.color} selected={sel}
+                hideHandles={hasSamples} />;
             })}
           </g>
         );
@@ -90,12 +104,13 @@ export const GraphCurves: React.FC<Props> = ({ curves, toPx, selectedKfIds }) =>
 };
 
 const KfPoint: React.FC<{
-  kf: Keyframe; p: { px: number; py: number }; val: number;
+  kf: Keyframe; p: { px: number; py: number };
   color: string; selected: boolean;
-  toPx: (f: number, v: number) => { px: number; py: number };
-}> = ({ kf, p, val, color, selected, toPx }) => {
+  /** Speed graph keyframes don't show tangent handles */
+  hideHandles?: boolean;
+}> = ({ kf, p, color, selected, hideHandles }) => {
   const r = selected ? 7 : 5.5;
-  const showHandles = selected && kf.interpolation === 'bezier';
+  const showHandles = !hideHandles && selected && kf.interpolation === 'bezier';
 
   // Convert normalized tangents to pixel-space handle positions
   // Tangent.x = influence (0-1), tangent.y = speed/bias (-1 to 1)

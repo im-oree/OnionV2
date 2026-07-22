@@ -82,7 +82,7 @@ export const ShapeContextToolbar: React.FC = () => {
   const setShapePreset = useToolStore(s => s.setShapePreset);
   const [pickerOpen, setPickerOpen] = useState(false);
 
-  const isShapeTool = tool === TOOLS.SHAPE_RECT || tool === TOOLS.SHAPE_ELLIPSE || tool === TOOLS.SHAPE_POLYGON;
+  const isShapeTool = tool === TOOLS.SHAPE;
   const isPenTool = tool === TOOLS.PEN;
   const isTextTool = tool === TOOLS.TEXT;
 
@@ -141,9 +141,9 @@ export const ShapeContextToolbar: React.FC = () => {
               setShapePreset(id);
               const p = getPresetById(id);
               if (p?.category === 'basic' && id === 'ellipse') {
-                useToolStore.getState().setActiveTool(TOOLS.SHAPE_ELLIPSE as any);
+                useToolStore.getState().setActiveTool(TOOLS.SHAPE as any);
               } else {
-                useToolStore.getState().setActiveTool(TOOLS.SHAPE_RECT as any);
+                useToolStore.getState().setActiveTool(TOOLS.SHAPE as any);
               }
             }} onClose={()=>setPickerOpen(false)}/>
           )}

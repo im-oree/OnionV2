@@ -1,9 +1,5 @@
 /**
- * RenderLoop — manages the requestAnimationFrame render cycle.
- *
- * NEW: pauseForCacheBuild() / resumeFromCacheBuild() lets the
- * RAMPreviewBuilder halt the RAF loop entirely so its synchronous
- * renders don't compete with the live loop.
+ * RenderLoop â€” manages the requestAnimationFrame render cycle.
  */
 import * as THREE from 'three';
 import { VIEWPORT_CONFIG } from '../config/viewportConfig';
@@ -35,7 +31,6 @@ export class RenderLoop {
   private _targetFps = 0;
   private _interactive = false;
 
-  /** True when a cache build has paused the loop. */
   private _pausedForCacheBuild = false;
 
   constructor(
@@ -49,6 +44,7 @@ export class RenderLoop {
   }
 
   public beforeRender: (() => void) | null = null;
+  public afterRender: (() => void) | null = null;
   public onFrameDropped: (() => void) | null = null;
 
   set onFrame(cb: ((stats: FrameStats) => void) | undefined) {
@@ -61,10 +57,6 @@ export class RenderLoop {
 
   setInteractive(v: boolean): void {
     this._interactive = v;
-    // NOTE: we used to call this.renderer.setPixelRatio(0.5 * original) here
-    // for interactive-mode perf, but it desyncs viewport/scissor state and
-    // causes layers to render at the wrong position during drag operations.
-    // The marginal perf gain is not worth the rendering bugs.
     this.requestRender();
   }
 
@@ -108,11 +100,6 @@ export class RenderLoop {
     this.renderer.render(this.scene, this.camera);
   }
 
-  /**
-   * Pause the RAF loop for a cache build. The RAMPreviewBuilder
-   * will run synchronous renders while paused; when it's done it
-   * calls resumeFromCacheBuild().
-   */
   pauseForCacheBuild(): void {
     this._pausedForCacheBuild = true;
     if (this.animFrameId !== null) {
@@ -139,12 +126,8 @@ export class RenderLoop {
     this.camera = camera;
   }
 
-  getCamera(): THREE.Camera {
-    return this.camera;
-  }
-
+  getCamera(): THREE.Camera { return this.camera; }
   get isPausedForCacheBuild(): boolean { return this._pausedForCacheBuild; }
-
   get isRunning(): boolean { return this.running; }
   get currentFps(): number { return this._currentFps; }
   get idlePaused(): boolean { return this._idlePaused; }
@@ -192,20 +175,31 @@ export class RenderLoop {
 
     this.fpsAccumulator += deltaMs;
     this.fpsFrames++;
-    if (this.fpsAccumulator >= 1000) {
+    if (this.fpsAccumulator >= 500) {
       this._currentFps = Math.round((this.fpsFrames * 1000) / this.fpsAccumulator);
       this.fpsAccumulator = 0;
       this.fpsFrames = 0;
     }
 
-    this.beforeRender?.();
-    this.renderer.render(this.scene, this.camera);
+    try {
+      this.beforeRender?.();
+      this.renderer.render(this.scene, this.camera);
+      this.afterRender?.();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[RenderLoop] frame error:', err);
+    }
 
-    this._onFrame?.({
-      deltaMs,
-      fps: this._currentFps,
-      frameCount: this.frameCount,
-    });
+    try {
+      this._onFrame?.({
+        deltaMs,
+        fps: this._currentFps,
+        frameCount: this.frameCount,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[RenderLoop] onFrame error:', err);
+    }
 
     this.animFrameId = requestAnimationFrame(this.tick);
   };

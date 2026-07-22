@@ -9,6 +9,7 @@ import { useCompositionStore } from '../../../../state/compositionStore';
 import { useNavigationStore } from '../../../../state/navigationStore';
 import { useSelectionStore } from '../../../../state/selectionStore';
 import { useToolStore, type ToolId } from '../../../../state/toolStore';
+import { useViewportStore } from '../../../../state/viewportStore';
 import { TOOLS } from '../../../../config/constants';
 import { createDefaultLayer } from '../../../../config/defaults';
 import type { Layer, CompData } from '../../../../types/layer';
@@ -385,6 +386,89 @@ export function useViewportInput({
 
     const container = el.parentElement;
 
+    // Handle anchor point dragging (Pan-Behind style)
+    function startAnchorDrag(e: MouseEvent): boolean {
+      const target = e.target as SVGElement | null;
+      if (!target) return false;
+      if (target.getAttribute('data-anchor') !== 'true') return false;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const compState = useCompositionStore.getState();
+      const compId = compState.activeCompositionId;
+      if (!compId) return true;
+      const comp = compState.compositions.find(c => c.id === compId);
+      if (!comp) return true;
+
+      const selStore = useSelectionStore.getState();
+      const selectedIds = selStore.getSelectedIds();
+      if (selectedIds.length === 0) return true;
+
+      // Snapshot anchor + position for each selected layer
+      const startData = new Map<string, {
+        anchorX: number; anchorY: number;
+        posX: number; posY: number;
+      }>();
+      for (const id of selectedIds) {
+        const layer = comp.layers.find(l => l.id === id);
+        if (layer) {
+          startData.set(id, {
+            anchorX: layer.transform.anchorPoint.x,
+            anchorY: layer.transform.anchorPoint.y,
+            posX: layer.transform.position.x,
+            posY: layer.transform.position.y,
+          });
+        }
+      }
+      if (startData.size === 0) return true;
+
+      const lastPos = { x: e.clientX, y: e.clientY };
+      const cm = cmRef.current;
+
+      const onMove = (ev: MouseEvent) => {
+        const dx = ev.clientX - lastPos.x;
+        const dy = ev.clientY - lastPos.y;
+        lastPos.x = ev.clientX;
+        lastPos.y = ev.clientY;
+
+        if (!cm) return;
+        // Convert screen delta to world delta
+        const worldDx = dx / cm.zoom;
+        const worldDy = -dy / cm.zoom; // Y is inverted in screen vs world
+
+        // Re-read layer transforms each frame to pick up any intermediate changes
+        const cs = useCompositionStore.getState();
+        const currentComp = cs.compositions.find(c => c.id === compId);
+        if (!currentComp) return;
+
+        for (const [id, start] of startData) {
+          const layer = currentComp.layers.find(l => l.id === id);
+          if (!layer) continue;
+          const t = layer.transform;
+          cs.updateLayer(compId, id, {
+            transform: {
+              position: { x: start.posX + worldDx, y: start.posY + worldDy },
+              scale: t.scale,
+              rotation: t.rotation,
+              anchorPoint: { x: start.anchorX + worldDx, y: start.anchorY + worldDy },
+            },
+          });
+        }
+        requestRender?.();
+      };
+
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+      };
+
+      document.body.style.cursor = 'move';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      return true;
+    }
+
     // Handle bounding box handles and gizmo clicks
     const gizmoMouseDown = (e: MouseEvent) => {
       const target = e.target as SVGElement | null;
@@ -426,14 +510,15 @@ export function useViewportInput({
               const cos = Math.cos(rad);
               const sin = Math.sin(rad);
               let px = 0, py = 0;
-              if (handleAttr === 'tl') { px = halfW; py = -halfH; }
-              else if (handleAttr === 'tr') { px = -halfW; py = -halfH; }
-              else if (handleAttr === 'br') { px = -halfW; py = halfH; }
-              else if (handleAttr === 'bl') { px = halfW; py = halfH; }
-              else if (handleAttr === 'top') { py = -halfH; }
-              else if (handleAttr === 'bottom') { py = halfH; }
-              else if (handleAttr === 'left') { px = halfW; }
-              else if (handleAttr === 'right') { px = -halfW; }
+              // Pivot = OPPOSITE corner/edge from the handle being dragged
+              if (handleAttr === 'tl') { px = halfW; py = halfH; }       // opposite: br
+              else if (handleAttr === 'tr') { px = -halfW; py = halfH; }  // opposite: bl
+              else if (handleAttr === 'br') { px = -halfW; py = -halfH; } // opposite: tl
+              else if (handleAttr === 'bl') { px = halfW; py = -halfH; }  // opposite: tr
+              else if (handleAttr === 'top') { py = halfH; }              // opposite: bottom edge center
+              else if (handleAttr === 'bottom') { py = -halfH; }          // opposite: top edge center
+              else if (handleAttr === 'left') { px = halfW; }             // opposite: right edge center
+              else if (handleAttr === 'right') { px = -halfW; }           // opposite: left edge center
               const rx = px * cos - py * sin;
               const ry = px * sin + py * cos;
               mtRef.current.setHandlePivotWorld({ x: pos.x + rx, y: pos.y + ry });
@@ -533,14 +618,14 @@ export function useViewportInput({
         if (isFree) {
           const curX = (window as any).__freeOrbitX ?? 0.3;
           const curY = (window as any).__freeOrbitY ?? 0.5;
-          (window as any).__freeOrbitX = Math.max(-1.2, Math.min(1.2, curX - ev.movementY * sensitivity));
+          (window as any).__freeOrbitX = curX - ev.movementY * sensitivity;
           (window as any).__freeOrbitY = curY + ev.movementX * sensitivity;
         } else {
           // Active camera: orbit with mouse
           const curRotX = comp.cameraRotationX ?? 0;
           const curRotY = comp.cameraRotationY ?? 0;
           cs.updateComposition(comp.id, {
-            cameraRotationX: Math.max(-1.2, Math.min(1.2, curRotX - ev.movementY * sensitivity)),
+            cameraRotationX: curRotX - ev.movementY * sensitivity,
             cameraRotationY: curRotY + ev.movementX * sensitivity,
           });
         }
@@ -640,8 +725,7 @@ export function useViewportInput({
               const dx = ev.clientX - startX;
               const dy = ev.clientY - startY;
               (window as any).__freeOrbitY = startOrbitY - dx * 0.005;
-              (window as any).__freeOrbitX = Math.max(-1.2, Math.min(1.2,
-                startOrbitX - dy * 0.005));
+              (window as any).__freeOrbitX = startOrbitX - dy * 0.005;
               requestRender?.();
             };
             const onUp = () => {
@@ -701,7 +785,7 @@ export function useViewportInput({
                 // Only invert Y-axis (pitch/up-down), not X-axis (yaw/left-right)
                 const invY = invOrbit ? -1 : 1;
                 const newRotY = startRotY + dx * 0.005;
-                const newRotX = Math.max(-1.2, Math.min(1.2, startRotX - (dy * 0.005) * invY));
+                const newRotX = startRotX - (dy * 0.005) * invY;
                 cs.updateComposition(compId, {
                   cameraRotationY: newRotY,
                   cameraRotationX: newRotX,
@@ -820,61 +904,45 @@ export function useViewportInput({
         return;
       }
 
-      // MASK tool: treat same as PEN but always creates mask on selected layer
+      // MASK tool: drag to create rectangular/oval mask on selected layer
+      // Auto-select the topmost visible layer under the cursor if none is selected.
       if (tool === (TOOLS.MASK as ToolId)) {
-        const cm = cmRef.current;
-        if (!cm) return;
+        let selIds = useSelectionStore.getState().getSelectedIds();
+        if (selIds.length !== 1) {
+          // Try to pick the topmost visible unlocked layer under the cursor
+          const cm = cmRef.current;
+          const ht = htRef.current;
+          if (cm && ht) {
+            const compState = useCompositionStore.getState();
+            const compId = compState.activeCompositionId;
+            if (compId) {
+              const comp = compState.compositions.find((c) => c.id === compId);
+              if (comp) {
+                const visibleLayerIds = [...comp.layers]
+                  .filter((l) => l.visible && !l.locked)
+                  .sort((a, b) => b.zIndex - a.zIndex)
+                  .map((l) => l.id);
+                const hit = ht.hitTest(mouseX, mouseY, visibleLayerIds);
+                if (hit) {
+                  useSelectionStore.getState().select({ type: 'layer', id: hit.layerId, compositionId: compId });
+                  selIds = [hit.layerId];
+                }
+              }
+            }
+          }
+        }
+        if (selIds.length !== 1) {
+          // Still nothing selected — ask user to add a layer first
+          useNotificationStore.getState().addNotification({
+            type: 'info', message: 'Add a layer first, then draw a mask on it', autoDismiss: 2500,
+          });
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
-        const world = cm.screenToWorld(mouseX, mouseY);
-        const penStore = usePenToolStore.getState();
-
-        // Set mask target
-        const selIds = useSelectionStore.getState().getSelectedIds();
-        if (selIds.length === 1) {
-          (window as any).__maskTargetLayerId = selIds[0];
-        } else {
-          return; // No layer selected, can't create mask
-        }
-
-        if (penStore.mode !== 'draw') {
-          penStore.startDrawing();
-        }
-
-        // Check if clicking near the first anchor to close
-        const firstAnchor = penStore.drawingCommands.length > 0
-          ? penStore.drawingCommands[0].points
-          : null;
-        if (firstAnchor && penStore.drawingCommands.length > 2) {
-          const first = cm.worldToScreen(firstAnchor[0], firstAnchor[1]);
-          const dist = Math.hypot(first.x - mouseX, first.y - mouseY);
-          if (dist < 10) {
-            const cmds = penStore.closePath();
-            if (cmds) finalizePenPath(cmds);
-            return;
-          }
-        }
-
-        const startClientX = e.clientX;
-        const startClientY = e.clientY;
-
-        penStore.addAnchor(world.x, world.y);
-
-        const mm = (ev: MouseEvent) => {
-          const dx = ev.clientX - startClientX;
-          const dy = ev.clientY - startClientY;
-          if (Math.hypot(dx, dy) > 3) {
-            const handleWorld = cm.screenToWorld(ev.clientX - el.getBoundingClientRect().left, ev.clientY - el.getBoundingClientRect().top);
-            usePenToolStore.getState().updateLastHandle(handleWorld.x, handleWorld.y);
-            requestRender?.();
-          }
-        };
-        const mu = () => {
-          document.removeEventListener('mousemove', mm);
-          document.removeEventListener('mouseup', mu);
-        };
-        document.addEventListener('mousemove', mm);
-        document.addEventListener('mouseup', mu);
+        boxStart.current = { x: mouseX, y: mouseY };
+        isDrawing.current = true;
+        drawSvg = createOverlay('22');
         return;
       }
 
@@ -911,7 +979,11 @@ export function useViewportInput({
         return;
       }
 
-      if (tool === (TOOLS.SHAPE_RECT as ToolId) || tool === (TOOLS.SHAPE_ELLIPSE as ToolId) || tool === (TOOLS.SHAPE_POLYGON as ToolId)) {
+      if (tool === (TOOLS.SHAPE as ToolId)) {
+        // Deselect all layers so the selection outline doesn't linger
+        // during and after shape drawing.
+        useSelectionStore.getState().deselectAll();
+        requestRender?.();
         boxStart.current = { x: mouseX, y: mouseY };
         isDrawing.current = true;
         drawSvg = createOverlay('22');
@@ -1091,21 +1163,145 @@ export function useViewportInput({
 
         if (drawSvg) {
           drawSvg.innerHTML = '';
+          // Check if we're drawing a mask vs a shape
+          const currentTool = getTool();
+          const isMaskPreview = currentTool === (TOOLS.MASK as ToolId);
+          const maskShape = isMaskPreview ? useToolStore.getState().toolSettings.maskShape : 'rectangle';
+          const isOvalMask = isMaskPreview && maskShape === 'ellipse';
+
+          // ── Snap mask rect edges to comp edges, center, guides, grid, and layer edges ──
+          let snapGuideLines: { type: 'vertical' | 'horizontal'; screenPos: number }[] = [];
+          if (isMaskPreview && cmRef.current) {
+            const snapEnabled = useViewportStore.getState().settings.snappingEnabled;
+            if (snapEnabled) {
+              const cm = cmRef.current;
+              const thresholdPx = VIEWPORT_CONFIG.SNAP_THRESHOLD_PX;
+              const compState = useCompositionStore.getState();
+              const cId = compState.activeCompositionId;
+              const c = cId ? compState.compositions.find(cc => cc.id === cId) : null;
+
+              // Build world-space snap target lines
+              const vTargets: number[] = [];
+              const hTargets: number[] = [];
+
+              if (c) {
+                // Composition edges and center
+                vTargets.push(0, c.width, c.width / 2);
+                hTargets.push(0, c.height, c.height / 2);
+
+                // Grid lines (world-space)
+                if (useViewportStore.getState().settings.showGrid) {
+                  const gridStep = VIEWPORT_CONFIG.GRID.MINOR_STEP;
+                  const p1 = cm.screenToWorld(drawX, drawY);
+                  const p2 = cm.screenToWorld(drawX + drawW, drawY + drawH);
+                  const wl = Math.min(p1.x, p2.x);
+                  const wr = Math.max(p1.x, p2.x);
+                  const wb = Math.min(p1.y, p2.y);
+                  const wt = Math.max(p1.y, p2.y);
+                  const thrWorld = thresholdPx / cm.zoom;
+                  for (let gx = Math.floor((wl - thrWorld) / gridStep) * gridStep; gx <= wr + thrWorld; gx += gridStep) {
+                    if (Math.abs(gx - wl) < thrWorld || Math.abs(gx - wr) < thrWorld) vTargets.push(gx);
+                  }
+                  for (let gy = Math.floor((wb - thrWorld) / gridStep) * gridStep; gy <= wt + thrWorld; gy += gridStep) {
+                    if (Math.abs(gy - wb) < thrWorld || Math.abs(gy - wt) < thrWorld) hTargets.push(gy);
+                  }
+                }
+
+                // Layer edges (for snap-to-layer-edge)
+                for (const l of c.layers) {
+                  if (!l.visible || l.locked) continue;
+                  const t = l.transform;
+                  vTargets.push(t.position.x);
+                  hTargets.push(t.position.y);
+                  const d = l.data as any;
+                  if (d?.width !== undefined) {
+                    const hw = (d.width / 2) * (t.scale.x / 100);
+                    const hh = (d.height / 2) * (t.scale.y / 100);
+                    vTargets.push(t.position.x - hw, t.position.x + hw);
+                    hTargets.push(t.position.y - hh, t.position.y + hh);
+                  }
+                }
+              }
+
+              // User guides
+              const vpSet = useViewportStore.getState().settings;
+              for (const g of vpSet.guides) {
+                if (g.type === 'vertical') vTargets.push(g.position);
+                else hTargets.push(g.position);
+              }
+
+              // Convert world targets to screen space
+              const vScr = vTargets.map(v => cm.worldToScreen(v, 0).x);
+              const hScr = hTargets.map(h => cm.worldToScreen(0, h).y);
+
+              // Snap each edge of the screen rect to the nearest target
+              const sL = drawX, sR = drawX + drawW, sT = drawY, sB = drawY + drawH;
+              let bLDx = 0, bRDx = 0, bTDy = 0, bBDy = 0;
+              let bLDst = Infinity, bRDst = Infinity, bTDst = Infinity, bBDst = Infinity;
+              let snL: number | null = null, snR: number | null = null, snT: number | null = null, snB: number | null = null;
+
+              for (const sx of vScr) {
+                if (!Number.isFinite(sx)) continue;
+                const dL = Math.abs(sL - sx);
+                if (dL < thresholdPx && dL < bLDst) { bLDst = dL; bLDx = sx - sL; snL = sx; }
+                const dR = Math.abs(sR - sx);
+                if (dR < thresholdPx && dR < bRDst) { bRDst = dR; bRDx = sx - sR; snR = sx; }
+              }
+              for (const sy of hScr) {
+                if (!Number.isFinite(sy)) continue;
+                const dT = Math.abs(sT - sy);
+                if (dT < thresholdPx && dT < bTDst) { bTDst = dT; bTDy = sy - sT; snT = sy; }
+                const dB = Math.abs(sB - sy);
+                if (dB < thresholdPx && dB < bBDst) { bBDst = dB; bBDy = sy - sB; snB = sy; }
+              }
+
+              const rL = sL + bLDx, rR = sR + bRDx, rT = sT + bTDy, rB = sB + bBDy;
+              if (rL < rR) { drawX = rL; drawW = rR - rL; }
+              if (rT < rB) { drawY = rT; drawH = rB - rT; }
+
+              if (snL !== null) snapGuideLines.push({ type: 'vertical', screenPos: snL });
+              if (snR !== null) snapGuideLines.push({ type: 'vertical', screenPos: snR });
+              if (snT !== null) snapGuideLines.push({ type: 'horizontal', screenPos: snT });
+              if (snB !== null) snapGuideLines.push({ type: 'horizontal', screenPos: snB });
+            }
+          }
+
+          // Mask-specific colors: teal with dashed stroke
+          // Shape-specific colors: blue with solid accent stroke
+          const fillColor = isMaskPreview ? 'rgba(0,200,160,0.22)' : 'rgba(71,114,179,0.2)';
+          const strokeColor = isMaskPreview ? 'rgba(0,200,160,0.7)' : 'var(--color-accent)';
+          const cx = drawX + drawW / 2;
+          const cy = drawY + drawH / 2;
           // Black shadow for visibility
-          const shadow = document.createElementNS(ns, 'rect');
-          shadow.setAttribute('x', String(drawX)); shadow.setAttribute('y', String(drawY));
-          shadow.setAttribute('width', String(drawW)); shadow.setAttribute('height', String(drawH));
+          const shadow = isOvalMask
+            ? document.createElementNS(ns, 'ellipse')
+            : document.createElementNS(ns, 'rect');
+          if (isOvalMask) {
+            shadow.setAttribute('cx', String(cx)); shadow.setAttribute('cy', String(cy));
+            shadow.setAttribute('rx', String(drawW / 2)); shadow.setAttribute('ry', String(drawH / 2));
+          } else {
+            shadow.setAttribute('x', String(drawX)); shadow.setAttribute('y', String(drawY));
+            shadow.setAttribute('width', String(drawW)); shadow.setAttribute('height', String(drawH));
+          }
           shadow.setAttribute('fill', 'rgba(0,0,0,0.1)');
           shadow.setAttribute('stroke', '#000000');
           shadow.setAttribute('stroke-width', '1');
           drawSvg.appendChild(shadow);
-          // Accent preview
-          const shape = document.createElementNS(ns, 'rect');
-          shape.setAttribute('x', String(drawX)); shape.setAttribute('y', String(drawY));
-          shape.setAttribute('width', String(drawW)); shape.setAttribute('height', String(drawH));
-          shape.setAttribute('fill', 'rgba(71,114,179,0.2)');
-          shape.setAttribute('stroke', 'var(--color-accent)');
+          // Accent preview — rect or ellipse based on mask mode
+          const shape = isOvalMask
+            ? document.createElementNS(ns, 'ellipse')
+            : document.createElementNS(ns, 'rect');
+          if (isOvalMask) {
+            shape.setAttribute('cx', String(cx)); shape.setAttribute('cy', String(cy));
+            shape.setAttribute('rx', String(drawW / 2)); shape.setAttribute('ry', String(drawH / 2));
+          } else {
+            shape.setAttribute('x', String(drawX)); shape.setAttribute('y', String(drawY));
+            shape.setAttribute('width', String(drawW)); shape.setAttribute('height', String(drawH));
+          }
+          shape.setAttribute('fill', fillColor);
+          shape.setAttribute('stroke', strokeColor);
           shape.setAttribute('stroke-width', '1.5');
+          if (isMaskPreview && !isOvalMask) shape.setAttribute('stroke-dasharray', '6 3');
           drawSvg.appendChild(shape);
           // Center crosshair when Alt
           if (altHeld) {
@@ -1120,7 +1316,7 @@ export function useViewportInput({
             cv.setAttribute('stroke', 'var(--color-accent)'); cv.setAttribute('stroke-width', '1');
             drawSvg.appendChild(cv);
           }
-          // Dimension label
+          // Dimension label — also show 'Mask' for mask previews
           const worldPP = 1 / cmRef.current.zoom;
           const labelX = drawX + drawW + 6;
           const labelY = drawY + drawH / 2;
@@ -1129,11 +1325,34 @@ export function useViewportInput({
           const label = document.createElementNS(ns, 'text');
           label.setAttribute('x', String(Math.min(labelX, (el.clientWidth || 800) - 80)));
           label.setAttribute('y', String(Math.max(labelY, 12)));
-          label.setAttribute('fill', 'var(--color-text-secondary)');
+          label.setAttribute('fill', isMaskPreview ? 'rgba(0,200,160,0.8)' : 'var(--color-text-secondary)');
           label.setAttribute('font-size', '10');
           label.setAttribute('font-family', 'monospace');
-          label.textContent = `${worldW} × ${worldH}`;
+          label.textContent = isMaskPreview
+            ? `${isOvalMask ? 'Oval' : 'Rect'} Mask ${worldW} × ${worldH}`
+            : `${worldW} × ${worldH}`;
           drawSvg.appendChild(label);
+
+          // Draw snap guide lines (Blender-style pink dashed lines at snapped edges)
+          for (const gl of snapGuideLines) {
+            const line = document.createElementNS(ns, 'line');
+            if (gl.type === 'vertical') {
+              line.setAttribute('x1', String(gl.screenPos));
+              line.setAttribute('y1', '0');
+              line.setAttribute('x2', String(gl.screenPos));
+              line.setAttribute('y2', String(el.clientHeight || 300));
+            } else {
+              line.setAttribute('x1', '0');
+              line.setAttribute('y1', String(gl.screenPos));
+              line.setAttribute('x2', String(el.clientWidth || 400));
+              line.setAttribute('y2', String(gl.screenPos));
+            }
+            line.setAttribute('stroke', VIEWPORT_CONFIG.SNAP_LINE_COLOR);
+            line.setAttribute('stroke-width', '1');
+            line.setAttribute('stroke-dasharray', '4 3');
+            line.setAttribute('opacity', '0.85');
+            drawSvg.appendChild(line);
+          }
         }
         return;
       }
@@ -1247,30 +1466,25 @@ export function useViewportInput({
           centerWorld = { x: (startWorld.x + endWorld.x) / 2, y: (startWorld.y + endWorld.y) / 2 };
         }
 
-        // *** ADD: Create mask instead of shape if a layer is selected with MASK or shape tool ***
+        // Create mask ONLY when the MASK tool is used (not the SHAPE tool).
+        // The SHAPE tool always creates a new shape layer regardless of selection.
         const isMaskTool = tool === (TOOLS.MASK as ToolId);
-        const selectedLayerIds = useSelectionStore.getState().getSelectedIds();
-        if (isMaskTool || (selectedLayerIds.length === 1 && (
-          tool === (TOOLS.SHAPE_RECT as ToolId) || 
-          tool === (TOOLS.SHAPE_ELLIPSE as ToolId)
-        ))) {
+        if (isMaskTool) {
+          const selectedLayerIds = useSelectionStore.getState().getSelectedIds();
           const targetLayerId = selectedLayerIds[0];
           const targetLayer = comp.layers.find(l => l.id === targetLayerId);
           if (targetLayer) {
-            // Convert world center to layer-local coords
             const localX = centerWorld.x - targetLayer.transform.position.x;
             const localY = centerWorld.y - targetLayer.transform.position.y;
 
+            const maskShape = useToolStore.getState().toolSettings.maskShape ?? 'rectangle';
             const { useMaskStore } = await import('../../../../state/maskStore');
-
-            if (tool === (TOOLS.SHAPE_ELLIPSE as ToolId) || tool === (TOOLS.MASK as ToolId)) {
-              // For mask tool, still use rect for now (pen tool handles freeform)
-              useMaskStore.getState().addRectMask(targetLayerId, Math.round(worldW), Math.round(worldH));
+            if (maskShape === 'ellipse') {
+              useMaskStore.getState().addEllipseMask(targetLayerId, Math.round(worldW / 2), Math.round(worldH / 2));
             } else {
               useMaskStore.getState().addRectMask(targetLayerId, Math.round(worldW), Math.round(worldH));
             }
 
-            // Update the mask's commands to be offset to the drawn location
             const masks = useMaskStore.getState().getMasksForLayer(targetLayerId);
             const newMask = masks[masks.length - 1];
             if (newMask) {
@@ -1278,7 +1492,6 @@ export function useViewportInput({
                 ...c,
                 points: [...c.points]
               }));
-              // Offset the first point's x,y by localX,localY
               if (offsetCmds.length > 0 && offsetCmds[0].type === 'M') {
                 const dx = localX - 0;
                 const dy = localY - 0;
@@ -1292,14 +1505,10 @@ export function useViewportInput({
               useMaskStore.getState().updateMaskCommands(targetLayerId, newMask.id, offsetCmds);
             }
 
-            // Switch back to select tool if using MASK tool
-            if (isMaskTool) {
-              useToolStore.getState().setActiveTool('select' as any);
-            }
+            useToolStore.getState().setActiveTool('select' as any);
             return;
           }
         }
-        // *** END ADD ***
 
         // Read active shape preset from tool store
         const presetId = useToolStore.getState().toolSettings.currentShapePresetId ?? 'rectangle';
@@ -1322,7 +1531,7 @@ export function useViewportInput({
         baseData.presetId = presetId;
         baseData.presetParams = params;
         baseData.fill = defaultShapeFill();
-        baseData.stroke = defaultShapeStroke();
+        baseData.stroke = { ...defaultShapeStroke(), enabled: false };
 
         const base = createDefaultLayer('shape', `${preset?.label ?? 'Shape'} ${count}`);
         const compEndFrame = Math.floor(comp.duration * comp.fps);
@@ -1349,20 +1558,33 @@ export function useViewportInput({
       if (!cmRef.current) return;
       e.preventDefault();
 
-      // Free View: scroll zooms toward/away from focal point (Blender-style)
+      const cs = useCompositionStore.getState();
+      const comp = cs.activeCompositionId
+        ? cs.compositions.find(c => c.id === cs.activeCompositionId)
+        : null;
+      const is3D = !!comp?.perspective3D;
       const isFree = !!(window as any).__freeViewMode;
-      if (isFree) {
+
+      // Free View: scroll = dolly toward/away from focal point
+      if (is3D && isFree) {
         const curDist = (window as any).__freeDistance ?? 500;
-        const factor = e.deltaY < 0 ? 0.85 : 1.18; // scroll up = zoom in = reduce distance
-        (window as any).__freeDistance = Math.max(10, Math.min(10000, curDist * factor));
+        const factor = e.deltaY < 0 ? 0.85 : 1.18;
+        (window as any).__freeDistance = Math.max(10, Math.min(50000, curDist * factor));
         requestRender?.();
         return;
       }
 
-      // ALL modes (2D, Active Camera in perspective, orthographic):
-      // scroll zooms the VIEWPORT (like 2D mode), not the camera position.
-      // This matches user expectation — scroll = zoom UI, camera only moves
-      // via camera panel controls or "Move with View" orbit/pan.
+      // Active Camera (3D perspective): scroll = UI zoom (FOV telephoto).
+      // Does NOT move the camera — just zooms what the viewer sees.
+      if (is3D && !isFree) {
+        const cur = useViewportStore.getState().settings.cameraViewZoom ?? 1;
+        const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+        useViewportStore.getState().setCameraViewZoom(cur * factor);
+        requestRender?.();
+        return;
+      }
+
+      // 2D / orthographic: normal viewport zoom around cursor
       const rect = el.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
@@ -1370,7 +1592,6 @@ export function useViewportInput({
       const factor = e.deltaY < 0 ? VIEWPORT_CONFIG.ZOOM_FACTOR : 1 / VIEWPORT_CONFIG.ZOOM_FACTOR;
       cmRef.current.setZoom(cmRef.current.zoom * factor);
       const worldAfter = cmRef.current.screenToWorld(mouseX, mouseY);
-      // Pan to keep the point under cursor stationary
       cmRef.current.pan(worldBefore.x - worldAfter.x, worldBefore.y - worldAfter.y);
       requestRender?.();
     };
@@ -1567,8 +1788,24 @@ export function useViewportInput({
 
 
     if (container) container.addEventListener('mousedown', gizmoMouseDown);
+    if (container) container.addEventListener('mousedown', startAnchorDrag);
 
     const onDblClick = (e: MouseEvent) => {
+      // Pen tool: double-click finishes the path (creates mask if layer was selected)
+      const tool = getTool();
+      if (tool === (TOOLS.PEN as ToolId)) {
+        const penState = usePenToolStore.getState();
+        if (penState.mode === 'draw') {
+          const cmds = penState.finishPath();
+          if (cmds && cmds.length >= 2) {
+            finalizePenPath(cmds);
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+        }
+      }
+
       const cm = cmRef.current;
       const ht = htRef.current;
       if (!cm || !ht) return;
@@ -1613,6 +1850,7 @@ export function useViewportInput({
 
     return () => {
       if (container) container.removeEventListener('mousedown', gizmoMouseDown);
+      if (container) container.removeEventListener('mousedown', startAnchorDrag);
       el.removeEventListener('dblclick', onDblClick);
       document.removeEventListener('transform:grab', onTransformStart);
       document.removeEventListener('transform:rotate', onTransformStart);
@@ -1643,12 +1881,36 @@ export function useViewportInput({
     if (!canvas) return;
 
     const onKeyDown = (e: KeyboardEvent) => {
+      // Shift + ` toggles fly mode (Blender-style)
+      if (e.key === '`' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        const cs = useCompositionStore.getState();
+        const compId = cs.activeCompositionId;
+        const comp = compId ? cs.compositions.find(c => c.id === compId) : null;
+        if (!comp?.perspective3D) return;
+
+        const nowActive = !flyState.current.active;
+        flyState.current.active = nowActive;
+        useViewportStore.getState().setFlyMode(nowActive);
+
+        if (nowActive) {
+          flyState.current.speed = comp.flySpeed ?? 500;
+          flyState.current.keys.clear();
+          document.body.style.cursor = 'crosshair';
+          if (!flyState.current.animId) flyLoopRef.current();
+        } else {
+          flyState.current.keys.clear();
+          document.body.style.cursor = '';
+        }
+        return;
+      }
+
       if (!flyState.current.active) return;
 
-      // Escape exits fly mode
       if (e.key === 'Escape') {
         flyState.current.active = false;
         flyState.current.keys.clear();
+        useViewportStore.getState().setFlyMode(false);
         document.body.style.cursor = '';
         if (document.pointerLockElement) document.exitPointerLock();
         return;
@@ -1657,7 +1919,6 @@ export function useViewportInput({
       const key = e.key.toLowerCase();
       flyState.current.keys.add(key);
 
-      // Q/E adjust fly speed
       if (key === 'q') flyState.current.speed = Math.max(50, flyState.current.speed * 0.7);
       if (key === 'e') flyState.current.speed = Math.min(5000, flyState.current.speed * 1.4);
     };

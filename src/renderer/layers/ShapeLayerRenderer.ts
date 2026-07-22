@@ -22,16 +22,18 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
   constructor(id: string, data: ShapeData) {
     const canvas = document.createElement('canvas');
     canvas.width = 256; canvas.height = 256;
-    const ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d', { alpha: true, willReadFrequently: false })!;
+    // Explicit transparent clear
     ctx.clearRect(0, 0, 256, 256);
+
     const tex = new THREE.CanvasTexture(canvas);
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
     tex.generateMipmaps = false;
+    // Straight-alpha â€” canvas 2D writes straight-alpha pixels.
     tex.premultiplyAlpha = false;
     tex.colorSpace = THREE.SRGBColorSpace;
 
-    // Check if this is a 3D shape preset
     const presetId = (data as any).presetId ?? (data as any).type;
     const is3D = SHAPES_3D.has(presetId);
 
@@ -45,6 +47,7 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
         roughness: 0.4,
         metalness: 0.1,
         side: THREE.DoubleSide,
+        transparent: true,
       });
     } else {
       geo = new THREE.PlaneGeometry(200, 200);
@@ -54,6 +57,15 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
         transparent: true,
         premultipliedAlpha: false,
         side: THREE.DoubleSide,
+        // Explicit straight-alpha blending â€” prevents the black halo
+        // that appears when the GPU premultiplies against a black clear.
+        blending: THREE.CustomBlending,
+        blendSrc: THREE.SrcAlphaFactor,
+        blendDst: THREE.OneMinusSrcAlphaFactor,
+        blendSrcAlpha: THREE.OneFactor,
+        blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+        blendEquation: THREE.AddEquation,
+        alphaTest: 0.001, // discards fully-transparent pixels â€” kills black fringing
       });
     }
 
@@ -62,14 +74,10 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
     this._data = data;
     this._is3D = is3D;
 
-    if (is3D) {
-      this._apply3DMaterial();
-    } else {
-      this._render();
-    }
+    if (is3D) this._apply3DMaterial();
+    else this._render();
   }
 
-  /** Create a Three.js geometry for 3D shape types */
   static _create3DGeometry(type: string, data: ShapeData): THREE.BufferGeometry {
     const d = data as any;
     const w = d.width ?? 200;
@@ -115,7 +123,6 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
     const is3D = SHAPES_3D.has(presetId);
 
     if (is3D) {
-      // Swap geometry for 3D shapes
       const newGeo = ShapeLayerRenderer._create3DGeometry(presetId, data);
       const oldGeo = this.geometry;
       this.mesh.geometry = newGeo;
@@ -125,7 +132,6 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
       this._apply3DMaterial();
       this._update3DDimensions(presetId, data);
     } else if (this._is3D) {
-      // Switched from 3D to 2D — swap back to plane
       const newGeo = new THREE.PlaneGeometry(200, 200);
       const oldGeo = this.geometry;
       this.mesh.geometry = newGeo;
@@ -140,6 +146,13 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
           transparent: true,
           premultipliedAlpha: false,
           side: THREE.DoubleSide,
+          blending: THREE.CustomBlending,
+          blendSrc: THREE.SrcAlphaFactor,
+          blendDst: THREE.OneMinusSrcAlphaFactor,
+          blendSrcAlpha: THREE.OneFactor,
+          blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+          blendEquation: THREE.AddEquation,
+          alphaTest: 0.001,
         });
         oldMat.dispose();
       }
@@ -150,7 +163,6 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
     }
   }
 
-  /** Apply fill color from shape data to 3D material */
   private _apply3DMaterial(): void {
     const fill = (this._data as any).fill as ShapeFill | undefined;
     const mat = this.mesh.material as THREE.MeshStandardMaterial;
@@ -163,31 +175,17 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
     mat.needsUpdate = true;
   }
 
-  /** Update stored dimensions from 3D geometry */
   private _update3DDimensions(type: string, data: ShapeData): void {
     const d = data as any;
     switch (type) {
-      case 'sphere':
-        this._w = this._h = (d.radiusX ?? d.radius ?? 100) * 2;
-        break;
-      case 'cube':
-        this._w = d.width ?? 200;
-        this._h = d.height ?? 200;
-        break;
+      case 'sphere': this._w = this._h = (d.radiusX ?? d.radius ?? 100) * 2; break;
+      case 'cube': this._w = d.width ?? 200; this._h = d.height ?? 200; break;
       case 'cylinder':
-      case 'cone':
-        this._w = (d.radiusX ?? d.radius ?? 100) * 2;
-        this._h = d.height ?? 200;
-        break;
-      case 'torus':
-        this._w = this._h = (d.radiusX ?? d.radius ?? 100) * 2;
-        break;
-      default:
-        this._w = this._h = 200;
+      case 'cone': this._w = (d.radiusX ?? d.radius ?? 100) * 2; this._h = d.height ?? 200; break;
+      case 'torus': this._w = this._h = (d.radiusX ?? d.radius ?? 100) * 2; break;
+      default: this._w = this._h = 200;
     }
   }
-
-  // ── Canvas-based 2D rendering (for non-3D shapes) ──
 
   private _dims(): { w: number; h: number } {
     const d = this._data;
@@ -202,11 +200,11 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
   }
 
   private _render(): void {
-    if (this._is3D) return; // 3D shapes don't use canvas rendering
+    if (this._is3D) return;
     const data = this._data;
     const stroke = (data as any).stroke as ShapeStroke | undefined;
     const strokeW = stroke?.enabled ? (stroke.width ?? 0) : 0;
-    const pad = strokeW + 4;
+    const pad = strokeW > 0 ? Math.ceil(strokeW / 2) + 2 : 0;
     const { w, h } = this._dims();
     const logW = w + pad * 2;
     const logH = h + pad * 2;
@@ -219,10 +217,11 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
 
     const ctx = this._ctx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // Nuke to fully transparent
     ctx.clearRect(0, 0, cw, ch);
-    ctx.scale(DPI, DPI);
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
+    ctx.scale(DPI, DPI);
 
     const cx = logW / 2, cy = logH / 2;
     const path2d = this._buildPath2D(cx, cy, w, h);
@@ -373,7 +372,7 @@ export class ShapeLayerRenderer extends BaseLayerRenderer {
     }
   }
   setFill(fill: ShapeFill): void {
-    if (this._is3D) { this._apply3DMaterial(); }
+    if (this._is3D) this._apply3DMaterial();
     else { (this._data as any).fill = fill; this._cacheKey = ''; this._render(); }
   }
   setSize(w: number, h: number): void {

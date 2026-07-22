@@ -27,6 +27,7 @@ export interface CompositionState {
   updateLayer: (compId: string, layerId: string, updates: Partial<Layer>, skipHistory?: boolean) => void;
   reorderLayers: (compId: string, from: number, to: number) => void;
   setCurrentTime: (compId: string, time: number) => void;
+  setCurrentTimeSilent: (compId: string, time: number) => void;
   getActiveComposition: () => Composition | null;
 }
 
@@ -220,6 +221,21 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
     }));
   },
   // (setCurrentTime intentionally does NOT mark dirty — it's a transient playback change)
+
+  /**
+   * Update currentTime WITHOUT triggering Zustand subscribers.
+   * Used during high-frequency playback to avoid the React re-render
+   * cascade. Renderer reads it directly via getState(); UI (timeline
+   * playhead, HUD) polls it in its own RAF loop.
+   */
+  setCurrentTimeSilent: (compId, time) => {
+    // Mutate in-place. Zustand subscribers are NOT notified.
+    // This is safe as long as only playback code uses it and it always
+    // flushes via setCurrentTime on pause/stop.
+    const state = get() as any;
+    const comp = state.compositions.find((c: Composition) => c.id === compId);
+    if (comp) comp.currentTime = time;
+  },
 
 
   getActiveComposition: () => {

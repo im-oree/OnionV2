@@ -6,44 +6,91 @@ import type { BaseLayerRenderer } from '../layers/BaseLayerRenderer';
 import type { RuntimeOverrides } from '../../animation/PropertyBinder';
 import { useCompositionStore } from '../../state/compositionStore';
 import { applyBlendModeToMaterial } from '../blending/ApplyBlendMode';
+import { useMaskStore } from '../../state/maskStore';
+import { MaskCompositor } from '../compositing/MaskCompositor';
 
 export class LayerSync {
   private factory: LayerFactory;
+  private sceneManager: SceneManager;
   private renderers = new Map<string, BaseLayerRenderer>();
   private prevLayers: Layer[] = [];
   private _runtimeOverridesActive = false;
   /** Stores the last-applied LOCAL transform override for each layer (used for child computation). */
   private _localOverrides = new Map<string, Layer['transform']>();
 
-  constructor(sceneManager: SceneManager) { this.factory = new LayerFactory(sceneManager); }
+  constructor(sceneManager: SceneManager) {
+    this.sceneManager = sceneManager;
+    this.factory = new LayerFactory(sceneManager);
+  }
 
   setRuntimeOverridesActive(active: boolean): void { this._runtimeOverridesActive = active; }
   get isRuntimeOverridesActive(): boolean { return this._runtimeOverridesActive; }
 
   sync(layers: Layer[]): void {
-    const prevMap = new Map<string,Layer>();
-    for(const l of this.prevLayers) prevMap.set(l.id,l);
-    const nextMap = new Map<string,Layer>();
-    for(const l of layers) nextMap.set(l.id,l);
+    const prevMap = new Map<string, Layer>();
+    for (const l of this.prevLayers) prevMap.set(l.id, l);
+    const nextMap = new Map<string, Layer>();
+    for (const l of layers) nextMap.set(l.id, l);
 
-    for(const [id] of prevMap){
-      if(!nextMap.has(id)){
-        const r=this.renderers.get(id);
-        if(r){this.factory.remove(r);this.renderers.delete(id);}
+    // Remove renderers for layers that no longer exist.
+    // Only clean up "orphan" groups from layerGroup for REMOVED layers —
+    // never for live layers. The old code ran orphan cleanup on every
+    // prev-map entry, which nuked the currently-live renderer's group
+    // (since BaseLayerRenderer sets group.name = layer.id).
+    for (const [id] of prevMap) {
+      if (!nextMap.has(id)) {
+        const r = this.renderers.get(id);
+        if (r) {
+          this.factory.remove(r);
+          this.renderers.delete(id);
+        }
+
+        // Clean up any stragglers with this id (e.g. from older systems)
+        const orphans = this.sceneManager.layerGroup.children.filter(
+          (child: THREE.Object3D) => child.name === id,
+        );
+        for (const orphan of orphans) {
+          this.sceneManager.layerGroup.remove(orphan);
+          orphan.traverse((child: THREE.Object3D) => {
+            if (child instanceof THREE.Mesh) {
+              child.geometry.dispose();
+              if (Array.isArray(child.material)) {
+                child.material.forEach((m: THREE.Material) => m.dispose());
+              } else if (child.material instanceof THREE.Material) {
+                child.material.dispose();
+              }
+            }
+          });
+        }
       }
     }
-    for(const layer of layers){
-      const prev=prevMap.get(layer.id);
-      if(!prev){
-        const r = this.factory.create(layer);
-        this.renderers.set(layer.id, r);
-        // Apply initial blend mode
+
+    for (const layer of layers) {
+      const prev = prevMap.get(layer.id);
+      if (!prev) {
+        // New layer — create renderer (LayerFactory.create() adds group to layerGroup)
+        let r = this.renderers.get(layer.id);
+        if (!r) {
+          r = this.factory.create(layer);
+          this.renderers.set(layer.id, r);
+        }
+        // Safety: ensure the renderer's group is actually attached to the scene.
+        // If a previous sync (or bad orphan cleanup) removed it, re-add it.
+        if (r.group.parent !== this.sceneManager.layerGroup) {
+          this.sceneManager.layerGroup.add(r.group);
+        }
         const mat = r.mesh.material as THREE.Material;
         if (mat && layer.blendMode && layer.blendMode !== 'normal') {
           applyBlendModeToMaterial(mat, layer.blendMode);
         }
+      } else {
+        this._updateRenderer(layer.id, prev, layer);
+        // Safety re-attach on every sync in case anything removed the group.
+        const r = this.renderers.get(layer.id);
+        if (r && r.group.parent !== this.sceneManager.layerGroup) {
+          this.sceneManager.layerGroup.add(r.group);
+        }
       }
-      else{this._updateRenderer(layer.id,prev,layer);}
     }
     this._updateZOrder(layers);
 
@@ -51,8 +98,6 @@ export class LayerSync {
     this._applyMasks(layers);
 
     // Second pass: recompute world transforms for ALL parented layers.
-    // This ensures children update when a parent moves, even if the child's
-    // own local transform hasn't changed.
     const layerMap = new Map<string, Layer>();
     for (const l of layers) layerMap.set(l.id, l);
     for (const layer of layers) {
@@ -63,44 +108,39 @@ export class LayerSync {
       r.updateTransform(worldTransform);
     }
 
-    this.prevLayers=layers;
+    this.prevLayers = layers;
   }
 
   private _getLayers(): Layer[] {
-    const cs=useCompositionStore.getState();
-    const comp=cs.activeCompositionId?cs.compositions.find(c=>c.id===cs.activeCompositionId):null;
-    return comp?.layers??this.prevLayers;
+    const cs = useCompositionStore.getState();
+    const comp = cs.activeCompositionId ? cs.compositions.find(c => c.id === cs.activeCompositionId) : null;
+    return comp?.layers ?? this.prevLayers;
   }
 
   applyRuntimeOverrides(overrides: RuntimeOverrides): void {
-    // Clear stale overrides from previous frame
     this._localOverrides.clear();
 
-    const layers=this._getLayers();
+    const layers = this._getLayers();
     const layerMap = new Map<string, Layer>();
     for (const l of layers) layerMap.set(l.id, l);
 
-    // First pass: apply overrides to directly-animated layers
-    for(const [layerId,override] of overrides){
-      const r=this.renderers.get(layerId); if(!r)continue;
-      const layer=layers.find(l=>l.id===layerId); if(!layer)continue;
+    for (const [layerId, override] of overrides) {
+      const r = this.renderers.get(layerId); if (!r) continue;
+      const layer = layers.find(l => l.id === layerId); if (!layer) continue;
       const localTransform = {
-        position:override.position??layer.transform.position,
-        scale:override.scale??layer.transform.scale,
-        rotation:override.rotation??layer.transform.rotation,
-        anchorPoint:override.anchorPoint??layer.transform.anchorPoint,
+        position: override.position ?? layer.transform.position,
+        scale: override.scale ?? layer.transform.scale,
+        rotation: override.rotation ?? layer.transform.rotation,
+        anchorPoint: override.anchorPoint ?? layer.transform.anchorPoint,
       };
       const worldTransform = this._computeWorldTransform(localTransform, layer.parentId, layerMap);
       this._localOverrides.set(layerId, localTransform);
       r.updateTransform(worldTransform);
-      if(override.opacity!==undefined)r.updateOpacity(override.opacity/100);
+      if (override.opacity !== undefined) r.updateOpacity(override.opacity / 100);
     }
 
-    // Second pass: recompute world transforms for ALL parented layers
-    // This ensures children follow their parent's animated position
     for (const layer of layers) {
       if (!layer.parentId) continue;
-      // Skip layers that were already updated in the first pass (they have overrides)
       if (overrides.has(layer.id)) continue;
       const r = this.renderers.get(layer.id);
       if (!r) continue;
@@ -110,104 +150,104 @@ export class LayerSync {
   }
 
   restoreFromOverrides(): void {
-    const layers=this._getLayers();
+    const layers = this._getLayers();
     const layerMap = new Map<string, Layer>();
     for (const l of layers) layerMap.set(l.id, l);
-    for(const layer of layers){
-      const r=this.renderers.get(layer.id); if(!r)continue;
+    for (const layer of layers) {
+      const r = this.renderers.get(layer.id); if (!r) continue;
       const worldTransform = this._computeWorldTransform(layer.transform, layer.parentId, layerMap);
       r.updateTransform(worldTransform);
-      r.updateOpacity(layer.opacity/100);
+      r.updateOpacity(layer.opacity / 100);
     }
   }
 
   updateFrameVisibility(currentFrame: number): void {
-    const layers=this._getLayers();
-    // Check if ANY layer is soloed — if so, only soloed layers (that are
-    // also visible and in frame range) should be shown.
+    const layers = this._getLayers();
     const hasSolo = layers.some(l => l.soloed);
     const wireframe = !!(window as any).__wireframeMode;
-    for(const layer of layers){
-      const r=this.renderers.get(layer.id); if(!r)continue;
-      // Adjustment layers never render as a mesh — their effect output is
-      // shown on a compositor quad managed by AdjustmentCompositor.
+    for (const layer of layers) {
+      const r = this.renderers.get(layer.id); if (!r) continue;
       if (layer.type === 'adjustment' || layer.type === 'camera' || layer.type === 'light' || layer.type === 'null') { r.setVisible(false); continue; }
       const inFrame = currentFrame >= layer.startFrame && currentFrame <= layer.endFrame;
       const visible = layer.visible && inFrame && (hasSolo ? !!layer.soloed : true);
       r.setVisible(visible);
-      // Apply wireframe mode
       if (r.setWireframe) r.setWireframe(wireframe);
     }
   }
 
-  clear(): void {
-    for(const r of this.renderers.values())r.dispose();
-    this.renderers.clear(); this.prevLayers=[]; this.factory.clearAll();
+  recomputeWorldTransforms(layers: Layer[]): void {
+    const layerMap = new Map<string, Layer>();
+    for (const l of layers) layerMap.set(l.id, l);
+    for (const layer of layers) {
+      if (!layer.parentId) continue;
+      const r = this.renderers.get(layer.id);
+      if (!r) continue;
+      const worldTransform = this._computeWorldTransform(layer.transform, layer.parentId, layerMap);
+      r.updateTransform(worldTransform);
+    }
   }
 
-  getRenderer(layerId: string): BaseLayerRenderer|undefined { return this.renderers.get(layerId); }
-  getAllRenderers(): Map<string,BaseLayerRenderer> { return this.renderers; }
+  clear(): void {
+    for (const r of this.renderers.values()) r.dispose();
+    this.renderers.clear(); this.prevLayers = []; this.factory.clearAll();
+  }
+
+  getRenderer(layerId: string): BaseLayerRenderer | undefined { return this.renderers.get(layerId); }
+  getAllRenderers(): Map<string, BaseLayerRenderer> { return this.renderers; }
 
   private _updateRenderer(layerId: string, prev: Layer, next: Layer): void {
-    const r=this.renderers.get(layerId); if(!r)return;
+    const r = this.renderers.get(layerId); if (!r) return;
 
-    if(!this._runtimeOverridesActive){
-      if(this._txChanged(prev.transform,next.transform)||prev.parentId!==next.parentId){
+    if (!this._runtimeOverridesActive) {
+      if (this._txChanged(prev.transform, next.transform) || prev.parentId !== next.parentId) {
         const layerMap = new Map<string, Layer>();
         for (const l of this.prevLayers) layerMap.set(l.id, l);
         const worldTransform = this._computeWorldTransform(next.transform, next.parentId, layerMap);
         r.updateTransform(worldTransform);
       }
-      if(prev.opacity!==next.opacity)r.updateOpacity(next.opacity/100);
+      if (prev.opacity !== next.opacity) r.updateOpacity(next.opacity / 100);
     }
-    if(prev.visible!==next.visible)r.setVisible(next.visible);
+    if (prev.visible !== next.visible) r.setVisible(next.visible);
 
-    // Blend mode changed → update material blending
     if (prev.blendMode !== next.blendMode) {
       const mat = r.mesh.material as THREE.Material;
       if (mat) applyBlendModeToMaterial(mat, next.blendMode);
     }
 
-    if(prev.data===next.data)return;
+    if (prev.data === next.data) return;
 
-    if(next.type==='solid'){
-      const sr=r as any, nd=next.data as any;
-      if(sr.setColor&&nd?.color)sr.setColor(nd.color);
-      if(sr.setSize&&nd)sr.setSize(nd.width??100,nd.height??100);
+    if (next.type === 'solid') {
+      const sr = r as any, nd = next.data as any;
+      if (sr.setColor && nd?.color) sr.setColor(nd.color);
+      if (sr.setSize && nd) sr.setSize(nd.width ?? 100, nd.height ?? 100);
     }
-    if(next.type==='shape'){
-      const sr=r as any, nd=next.data as any;
-      if(!nd)return;
-      if(sr.updateData)sr.updateData(nd);
+    if (next.type === 'shape') {
+      const sr = r as any, nd = next.data as any;
+      if (!nd) return;
+      if (sr.updateData) sr.updateData(nd);
       else {
-        if(sr.setFillColor&&nd.fill?.color)sr.setFillColor(nd.fill.color);
-        const w='width'in nd?nd.width:('radiusX'in nd?nd.radiusX*2:(nd.radius??50)*2);
-        const h='height'in nd?nd.height:('radiusY'in nd?nd.radiusY*2:(nd.radius??50)*2);
-        if(sr.setSize)sr.setSize(w,h);
+        if (sr.setFillColor && nd.fill?.color) sr.setFillColor(nd.fill.color);
+        const w = 'width' in nd ? nd.width : ('radiusX' in nd ? nd.radiusX * 2 : (nd.radius ?? 50) * 2);
+        const h = 'height' in nd ? nd.height : ('radiusY' in nd ? nd.radiusY * 2 : (nd.radius ?? 50) * 2);
+        if (sr.setSize) sr.setSize(w, h);
       }
     }
-    if(next.type==='text'){
-      const tr=r as any;
-      if(tr.setText&&next.data)tr.setText(next.data);
+    if (next.type === 'text') {
+      const tr = r as any;
+      if (tr.setText && next.data) tr.setText(next.data);
     }
-    if(next.type==='spline'){
-      const sr=r as any;
-      if(sr.updateData&&next.data)sr.updateData(next.data);
+    if (next.type === 'spline') {
+      const sr = r as any;
+      if (sr.updateData && next.data) sr.updateData(next.data);
     }
   }
 
   private _txChanged(a: Layer['transform'], b: Layer['transform']): boolean {
-    return a.position.x!==b.position.x||a.position.y!==b.position.y||
-      a.scale.x!==b.scale.x||a.scale.y!==b.scale.y||a.rotation!==b.rotation||
-      a.anchorPoint.x!==b.anchorPoint.x||a.anchorPoint.y!==b.anchorPoint.y;
+    return a.position.x !== b.position.x || a.position.y !== b.position.y ||
+      a.scale.x !== b.scale.x || a.scale.y !== b.scale.y || a.rotation !== b.rotation ||
+      a.anchorPoint.x !== b.anchorPoint.x || a.anchorPoint.y !== b.anchorPoint.y;
   }
 
-  /**
-   * Compute the world transform for a layer by composing with its parent's transform.
-   * Child position is rotated/scaled by parent, child rotation adds to parent rotation,
-   * child scale multiplies with parent scale. Uses iterative approach to handle
-   * nested hierarchies (grandparent → parent → child).
-   */
   private _computeWorldTransform(
     local: Layer['transform'],
     parentId: string | null | undefined,
@@ -215,12 +255,11 @@ export class LayerSync {
   ): Layer['transform'] {
     if (!parentId) return local;
 
-    // Build ancestor chain (child → parent → grandparent → ...)
     const chain: Layer[] = [];
     let currentId: string | null | undefined = parentId;
     const visited = new Set<string>();
     while (currentId) {
-      if (visited.has(currentId)) break; // prevent infinite loops
+      if (visited.has(currentId)) break;
       visited.add(currentId);
       const parent = layerMap.get(currentId);
       if (!parent) break;
@@ -228,14 +267,12 @@ export class LayerSync {
       currentId = parent.parentId;
     }
 
-    // Apply transforms from root to immediate parent (innermost first)
     let worldPos = { x: local.position.x, y: local.position.y };
     let worldRot = local.rotation;
     let worldScale = { x: local.scale.x, y: local.scale.y };
 
     for (let i = chain.length - 1; i >= 0; i--) {
       const p = chain[i];
-      // Use animated override if parent was animated, else base transform
       const override = this._localOverrides.get(p.id);
       const px = override ? override.position.x : p.transform.position.x;
       const py = override ? override.position.y : p.transform.position.y;
@@ -244,7 +281,6 @@ export class LayerSync {
       const psy = (override ? override.scale.y : p.transform.scale.y) / 100;
       const prRad = THREE.MathUtils.degToRad(pr);
 
-      // Rotate child position by parent rotation, then scale, then add parent position
       const cos = Math.cos(prRad);
       const sin = Math.sin(prRad);
       const sx = worldPos.x * psx;
@@ -253,11 +289,7 @@ export class LayerSync {
         x: px + sx * cos - sy * sin,
         y: py + sx * sin + sy * cos,
       };
-
-      // Add parent rotation
       worldRot += pr;
-
-      // Multiply parent scale (as percentage)
       worldScale = {
         x: worldScale.x * psx,
         y: worldScale.y * psy,
@@ -273,29 +305,23 @@ export class LayerSync {
   }
 
   private _updateZOrder(layers: Layer[]): void {
-    // Sort by zIndex descending: higher zIndex = rendered on top
     const sorted = [...layers].sort((a, b) => b.zIndex - a.zIndex);
     sorted.forEach((l, i) => {
       const r = this.renderers.get(l.id);
       if (!r) return;
 
       if (l.is3D) {
-        // 3D layers: use proper depth testing so objects occlude each other
-        // based on their Z position. Three.js handles depth ordering natively.
         r.mesh.renderOrder = 0;
-        r.group.position.z = 0; // Don't offset 3D groups
-        // Enable depth testing on ALL meshes in the group (including model3d children)
+        r.group.position.z = 0;
         r.group.traverse((child) => {
           if (child instanceof THREE.Mesh) {
             const mat = child.material as THREE.Material;
             mat.depthTest = true;
-            // Transparent materials need depthWrite=false to avoid back-face hiding
             mat.depthWrite = !(mat.transparent && mat.opacity < 1);
             mat.needsUpdate = true;
           }
         });
       } else {
-        // 2D layers: no depth testing, use renderOrder for stacking
         r.mesh.renderOrder = sorted.length - 1 - i;
         r.group.position.z = -(i * 0.001);
         const mat = r.mesh.material as THREE.Material;
@@ -308,12 +334,7 @@ export class LayerSync {
     });
   }
 
-  private async _applyMasks(layers: Layer[]): Promise<void> {
-    // Dynamic imports to avoid circular deps at module load
-    const [{ useMaskStore }, { MaskCompositor }] = await Promise.all([
-      import('../../state/maskStore'),
-      import('../compositing/MaskCompositor'),
-    ]);
+  private _applyMasks(layers: Layer[]): void {
     const store = useMaskStore.getState();
 
     for (const layer of layers) {
@@ -323,7 +344,6 @@ export class LayerSync {
       const r = this.renderers.get(layer.id);
       if (!r) continue;
 
-      // Only works for canvas-based renderers (Shape, Solid, Text)
       const canvas: HTMLCanvasElement | undefined = (r as any)._canvas;
       const ctx: CanvasRenderingContext2D | undefined = (r as any)._ctx;
       if (!canvas || !ctx) continue;
@@ -332,12 +352,15 @@ export class LayerSync {
       const gh: number = (r as any).geometryHeight?.() ?? 0;
       if (gw <= 0 || gh <= 0) continue;
 
-      const DPI = 2;
-      MaskCompositor.applyMasks(canvas, ctx, masks, gw, gh, DPI);
+      try {
+        const DPI = 2;
+        MaskCompositor.applyMasks(canvas, ctx, masks, gw, gh, DPI);
 
-      // Force texture re-upload
-      const tex = (r as any)._tex;
-      if (tex) tex.needsUpdate = true;
+        const tex = (r as any)._tex;
+        if (tex) tex.needsUpdate = true;
+      } catch (err) {
+        console.warn(`[LayerSync] Mask application failed for layer ${layer.id}:`, err);
+      }
     }
   }
 }

@@ -1,0 +1,8 @@
+import type { EffectModule } from './types';import { def, param } from './types';
+const FRAG=`precision highp float;uniform sampler2D uTexture;uniform float uRadius;uniform float uIntensity;uniform vec3 uColor;uniform float uThreshold;varying vec2 vUv;void main(){vec4 c=texture2D(uTexture,vUv);vec2 d=1.0/vec2(400.0,400.0);float e=0.0;e+=length(texture2D(uTexture,vUv+vec2(d.x,0.0)).rgb-texture2D(uTexture,vUv-vec2(d.x,0.0)).rgb);e+=length(texture2D(uTexture,vUv+vec2(0.0,d.y)).rgb-texture2D(uTexture,vUv-vec2(0.0,d.y)).rgb);float edge=smoothstep(uThreshold*0.5,uThreshold+0.1,e);float sigma=uRadius/10.0;vec3 glow=vec3(0.0);float tot=0.0;for(int i=-10;i<=10;i++){float fi=float(i);float w=exp(-0.5*fi*fi/(sigma*sigma));vec2 uv=clamp(vUv+vec2(fi*0.002,0.0),0.0,1.0);float e2=0.0;e2+=length(texture2D(uTexture,uv+vec2(d.x,0.0)).rgb-texture2D(uTexture,uv-vec2(d.x,0.0)).rgb);e2+=length(texture2D(uTexture,uv+vec2(0.0,d.y)).rgb-texture2D(uTexture,uv-vec2(0.0,d.y)).rgb);glow+=vec3(smoothstep(uThreshold*0.5,uThreshold+0.1,e2))*w;tot+=w;}glow=glow/tot*uColor*uIntensity;gl_FragColor=vec4(c.rgb+glow,c.a);}`;
+export const edgeGlowEffect:EffectModule={definition:def('edgeGlow','Edge Glow','stylize','Glow applied to edges only with blur spread.',1,[
+param({id:'radius',name:'Radius',value:15,defaultValue:15,min:1,max:100,step:1,uniform:'uRadius'}),
+param({id:'intensity',name:'Intensity',value:1,defaultValue:1,min:0,max:5,step:0.1,uniform:'uIntensity'}),
+param({id:'color',name:'Color',type:'color',value:'#00aaff',defaultValue:'#00aaff',uniform:'uColor'}),
+param({id:'threshold',name:'Edge Threshold',value:0.2,defaultValue:0.2,min:0,max:1,step:0.01,uniform:'uThreshold'}),
+]),fragmentShader:FRAG,};

@@ -115,6 +115,26 @@ export const CompSection: React.FC = () => {
         </>
       )}
 
+      {/* ── Color Management ── */}
+      <PropRow label="Tonemapping">
+        <SelectInput
+          value={['None (Linear)', 'ACES', 'Reinhard'][comp.tonemapMode ?? 0]}
+          onChange={(v) => {
+            const idx = ['None (Linear)', 'ACES', 'Reinhard'].indexOf(v as string);
+            if (idx >= 0) {
+              useCompositionStore.getState().updateComposition(comp.id, {
+                tonemapMode: idx as 0 | 1 | 2,
+              });
+            }
+          }}
+          options={[
+            { label: 'None (Linear)', value: 'None (Linear)' },
+            { label: 'ACES', value: 'ACES' },
+            { label: 'Reinhard', value: 'Reinhard' },
+          ]}
+        />
+      </PropRow>
+
       {/* ── Time Remapping for comp layers ── */}
       <Section label="Time Remapping" defaultOpen={false}>
         <PropRow label="Enable">

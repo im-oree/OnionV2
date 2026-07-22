@@ -213,6 +213,61 @@ export function buildViewportContextMenu(): ContextMenuItem[] {
       },
     ] : []),
     { id: 'v.precomp', label: 'Pre-compose', shortcut: 'Ctrl+Shift+C', disabled: !has, onClick: () => import('../../../utils/precomp').then(m => m.precomposeSelectedLayers()) },
+    // Pre-process Comp — bake nested comp frames for fast playback
+    ...(has && sel!.layers.length === 1 && sel!.layers[0].type === 'comp' ? [
+      {
+        id: 'v.preprocess',
+        label: (sel!.layers[0].data as any)?.preProcessed ? 'Clear Pre-processing' : 'Pre-process Comp',
+        onClick: () => {
+          const layer = sel!.layers[0];
+          const data = layer.data as any;
+          if (data?.preProcessed) {
+            // Clear pre-processing
+            import('../../../renderer/PreProcessManager').then(({ preProcessManager }) => {
+              preProcessManager.clear(data.sourceCompId);
+              useCompositionStore.getState().updateLayer(sel!.compId, layer.id, {
+                data: { ...data, preProcessed: false },
+              });
+            });
+          } else {
+            // Start pre-processing
+            import('../../../renderer/PreProcessManager').then(({ preProcessManager }) => {
+              const renderer = (window as any).__renderer;
+              if (!renderer?.renderer) {
+                import('../../../state/notificationStore').then(m =>
+                  m.useNotificationStore.getState().addNotification({
+                    type: 'error', message: 'Renderer not available', autoDismiss: 2000,
+                  })
+                );
+                return;
+              }
+              preProcessManager.bake(data.sourceCompId, renderer.renderer, () => {
+                useCompositionStore.getState().updateLayer(sel!.compId, layer.id, {
+                  data: { ...data, preProcessed: true },
+                });
+              });
+            });
+          }
+        },
+      },
+    ] : []),
+    // Extract (undo pre-compose) — only for single comp-type layers
+    ...(has && sel!.layers.length === 1 && sel!.layers[0].type === 'comp' ? [
+      {
+        id: 'v.extract', label: 'Extract from Pre-comp', onClick: () => {
+          import('../../../utils/precomp').then(({ extractFromComp }) => {
+            const result = extractFromComp(sel!.layers[0].id);
+            if (!result.ok && result.reason) {
+              import('../../../state/notificationStore').then(m =>
+                m.useNotificationStore.getState().addNotification({
+                  type: 'error', message: result.reason!, autoDismiss: 3000,
+                })
+              );
+            }
+          });
+        },
+      },
+    ] : []),
     { id: 'v.del', label: 'Delete', shortcut: 'X', disabled: !has, onClick: del },
   ];
 }

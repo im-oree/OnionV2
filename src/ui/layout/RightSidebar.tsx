@@ -2,8 +2,8 @@ import React from 'react';
 import { useUIStore, type RightSidebarTab } from '../../state/uiStore';
 import { Tooltip } from '../common/Tooltip';
 import {
-  SlidersHorizontal, Sparkles, LibraryBig, AlignVerticalJustifyCenter,
-  Type, Info, Video, Activity, Camera, ArrowLeftRight,
+  SlidersHorizontal, Sparkles, AlignVerticalJustifyCenter,
+  Type, Info, Video, Activity, Camera, Layers,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -16,8 +16,7 @@ interface TabDef {
 const TABS: TabDef[] = [
   { id: 'properties',        label: 'Properties',         Icon: SlidersHorizontal },
   { id: 'effects',           label: 'Effects',            Icon: Sparkles },
-  { id: 'effectLibrary',     label: 'Effect Library',     Icon: LibraryBig },
-  { id: 'transitionLibrary', label: 'Transitions',        Icon: ArrowLeftRight },
+  { id: 'effectsHub',        label: 'Effects Hub',       Icon: Layers },
   { id: 'camera',            label: 'Camera',             Icon: Camera },
   { id: 'align',             label: 'Align',              Icon: AlignVerticalJustifyCenter },
   { id: 'character',         label: 'Character',          Icon: Type },
@@ -38,7 +37,7 @@ export const RightSidebar: React.FC = () => {
           <Tooltip key={t.id} content={t.label} position="left" delay={400}>
             <button
               onClick={() => setActive(t.id)}
-              className="flex items-center justify-center border-0 cursor-pointer transition-all"
+              className="flex items-center justify-center border-0 cursor-pointer transition-all relative"
               style={{
                 width: 32, height: 32,
                 borderRadius: 'var(--radius-md)',

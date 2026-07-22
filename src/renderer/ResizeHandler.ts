@@ -1,15 +1,19 @@
 /**
- * ResizeHandler — observes a DOM element for size changes and updates
- * the renderer and camera accordingly. Uses ResizeObserver.
- * Caps devicePixelRatio at 2 for performance.
+ * ResizeHandler â€” observes a DOM element for size changes and updates
+ * the renderer and camera.
  *
- * IMPORTANT: Uses TRANSPARENT clear color so the CSS-based CompBoundsCSS
- * layer beneath the canvas is visible. Never sets opaque background here.
+ * Preview-resolution scaling:
+ *   - The drawing buffer is rendered at (containerSize Ã— scale Ã— dpr) pixels
+ *     so we render fewer pixels for a real speedup during playback.
+ *   - The canvas element ALWAYS fills the container (100% x 100%) so what
+ *     you see is upscaled to fit â€” standard AE/Blender preview-resolution
+ *     behavior.
  */
 import * as THREE from 'three';
 import { CameraManager } from './CameraManager';
 import { RenderLoop } from './RenderLoop';
 import { VIEWPORT_CONFIG } from '../config/viewportConfig';
+import { usePreviewResolutionStore } from '../state/previewResolutionStore';
 
 export class ResizeHandler {
   private renderer: THREE.WebGLRenderer;
@@ -19,6 +23,10 @@ export class ResizeHandler {
   private onResize?: (width: number, height: number) => void;
   private rafId = 0;
 
+  private _lastCssW = 0;
+  private _lastCssH = 0;
+  private _unsubStore: (() => void) | null = null;
+
   constructor(
     renderer: THREE.WebGLRenderer,
     cameraManager: CameraManager,
@@ -27,6 +35,26 @@ export class ResizeHandler {
     this.renderer = renderer;
     this.cameraManager = cameraManager;
     this.renderLoop = renderLoop;
+
+    // Force canvas to fill its parent from the start. Three.js sets
+    // width/height style attributes on setSize(), and we override them
+    // here so preview-scale changes don't reintroduce shrinkage.
+    const canvas = this.renderer.domElement;
+    canvas.style.position = 'absolute';
+    canvas.style.left = '0';
+    canvas.style.top = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.display = 'block';
+
+    let lastScale = usePreviewResolutionStore.getState().getEffectiveScale();
+    this._unsubStore = usePreviewResolutionStore.subscribe((s) => {
+      const cur = s.getEffectiveScale();
+      if (cur !== lastScale) {
+        lastScale = cur;
+        this._reapplySize();
+      }
+    });
   }
 
   observe(el: HTMLElement): void {
@@ -53,20 +81,49 @@ export class ResizeHandler {
     this.onResize = cb;
   }
 
-  private handleResize(cssWidth: number, cssHeight: number): void {
-    if (cssWidth === 0 || cssHeight === 0) return;
+  private _reapplySize(): void {
+    if (this._lastCssW > 0 && this._lastCssH > 0) {
+      this.handleResize(this._lastCssW, this._lastCssH);
+      this.renderLoop.requestRender();
+    }
+  }
+
+  private handleResize(containerW: number, containerH: number): void {
+    if (containerW === 0 || containerH === 0) return;
+    this._lastCssW = containerW;
+    this._lastCssH = containerH;
 
     const dpr = Math.min(window.devicePixelRatio || 1, VIEWPORT_CONFIG.MAX_DPR);
-    const pixelWidth = Math.floor(cssWidth * dpr);
-    const pixelHeight = Math.floor(cssHeight * dpr);
+    const previewScale = usePreviewResolutionStore.getState().getEffectiveScale();
 
-    this.renderer.setSize(pixelWidth, pixelHeight);
-    this.renderer.setPixelRatio(dpr);
-    // CRITICAL: Transparent clear — do NOT overwrite with opaque bg.
-    // The CSS-based CompBoundsCSS layer under the canvas provides the bg.
+    // Backing-store resolution: containerSize Ã— dpr Ã— previewScale.
+    // Three.js internally multiplies size Ã— pixelRatio to compute drawing
+    // buffer pixels, so we set pixelRatio = dpr Ã— previewScale.
+    const effectiveDpr = dpr * previewScale;
+    this.renderer.setPixelRatio(effectiveDpr);
+
+    // updateStyle = FALSE so Three.js never touches canvas.style.width/height.
+    // We manage those ourselves (100% / 100%) so the browser upscales the
+    // smaller backing store to fill the view.
+    this.renderer.setSize(containerW, containerH, false);
+
+    // Enforce fill-parent CSS every resize (Three.js used to set inline
+    // px width/height on the canvas when updateStyle was true; guard against
+    // any stale styles).
+    const canvas = this.renderer.domElement;
+    canvas.style.position = 'absolute';
+    canvas.style.left = '0';
+    canvas.style.top = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.display = 'block';
+
     this.renderer.setClearColor(0x000000, 0);
-    this.cameraManager.setViewportSize(cssWidth, cssHeight);
-    this.onResize?.(cssWidth, cssHeight);
+
+    // CameraManager viewport uses container size (CSS pixels), which
+    // matches what the user sees. Screen-to-world math stays correct.
+    this.cameraManager.setViewportSize(containerW, containerH);
+    this.onResize?.(containerW, containerH);
   }
 
   disconnect(): void {
@@ -82,5 +139,9 @@ export class ResizeHandler {
 
   dispose(): void {
     this.disconnect();
+    if (this._unsubStore) {
+      this._unsubStore();
+      this._unsubStore = null;
+    }
   }
 }

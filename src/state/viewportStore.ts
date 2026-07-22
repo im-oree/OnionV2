@@ -1,5 +1,5 @@
 /**
- * ViewportStore — per-composition viewport settings.
+ * ViewportStore â€” per-composition viewport settings.
  */
 import { create } from 'zustand';
 
@@ -10,6 +10,8 @@ export interface Guide {
   locked: boolean;
 }
 
+export type OutsideBgStyle = 'gradient' | 'dark' | 'checkerboard';
+
 export interface ViewportSettings {
   showGrid: boolean;
   showRulers: boolean;
@@ -17,12 +19,25 @@ export interface ViewportSettings {
   showSafeZones: boolean;
   showStats: boolean;
   showRuleOfThirds: boolean;
+  showAnchorPoints: boolean;
+  showGizmos: boolean;
+  wireframeMode: boolean;
+  showLayerBounds: boolean;   // black-ish outline for offscreen layers
+  tonemapMode: 0 | 1 | 2;
   guidesLocked: boolean;
   snappingEnabled: boolean;
   guides: Guide[];
   zoom: number;
   panX: number;
   panY: number;
+  /** Camera-view UI zoom (only affects visual display when viewing through active camera) */
+  cameraViewZoom: number;
+  /** Fly mode active (Shift+`) */
+  flyMode: boolean;
+  /** Show checkerboard pattern inside the comp rect for transparency preview */
+  showTransparencyCheckerboard: boolean;
+  /** Outside-composition background style */
+  outsideBgStyle: OutsideBgStyle;
 }
 
 export interface ViewportStoreState {
@@ -31,6 +46,8 @@ export interface ViewportStoreState {
   toggleGrid: () => void;
   setShowRulers: (v: boolean) => void;
   toggleRulers: () => void;
+  setShowTransparencyCheckerboard: (v: boolean) => void;
+  toggleTransparencyCheckerboard: () => void;
   setShowGuides: (v: boolean) => void;
   toggleGuides: () => void;
   setShowSafeZones: (v: boolean) => void;
@@ -39,6 +56,16 @@ export interface ViewportStoreState {
   toggleStats: () => void;
   setShowRuleOfThirds: (v: boolean) => void;
   toggleRuleOfThirds: () => void;
+  setShowAnchorPoints: (v: boolean) => void;
+  toggleAnchorPoints: () => void;
+  setGizmos: (v: boolean) => void;
+  toggleGizmos: () => void;
+  setWireframe: (v: boolean) => void;
+  toggleWireframe: () => void;
+  setShowLayerBounds: (v: boolean) => void;
+  toggleLayerBounds: () => void;
+  setTonemapMode: (mode: 0 | 1 | 2) => void;
+  cycleTonemapMode: () => void;
   setGuidesLocked: (v: boolean) => void;
   setSnappingEnabled: (v: boolean) => void;
   toggleSnapping: () => void;
@@ -48,6 +75,10 @@ export interface ViewportStoreState {
   clearGuides: () => void;
   setZoom: (zoom: number) => void;
   setPan: (x: number, y: number) => void;
+  setCameraViewZoom: (z: number) => void;
+  setFlyMode: (v: boolean) => void;
+  toggleFlyMode: () => void;
+  setOutsideBgStyle: (style: OutsideBgStyle) => void;
 }
 
 function genId(): string {
@@ -55,18 +86,27 @@ function genId(): string {
 }
 
 const DEFAULT_SETTINGS: ViewportSettings = {
-  showGrid: false,          // ← OFF by default (matches ref)
-  showRulers: false,        // ← OFF by default (cleaner look)
+  showGrid: false,
+  showRulers: false,
   showGuides: true,
   showSafeZones: false,
   showStats: false,
   showRuleOfThirds: false,
+  showAnchorPoints: true,
+  showGizmos: true,
+  wireframeMode: false,
+  showLayerBounds: false, // OFF by default â€” this was the "black outline" you saw
+  tonemapMode: 0,
   guidesLocked: false,
   snappingEnabled: true,
   guides: [],
   zoom: 1,
   panX: 0,
   panY: 0,
+  cameraViewZoom: 1,
+  flyMode: false,
+  showTransparencyCheckerboard: false,
+  outsideBgStyle: 'gradient',
 };
 
 export const useViewportStore = create<ViewportStoreState>((set) => ({
@@ -84,6 +124,16 @@ export const useViewportStore = create<ViewportStoreState>((set) => ({
   toggleStats: () => set((s) => ({ settings: { ...s.settings, showStats: !s.settings.showStats } })),
   setShowRuleOfThirds: (v) => set((s) => ({ settings: { ...s.settings, showRuleOfThirds: v } })),
   toggleRuleOfThirds: () => set((s) => ({ settings: { ...s.settings, showRuleOfThirds: !s.settings.showRuleOfThirds } })),
+  setShowAnchorPoints: (v) => set((s) => ({ settings: { ...s.settings, showAnchorPoints: v } })),
+  toggleAnchorPoints: () => set((s) => ({ settings: { ...s.settings, showAnchorPoints: !s.settings.showAnchorPoints } })),
+  setGizmos: (v) => set((s) => ({ settings: { ...s.settings, showGizmos: v } })),
+  toggleGizmos: () => set((s) => ({ settings: { ...s.settings, showGizmos: !s.settings.showGizmos } })),
+  setWireframe: (v) => set((s) => ({ settings: { ...s.settings, wireframeMode: v } })),
+  toggleWireframe: () => set((s) => ({ settings: { ...s.settings, wireframeMode: !s.settings.wireframeMode } })),
+  setShowLayerBounds: (v) => set((s) => ({ settings: { ...s.settings, showLayerBounds: v } })),
+  toggleLayerBounds: () => set((s) => ({ settings: { ...s.settings, showLayerBounds: !s.settings.showLayerBounds } })),
+  setTonemapMode: (mode) => set((s) => ({ settings: { ...s.settings, tonemapMode: mode } })),
+  cycleTonemapMode: () => set((s) => ({ settings: { ...s.settings, tonemapMode: ((s.settings.tonemapMode + 1) % 3) as 0 | 1 | 2 } })),
   setGuidesLocked: (v) => set((s) => ({ settings: { ...s.settings, guidesLocked: v } })),
   setSnappingEnabled: (v) => set((s) => ({ settings: { ...s.settings, snappingEnabled: v } })),
   toggleSnapping: () => set((s) => ({ settings: { ...s.settings, snappingEnabled: !s.settings.snappingEnabled } })),
@@ -95,12 +145,10 @@ export const useViewportStore = create<ViewportStoreState>((set) => ({
         guides: [...s.settings.guides, { id: genId(), type, position, locked: false }],
       },
     })),
-
   removeGuide: (id) =>
     set((s) => ({
       settings: { ...s.settings, guides: s.settings.guides.filter((g) => g.id !== id) },
     })),
-
   moveGuide: (id, position) =>
     set((s) => ({
       settings: {
@@ -108,9 +156,15 @@ export const useViewportStore = create<ViewportStoreState>((set) => ({
         guides: s.settings.guides.map((g) => (g.id === id ? { ...g, position } : g)),
       },
     })),
-
   clearGuides: () => set((s) => ({ settings: { ...s.settings, guides: [] } })),
-
   setZoom: (zoom) => set((s) => ({ settings: { ...s.settings, zoom } })),
-  setPan: (panX, panY) => set((s) => ({ settings: { ...s.settings, panX: panX, panY: panY } })),
+  setPan: (panX, panY) => set((s) => ({ settings: { ...s.settings, panX, panY } })),
+  setCameraViewZoom: (z) => set((s) => ({
+    settings: { ...s.settings, cameraViewZoom: Math.max(0.1, Math.min(10, z)) },
+  })),
+  setFlyMode: (v) => set((s) => ({ settings: { ...s.settings, flyMode: v } })),
+  toggleFlyMode: () => set((s) => ({ settings: { ...s.settings, flyMode: !s.settings.flyMode } })),
+  setOutsideBgStyle: (style) => set((s) => ({ settings: { ...s.settings, outsideBgStyle: style } })),
+  setShowTransparencyCheckerboard: (v) => set((s) => ({ settings: { ...s.settings, showTransparencyCheckerboard: v } })),
+  toggleTransparencyCheckerboard: () => set((s) => ({ settings: { ...s.settings, showTransparencyCheckerboard: !s.settings.showTransparencyCheckerboard } })),
 }));

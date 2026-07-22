@@ -138,3 +138,126 @@ export function precomposeSelectedLayers(options?: {
 
   return { ok: true, newComp, newLayerId: compLayer.id };
 }
+
+/**
+ * Extract (undo pre-compose) — pulls layers out of a nested composition back
+ * into the parent composition, then removes the comp layer.
+ *
+ * The extracted layers keep their current transforms, adjusted for any
+ * size difference between the nested comp and the parent comp. Effects,
+ * masks, and keyframes travel with the layers (preserved by layer ID).
+ *
+ * @param compLayerId  ID of the comp layer to extract from.
+ * @returns Result with ok flag and optional reason.
+ */
+export function extractFromComp(compLayerId: string): {
+  ok: boolean;
+  reason?: string;
+  extractedCount?: number;
+} {
+  const cs = useCompositionStore.getState();
+  const parentCompId = cs.activeCompositionId;
+  if (!parentCompId) return { ok: false, reason: 'No active composition' };
+
+  const parent = cs.compositions.find(c => c.id === parentCompId);
+  if (!parent) return { ok: false, reason: 'Parent composition not found' };
+
+  const compLayer = parent.layers.find(l => l.id === compLayerId);
+  if (!compLayer) return { ok: false, reason: 'Comp layer not found' };
+  if (compLayer.type !== 'comp') return { ok: false, reason: 'Selected layer is not a comp layer' };
+
+  const compData = compLayer.data as CompData;
+  if (!compData?.sourceCompId) return { ok: false, reason: 'No source composition reference' };
+
+  const sourceComp = cs.compositions.find(c => c.id === compData.sourceCompId);
+  if (!sourceComp) return { ok: false, reason: 'Source composition not found' };
+
+  const sourceLayers = sourceComp.layers;
+  if (sourceLayers.length === 0) return { ok: false, reason: 'Source composition has no layers' };
+
+  // Compute size ratio for transform adjustment.
+  // If nested comp is half the size of parent, layer positions/scale double.
+  const scaleX = parent.width > 0 ? parent.width / sourceComp.width : 1;
+  const scaleY = parent.height > 0 ? parent.height / sourceComp.height : 1;
+
+  // Deep-clone and adjust each source layer for the parent coordinate space.
+  const adjustedLayers: Layer[] = sourceLayers.map((l, i) => {
+    const clone: Layer = JSON.parse(JSON.stringify(l));
+    clone.zIndex = compLayer.zIndex + i;   // stack from the comp layer's position
+    clone.parentId = null;                  // break external parent links
+
+    // Scale transform to parent space
+    if (clone.transform) {
+      clone.transform = {
+        position: {
+          x: (clone.transform.position?.x ?? 0) * scaleX,
+          y: (clone.transform.position?.y ?? 0) * scaleY,
+        },
+        scale: {
+          x: clone.transform.scale.x,
+          y: clone.transform.scale.y,
+        },
+        rotation: clone.transform.rotation ?? 0,
+        anchorPoint: {
+          x: (clone.transform.anchorPoint?.x ?? 0) * scaleX,
+          y: (clone.transform.anchorPoint?.y ?? 0) * scaleY,
+        },
+      };
+    }
+
+    // Scale 3D transform too
+    if (clone.transform3D) {
+      clone.transform3D = {
+        ...clone.transform3D,
+        position: {
+          x: (clone.transform3D.position?.x ?? 0) * scaleX,
+          y: (clone.transform3D.position?.y ?? 0) * scaleY,
+          z: clone.transform3D.position?.z ?? 0,
+        },
+        scale: {
+          x: clone.transform3D.scale.x,
+          y: clone.transform3D.scale.y,
+          z: clone.transform3D.scale.z,
+        },
+        anchorPoint: {
+          x: (clone.transform3D.anchorPoint?.x ?? 0) * scaleX,
+          y: (clone.transform3D.anchorPoint?.y ?? 0) * scaleY,
+          z: clone.transform3D.anchorPoint?.z ?? 0,
+        },
+      };
+    }
+
+    return clone;
+  });
+
+  // Effects, masks, and keyframes carry over automatically because the
+  // extracted layers have the same IDs as before precomposing. The
+  // effectsStore, maskStore, and keyframe engine all index data by layer
+  // ID — no explicit migration needed.
+
+  // Add extracted layers to the parent composition.
+  for (const l of adjustedLayers) {
+    cs.addLayer(parentCompId, l);
+  }
+
+  // Remove the comp layer from the parent.
+  cs.removeLayer(parentCompId, compLayerId);
+
+  // Select the extracted layers.
+  const sel = useSelectionStore.getState();
+  sel.clearSelection();
+  for (const l of adjustedLayers) {
+    sel.select({ type: 'layer', id: l.id, compositionId: parentCompId }, true);
+  }
+
+  // Force a render update.
+  try {
+    const renderer = (window as any).__renderer;
+    renderer?.renderLoop?.requestRender?.();
+    renderer?.frameCache?.clear?.();
+    renderer?.gpuTextureCache?.invalidateAll?.(parentCompId);
+  } catch {}
+
+  return { ok: true, extractedCount: adjustedLayers.length };
+}
+

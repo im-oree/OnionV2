@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { PathCommand } from '../types/layer';
 import { computePathBounds } from '../types/layer';
+import { captureSnapshot, useHistoryStore } from './historyStore';
 
 export type MaskMode = 'add'|'subtract'|'intersect'|'difference';
 export type MaskShapeType = 'rectangle'|'ellipse'|'path';
@@ -46,6 +47,7 @@ function ellipseCmds(rx: number, ry: number): PathCommand[] {
 interface MaskStore {
   masksByLayer: Record<string, VectorMask[]>;
   selectedMaskId: string | null;
+  revision: number;
   addRectMask: (layerId: string, w?: number, h?: number) => VectorMask;
   addEllipseMask: (layerId: string, rx?: number, ry?: number) => VectorMask;
   addPathMask: (layerId: string, commands: PathCommand[]) => VectorMask;
@@ -59,48 +61,75 @@ interface MaskStore {
 }
 
 export const useMaskStore = create<MaskStore>((set, get) => ({
-  masksByLayer: {}, selectedMaskId: null,
+  masksByLayer: {}, selectedMaskId: null, revision: 0,
 
   addRectMask: (layerId, w=200, h=150) => {
+    const snapshot = captureSnapshot();
     const cnt = (get().masksByLayer[layerId]?.length??0)+1;
     const mask = makeMask(layerId,'rectangle',rectCmds(w,h),`Rect Mask ${cnt}`);
-    set(s=>({masksByLayer:{...s.masksByLayer,[layerId]:[...(s.masksByLayer[layerId]??[]),mask]},selectedMaskId:mask.id}));
+    set(s=>({masksByLayer:{...s.masksByLayer,[layerId]:[...(s.masksByLayer[layerId]??[]),mask]},selectedMaskId:mask.id,revision:s.revision+1}));
+    useHistoryStore.getState().pushEntry('Add Mask', snapshot);
     return mask;
   },
   addEllipseMask: (layerId, rx=100, ry=75) => {
+    const snapshot = captureSnapshot();
     const cnt = (get().masksByLayer[layerId]?.length??0)+1;
     const mask = makeMask(layerId,'ellipse',ellipseCmds(rx,ry),`Ellipse Mask ${cnt}`);
-    set(s=>({masksByLayer:{...s.masksByLayer,[layerId]:[...(s.masksByLayer[layerId]??[]),mask]},selectedMaskId:mask.id}));
+    set(s=>({masksByLayer:{...s.masksByLayer,[layerId]:[...(s.masksByLayer[layerId]??[]),mask]},selectedMaskId:mask.id,revision:s.revision+1}));
+    useHistoryStore.getState().pushEntry('Add Mask', snapshot);
     return mask;
   },
   addPathMask: (layerId, commands) => {
+    const snapshot = captureSnapshot();
     const cnt = (get().masksByLayer[layerId]?.length??0)+1;
     const mask = makeMask(layerId,'path',commands,`Path Mask ${cnt}`);
-    set(s=>({masksByLayer:{...s.masksByLayer,[layerId]:[...(s.masksByLayer[layerId]??[]),mask]},selectedMaskId:mask.id}));
+    set(s=>({masksByLayer:{...s.masksByLayer,[layerId]:[...(s.masksByLayer[layerId]??[]),mask]},selectedMaskId:mask.id,revision:s.revision+1}));
+    useHistoryStore.getState().pushEntry('Add Mask', snapshot);
     return mask;
   },
-  removeMask: (layerId, maskId) => set(s=>({
-    masksByLayer:{...s.masksByLayer,[layerId]:(s.masksByLayer[layerId]??[]).filter(m=>m.id!==maskId)},
-    selectedMaskId: s.selectedMaskId===maskId ? null : s.selectedMaskId,
-  })),
-  updateMask: (layerId, maskId, patch) => set(s=>({
-    masksByLayer:{...s.masksByLayer,[layerId]:(s.masksByLayer[layerId]??[]).map(m=>m.id===maskId?{...m,...patch}:m)},
-  })),
-  updateMaskCommands: (layerId, maskId, commands) => set(s=>({
-    masksByLayer:{...s.masksByLayer,[layerId]:(s.masksByLayer[layerId]??[]).map(m=>m.id===maskId?{...m,commands,bounds:computePathBounds(commands)}:m)},
-  })),
-  reorderMask: (layerId, maskId, newIndex) => set(s=>{
-    const masks=[...(s.masksByLayer[layerId]??[])];
-    const idx=masks.findIndex(m=>m.id===maskId); if(idx<0)return s;
-    const [moved]=masks.splice(idx,1);
-    masks.splice(Math.max(0,Math.min(newIndex,masks.length)),0,moved);
-    return {masksByLayer:{...s.masksByLayer,[layerId]:masks}};
-  }),
+  removeMask: (layerId, maskId) => {
+    const snapshot = captureSnapshot();
+    set(s=>({
+      masksByLayer:{...s.masksByLayer,[layerId]:(s.masksByLayer[layerId]??[]).filter(m=>m.id!==maskId)},
+      selectedMaskId: s.selectedMaskId===maskId ? null : s.selectedMaskId,
+      revision: s.revision + 1,
+    }));
+    useHistoryStore.getState().pushEntry('Remove Mask', snapshot);
+  },
+  updateMask: (layerId, maskId, patch) => {
+    const snapshot = captureSnapshot();
+    set(s=>({
+      masksByLayer:{...s.masksByLayer,[layerId]:(s.masksByLayer[layerId]??[]).map(m=>m.id===maskId?{...m,...patch}:m)},
+      revision: s.revision + 1,
+    }));
+    useHistoryStore.getState().pushEntry('Update Mask', snapshot);
+  },
+  updateMaskCommands: (layerId, maskId, commands) => {
+    const snapshot = captureSnapshot();
+    set(s=>({
+      masksByLayer:{...s.masksByLayer,[layerId]:(s.masksByLayer[layerId]??[]).map(m=>m.id===maskId?{...m,commands,bounds:computePathBounds(commands)}:m)},
+      revision: s.revision + 1,
+    }));
+    useHistoryStore.getState().pushEntry('Update Mask', snapshot);
+  },
+  reorderMask: (layerId, maskId, newIndex) => {
+    const snapshot = captureSnapshot();
+    set(s=>{
+      const masks=[...(s.masksByLayer[layerId]??[])];
+      const idx=masks.findIndex(m=>m.id===maskId); if(idx<0)return s;
+      const [moved]=masks.splice(idx,1);
+      masks.splice(Math.max(0,Math.min(newIndex,masks.length)),0,moved);
+      return {masksByLayer:{...s.masksByLayer,[layerId]:masks},revision:s.revision+1};
+    });
+    useHistoryStore.getState().pushEntry('Reorder Mask', snapshot);
+  },
   selectMask: (maskId) => set({selectedMaskId:maskId}),
   duplicateMask: (layerId, maskId) => {
+    const snapshot = captureSnapshot();
     const mask=(get().masksByLayer[layerId]??[]).find(m=>m.id===maskId); if(!mask)return;
     const clone={...mask,id:genId(),name:mask.name+' Copy',commands:mask.commands.map(c=>({...c,points:[...c.points]}))};
-    set(s=>({masksByLayer:{...s.masksByLayer,[layerId]:[...(s.masksByLayer[layerId]??[]),clone]},selectedMaskId:clone.id}));
+    set(s=>({masksByLayer:{...s.masksByLayer,[layerId]:[...(s.masksByLayer[layerId]??[]),clone]},selectedMaskId:clone.id,revision:s.revision+1}));
+    useHistoryStore.getState().pushEntry('Duplicate Mask', snapshot);
   },
   getMasksForLayer: (layerId) => get().masksByLayer[layerId]??[],
 }));

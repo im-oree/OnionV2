@@ -64,8 +64,7 @@ export function registerAllShortcuts(): void {
   shortcutRegistry.register({ id: 'tool.select', key: 'v', context: 'global', handler: () => useToolStore.getState().setActiveTool('select'), remappable: true });
   shortcutRegistry.register({ id: 'tool.hand', key: 'h', context: 'global', handler: () => useToolStore.getState().setActiveTool('hand'), remappable: true });
   shortcutRegistry.register({ id: 'tool.zoom', key: 'z', context: 'global', handler: () => useToolStore.getState().setActiveTool('zoom'), remappable: true });
-  shortcutRegistry.register({ id: 'tool.rect', key: 'r', shift: true, context: 'global', handler: () => useToolStore.getState().setActiveTool('shapeRect'), remappable: true });
-  shortcutRegistry.register({ id: 'tool.ellipse', key: 'e', shift: true, context: 'global', handler: () => useToolStore.getState().setActiveTool('shapeEllipse'), remappable: true });
+  shortcutRegistry.register({ id: 'tool.shape', key: 's', shift: true, context: 'global', handler: () => useToolStore.getState().setActiveTool('shape'), remappable: true });
   shortcutRegistry.register({ id: 'tool.pen', key: 'p', context: 'global', handler: () => useToolStore.getState().setActiveTool('pen'), remappable: true });
   shortcutRegistry.register({ id: 'tool.text', key: 't', context: 'global', handler: () => useToolStore.getState().setActiveTool('text'), remappable: true });
   shortcutRegistry.register({ id: 'tool.pickWhip', key: 'w', context: 'global', handler: () => useToolStore.getState().setActiveTool('pickWhip'), remappable: true });
@@ -357,10 +356,7 @@ export function registerAllShortcuts(): void {
     useToolStore.getState().setActiveTool('gradient' as any);
   }, remappable: true });
 
-  // Polygon tool
-  shortcutRegistry.register({ id: 'tool.polygon', key: 'p', shift: true, context: 'global', handler: () => {
-    useToolStore.getState().setActiveTool('shapePolygon');
-  }, remappable: true });
+
 
   // Layer parent — Ctrl+J (Join)
   shortcutRegistry.register({ id: 'layer.join', key: 'j', ctrl: true, context: 'global', handler: () => {

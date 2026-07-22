@@ -1,8 +1,5 @@
 /**
- * SceneManager — manages the Three.js Scene and all renderable content.
- * RENDER ORDER: compBounds (bg quad, dim outside) renders FIRST, then
- * grid, then layers, then safeZones on top. This ensures layers appear
- * inside the composition area and above the background.
+ * SceneManager â€” manages the Three.js Scene and all renderable content.
  */
 import * as THREE from 'three';
 import { GridOverlay } from './overlays/Grid';
@@ -28,16 +25,8 @@ export class SceneManager {
     this.scene = new THREE.Scene();
     this.scene.background = null;
 
-    // Create skybox — large inverted sphere with app background color
     this._createSkybox(APP_BG_COLOR);
 
-    // Render order via renderOrder to ensure correct layering.
-    // Since all materials use depthTest: false, THREE.js renders
-    // objects in ascending renderOrder regardless of scene add order.
-    // Order: compBounds darkOutside (-20) → bgQuad (-18) → border (-16)
-    //        → grid (-5) → layers (0) → safeZones (5)
-    // CRITICAL: layers MUST have higher renderOrder than grid so they
-    // render ON TOP, preventing grid from showing through opaque meshes.
     this.compBounds = new CompBoundsOverlay();
     this.compBounds.group.renderOrder = -20;
     this.scene.add(this.compBounds.group);
@@ -46,35 +35,27 @@ export class SceneManager {
     this.grid.group.renderOrder = -5;
     this.scene.add(this.grid.group);
 
-    // Layer group renders on top of grid
     this.layerGroup = new THREE.Group();
     this.layerGroup.name = 'layers';
     this.layerGroup.renderOrder = 0;
     this.scene.add(this.layerGroup);
 
-    // Safe zones on top of everything
     this.safeZones = new SafeZonesOverlay();
     this.safeZones.group.renderOrder = 5;
     this.scene.add(this.safeZones.group);
 
-    // Transparent — CSS layer underneath handles comp bg + app bg
     this.scene.background = null;
   }
 
-  /** Create or update the skybox sphere */
   private _createSkybox(color: number): void {
     if (this._skybox) {
       this.scene.remove(this._skybox);
       this._skybox.geometry.dispose();
       (this._skybox.material as THREE.Material).dispose();
     }
-
     const geo = new THREE.SphereGeometry(10000, 32, 16);
     const mat = new THREE.MeshBasicMaterial({
-      color,
-      side: THREE.BackSide,
-      depthWrite: false,
-      fog: false,
+      color, side: THREE.BackSide, depthWrite: false, fog: false,
     });
     this._skybox = new THREE.Mesh(geo, mat);
     this._skybox.renderOrder = -1000;
@@ -82,23 +63,24 @@ export class SceneManager {
     this.scene.add(this._skybox);
   }
 
-  /** Update skybox color when composition background changes */
-  updateBackgroundColor(bgColor: string): void {
-    const color = (bgColor === '#000000' || bgColor === 'transparent')
-      ? new THREE.Color(APP_BG_COLOR)
-      : new THREE.Color(bgColor);
+  updateBackgroundColor(_bgColor: string): void {
     if (this._skybox) {
-      (this._skybox.material as THREE.MeshBasicMaterial).color.copy(color);
+      (this._skybox.material as THREE.MeshBasicMaterial).color.set(APP_BG_COLOR);
     }
   }
 
-  /** Toggle ground grid visibility */
   setGridVisible(visible: boolean): void {
     visible ? this.grid.show() : this.grid.hide();
   }
 
   get gridVisible(): boolean { return this.grid.visible; }
 
+  /**
+   * Apply composition. `is3D` should be TRUE when the composition is in
+   * perspective mode OR when any 3D layer/camera/light exists â€” so the
+   * grid switches to the horizontal ground plane instead of the vertical
+   * wall grid.
+   */
   applyComposition(width: number, height: number, bgColor: string, is3D?: boolean): void {
     this.compWidth = width;
     this.compHeight = height;
@@ -106,10 +88,13 @@ export class SceneManager {
     this.compBounds.update(width, height, bgColor);
     this.safeZones.update(width, height);
 
+    // Switch grid orientation to XZ ground plane whenever we're in a 3D scene
     this.grid.set3DMode(is3D ?? false, width, height);
 
     if (is3D) {
-      // Add a standard 3-point light setup if no lights exist
+      // Auto-show grid in 3D so users always see the floor as spatial reference
+      this.grid.show();
+
       if (!this._ambientLight) {
         this._ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
         this.scene.add(this._ambientLight);
@@ -129,9 +114,7 @@ export class SceneManager {
     this.grid.update(this.compWidth, this.compHeight, zoom);
   }
 
-  addLayer(mesh: THREE.Mesh): void {
-    this.layerGroup.add(mesh);
-  }
+  addLayer(mesh: THREE.Mesh): void { this.layerGroup.add(mesh); }
 
   removeLayer(id: string): void {
     const child = this.layerGroup.getObjectByName(id);

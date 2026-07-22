@@ -106,23 +106,64 @@ export const GraphEditorPanel: React.FC = () => {
         if (propFilter.size > 0 && !propFilter.has(propKey)) continue;
 
         const suffixes = ['X', 'Y', 'Z', 'W'];
-        if (dims === 1) {
-          const processKfs = graphMode === 'speed'
-            ? computeVelocityKfs(kfs, comp.fps, 0) : kfs;
-          result.push({
-            layerId: lId, property: prop, dimension: 0,
-            keyframes: processKfs, color: curveColor(prop, 0, 1),
-            label: `${lName}: ${prop}${graphMode === 'speed' ? ' (speed)' : ''}`,
-          });
-        } else {
-          for (let d = 0; d < dims; d++) {
-            const processKfs = graphMode === 'speed'
-              ? computeVelocityKfs(kfs, comp.fps, d) : kfs;
+        if (graphMode === 'speed') {
+          // Speed graph: compute velocity by sampling the value curve
+          // For multi-dim properties, compute total speed magnitude
+          const firstTime = kfs[0].time;
+          const lastTime = kfs[kfs.length - 1].time;
+          const sampleInterval = Math.max(1, Math.round(comp.fps / 30));
+          const speedSamples: { time: number; value: number }[] = [];
+          const isMultiDim = dims > 1;
+          let prevVals: (number | null)[] = Array.from({ length: dims }, () => null);
+          for (let t = firstTime; t <= lastTime; t += sampleInterval) {
+            const evalResult = engine.evaluate(lId, prop, t);
+            let currentVals: number[];
+            if (Array.isArray(evalResult.value)) {
+              currentVals = dims > 1 ? evalResult.value.slice(0, dims).map(v => v ?? 0) : [evalResult.value[0] ?? 0];
+            } else {
+              currentVals = [evalResult.value as number];
+            }
+            if (prevVals[0] !== null) {
+              const dt = sampleInterval / comp.fps;
+              let velocity: number;
+              if (isMultiDim) {
+                // Compute total speed magnitude: sqrt(Σ(Δv/Δt)²)
+                let sumSq = 0;
+                for (let d = 0; d < dims; d++) {
+                  const dv = currentVals[d] - (prevVals[d] ?? 0);
+                  sumSq += (dv / dt) * (dv / dt);
+                }
+                velocity = Math.sqrt(sumSq);
+              } else {
+                velocity = dt > 0 ? (currentVals[0] - (prevVals[0] ?? 0)) / dt : 0;
+              }
+              speedSamples.push({ time: t, value: velocity });
+            }
+            prevVals = currentVals;
+          }
+          if (speedSamples.length > 0) {
             result.push({
-              layerId: lId, property: prop, dimension: d,
-              keyframes: processKfs, color: curveColor(prop, d, dims),
-              label: `${lName}: ${prop}.${suffixes[d] ?? d}`,
+              layerId: lId, property: prop, dimension: 0,
+              keyframes: kfs, color: curveColor(prop, 0, 1),
+              label: `${lName}: ${prop} (speed)`,
+              speedSamples,
             });
+          }
+        } else {
+          if (dims === 1) {
+            result.push({
+              layerId: lId, property: prop, dimension: 0,
+              keyframes: kfs, color: curveColor(prop, 0, 1),
+              label: `${lName}: ${prop}`,
+            });
+          } else {
+            for (let d = 0; d < dims; d++) {
+              result.push({
+                layerId: lId, property: prop, dimension: d,
+                keyframes: kfs, color: curveColor(prop, d, dims),
+                label: `${lName}: ${prop}.${suffixes[d] ?? d}`,
+              });
+            }
           }
         }
       }
@@ -183,6 +224,19 @@ export const GraphEditorPanel: React.FC = () => {
     let minF = Infinity, maxF = -Infinity;
     let has = false;
     for (const c of curves) {
+      // Speed mode: use sample values for Y range (velocity values)
+      if (c.speedSamples?.length) {
+        for (const s of c.speedSamples) {
+          if (isFinite(s.value)) {
+            has = true;
+            if (s.value < minV) minV = s.value;
+            if (s.value > maxV) maxV = s.value;
+          }
+          if (s.time < minF) minF = s.time;
+          if (s.time > maxF) maxF = s.time;
+        }
+      }
+      // Value mode: use keyframe values for Y range
       for (const k of c.keyframes) {
         const v = Array.isArray(k.value) ? k.value[c.dimension] : k.value;
         if (typeof v === 'number' && isFinite(v)) {
@@ -338,37 +392,3 @@ export const GraphEditorPanel: React.FC = () => {
 };
 
 export default GraphEditorPanel;
-
-function computeVelocityKfs(kfs: any[], fps: number, dim: number = 0): any[] {
-  if (kfs.length < 2) return kfs.map(kf => ({ ...kf, value: 0 }));
-  const result: any[] = [];
-  for (let i = 0; i < kfs.length; i++) {
-    const kf = kfs[i];
-    // Compute forward velocity (value change per second)
-    if (i < kfs.length - 1) {
-      const next = kfs[i + 1];
-      const v1 = Array.isArray(kf.value) ? (kf.value[dim] ?? 0) : kf.value;
-      const v2 = Array.isArray(next.value) ? (next.value[dim] ?? 0) : next.value;
-      const dt = (next.time - kf.time) / fps;
-      const velocity = dt > 0 ? (v2 - v1) / dt : 0;
-      // Compute acceleration for tangent handles (derivative of velocity)
-      let accel = 0;
-      if (i > 0) {
-        const prev = kfs[i - 1];
-        const v0 = Array.isArray(prev.value) ? (prev.value[dim] ?? 0) : prev.value;
-        const dtPrev = (kf.time - prev.time) / fps;
-        const prevVel = dtPrev > 0 ? (v1 - v0) / dtPrev : 0;
-        accel = dt > 0 ? (velocity - prevVel) / ((dt + (dtPrev || dt)) / 2) : 0;
-      }
-      // Tangent handles: x = influence (0-1), y = velocity scaled
-      const handleScale = 0.003; // Scale velocity to tangent range
-      const outTangent = { x: 0.333, y: Math.max(-2, Math.min(2, velocity * handleScale + accel * 0.1)) };
-      const inTangent = { x: 0.333, y: Math.max(-2, Math.min(2, velocity * handleScale - accel * 0.1)) };
-      result.push({ ...kf, value: velocity, outTangent, inTangent, interpolation: 'bezier' as const });
-    } else {
-      // Last keyframe: velocity is 0 (animation ends)
-      result.push({ ...kf, value: 0 });
-    }
-  }
-  return result;
-}
