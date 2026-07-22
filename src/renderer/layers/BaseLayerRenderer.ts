@@ -255,7 +255,6 @@ export abstract class BaseLayerRenderer {
     const geo = this.mesh.geometry;
     geo.computeBoundingBox();
     if (!geo.boundingBox) return null;
-    // Transform local bbox corners to world space and compute the world bbox
     const bbox = geo.boundingBox;
     const corners = [
       new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.min.z),
@@ -274,6 +273,15 @@ export abstract class BaseLayerRenderer {
       worldBox.expandByPoint(w);
     }
     return worldBox;
+  }
+
+  /** Get the LOCAL-space bounding box (pre-world-transform).
+   *  Used by SelectionOverlay to compute oriented bounding box outlines.
+   *  Override in Model3DLayerRenderer to use the actual model geometry. */
+  getLocalBoundingBox(): THREE.Box3 | null {
+    const geo = this.mesh.geometry;
+    geo.computeBoundingBox();
+    return geo.boundingBox?.clone() ?? null;
   }
 
   /** Get the world-space bounding box corners for 3D selection outline */

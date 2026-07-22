@@ -302,13 +302,17 @@ export class SelectionOverlay {
   // For 2D objects: 4 corners at Z=0 (flat rectangle)
   // Uses renderer.getWorldBoundingBox() so model3d layers use the actual model geometry
   private _getWorldCorners(renderer: BaseLayerRenderer): ScreenCorner[] {
-    // Use the renderer's world bounding box (overridden by Model3DLayerRenderer)
-    const bbox = renderer.getWorldBoundingBox();
+    // Get the LOCAL-space bounding box (pre-world-transform)
+    const bbox = renderer.getLocalBoundingBox();
     if (!bbox) return [];
 
-    // 3D mode: use all 8 corners of the bounding box for proper perspective outline
+    // Ensure the group's world matrix is current
+    renderer.group.updateMatrixWorld(true);
+
+    // 3D mode: transform all 8 local corners through the renderer's world matrix
+    // so the outline rotates with the object (OBB, not AABB)
     if (this.cameraManager.is3DMode) {
-      const corners = [
+      const localCorners = [
         new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.min.z),
         new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.min.z),
         new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.min.z),
@@ -319,8 +323,15 @@ export class SelectionOverlay {
         new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.max.z),
       ];
 
-      const screenPoints = corners
-        .map(w => this.cameraManager.worldToScreen(w.x, w.y, w.z))
+      // Apply the renderer's world matrix (includes rotation, scale, position)
+      // so the outline tracks the object's actual orientation
+      const worldMatrix = renderer.group.matrixWorld;
+
+      const screenPoints = localCorners
+        .map(local => {
+          const world = local.clone().applyMatrix4(worldMatrix);
+          return this.cameraManager.worldToScreen(world.x, world.y, world.z);
+        })
         .filter(p => isFinite(p.x) && isFinite(p.y));
 
       // Compute convex hull for proper 3D silhouette outline

@@ -207,8 +207,32 @@ export function useViewportInput({
         if (!mt?.active) return;
         if (ev.key === 'Escape') { mt.cancel(); detachDocListeners(); return; }
         if (ev.key === 'Enter') { mt.confirm(); detachDocListeners(); return; }
-        if (ev.key === 'x' && !ev.shiftKey) { mt.setAxisLock('x'); updateAxisGuide(); return; }
-        if (ev.key === 'y' && !ev.shiftKey) { mt.setAxisLock('y'); updateAxisGuide(); return; }
+        if (ev.key === 'x' && !ev.shiftKey) {
+          mt.setAxisLock('x');
+          (window as any).__3DAxisLock = 'x';
+          (window as any).__moveZActive = false;
+          updateAxisGuide(); return;
+        }
+        if (ev.key === 'y' && !ev.shiftKey) {
+          mt.setAxisLock('y');
+          (window as any).__3DAxisLock = 'y';
+          (window as any).__moveZActive = false;
+          updateAxisGuide(); return;
+        }
+        if (ev.key === 'z' && !ev.shiftKey) {
+          // Z axis: for grab mode, route vertical mouse to Z position;
+          // for rotate/scale, constrain to Z axis
+          (window as any).__3DAxisLock = 'z';
+          const mode = mt.mode;
+          if (mode === 'grab') {
+            (window as any).__moveZActive = true;
+            mt.setAxisLock('y'); // Block normal X/Y movement
+          } else {
+            // Rotate/scale: Z axis lock is read from __3DAxisLock
+            mt.setAxisLock(null);
+          }
+          updateAxisGuide(); return;
+        }
         if (ev.key === 'X' && ev.shiftKey) { mt.setAxisExclude('x'); updateAxisGuide(); return; }
         if (ev.key === 'Y' && ev.shiftKey) { mt.setAxisExclude('y'); updateAxisGuide(); return; }
         if (ev.key === 'Shift') { mt.setPrecisionMode(true); return; }
@@ -1325,20 +1349,12 @@ export function useViewportInput({
       if (!cmRef.current) return;
       e.preventDefault();
 
-      // Free View: scroll moves camera forward/backward along look direction
+      // Free View: scroll zooms toward/away from focal point (Blender-style)
       const isFree = !!(window as any).__freeViewMode;
       if (isFree) {
-        const yaw = (window as any).__freeOrbitY ?? 0.5;
-        const pitch = (window as any).__freeOrbitX ?? 0.3;
-        const speed = 200; // pixels per scroll tick
-        const dir = e.deltaY < 0 ? 1 : -1;
-        // Move along the camera's forward direction
-        const fwdX = Math.sin(yaw) * Math.cos(pitch) * speed * dir;
-        const fwdY = Math.sin(pitch) * speed * dir;
-        const fwdZ = Math.cos(yaw) * Math.cos(pitch) * speed * dir;
-        (window as any).__freeCamX = ((window as any).__freeCamX ?? 0) + fwdX;
-        (window as any).__freeCamY = ((window as any).__freeCamY ?? 0) + fwdY;
-        (window as any).__freeCamZ = ((window as any).__freeCamZ ?? 0) + fwdZ;
+        const curDist = (window as any).__freeDistance ?? 500;
+        const factor = e.deltaY < 0 ? 0.85 : 1.18; // scroll up = zoom in = reduce distance
+        (window as any).__freeDistance = Math.max(10, Math.min(10000, curDist * factor));
         requestRender?.();
         return;
       }
@@ -1488,13 +1504,20 @@ export function useViewportInput({
           return;
         }
         if (e.key === 'x' && !e.shiftKey) {
-          // X axis lock — handled by docKeydown during active modal
-          // Just clear pending key
+          // X axis lock: set 3D axis lock so rotate/scale/grab use X axis
+          (window as any).__3DAxisLock = 'x';
+          (window as any).__moveZActive = false;
+          const mt2 = mtRef.current;
+          if (mt2?.active) mt2.setAxisLock('x');
           (window as any).__pendingBlenderKey = null;
           return;
         }
         if (e.key === 'y' && !e.shiftKey) {
-          // Y axis lock — handled by docKeydown during active modal
+          // Y axis lock: set 3D axis lock so rotate/scale/grab use Y axis
+          (window as any).__3DAxisLock = 'y';
+          (window as any).__moveZActive = false;
+          const mt3 = mtRef.current;
+          if (mt3?.active) mt3.setAxisLock('y');
           (window as any).__pendingBlenderKey = null;
           return;
         }
@@ -1713,13 +1736,13 @@ export function useViewportInput({
               autoKeyCameraProp('camera.positionZ', Math.max(10, panZ));
             }
           } else {
-            // Free view: move camera position directly via __freeCamX/Y/Z
-            const curCamX = (window as any).__freeCamX ?? 0;
-            const curCamY = (window as any).__freeCamY ?? 0;
-            const curCamZ = (window as any).__freeCamZ ?? 0;
-            (window as any).__freeCamX = curCamX + moveX;
-            (window as any).__freeCamY = curCamY + moveY;
-            (window as any).__freeCamZ = curCamZ + moveZ;
+            // Free view: move focal point (Blender-style orbit center)
+            const curX = (window as any).__freeLookAtX ?? 0;
+            const curY = (window as any).__freeLookAtY ?? 0;
+            const curZ = (window as any).__freeLookAtZ ?? 0;
+            (window as any).__freeLookAtX = curX + moveX;
+            (window as any).__freeLookAtY = curY + moveY;
+            (window as any).__freeLookAtZ = curZ + moveZ;
           }
           requestRender?.();
         }

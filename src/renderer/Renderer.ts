@@ -241,11 +241,12 @@ export class Renderer {
     // Free View = orthographic (arrange scene), Perspective = use comp.perspective3D settings
     // Free View / Active Camera toggle state
     (window as any).__freeViewMode = false;
-    (window as any).__freeOrbitX = 0.3; // pitch
-    (window as any).__freeOrbitY = 0.5; // yaw
-    (window as any).__freeCamX = 0; // absolute camera position
-    (window as any).__freeCamY = 0;
-    (window as any).__freeCamZ = 0;
+    (window as any).__freeOrbitX = 0.2; // pitch (radians, ~11° above horizon)
+    (window as any).__freeOrbitY = 0.8; // yaw (radians)
+    (window as any).__freeDistance = 800; // distance from focal point
+    (window as any).__freeLookAtX = 0; // focal point (orbit center)
+    (window as any).__freeLookAtY = 0;
+    (window as any).__freeLookAtZ = 0;
     this._viewModeHandler = ((e: Event) => {
       const detail = (e as CustomEvent).detail;
       const wasFree = !!(window as any).__freeViewMode;
@@ -824,24 +825,29 @@ export class Renderer {
     cam.far = 50000;
 
     if (isFree) {
-      // ── Free View: FPS-style camera (position + look direction) ──
+      // ── Free View: Blender-style orbit camera (focal point + yaw/pitch + distance) ──
       const yaw = (window as any).__freeOrbitY ?? 0.5;
       const pitch = (window as any).__freeOrbitX ?? 0.3;
-      const camX = (window as any).__freeCamX ?? 0;
-      const camY = (window as any).__freeCamY ?? 0;
-      const camZ = (window as any).__freeCamZ ?? 0;
+      const dist = (window as any).__freeDistance ?? 500;
+      const lookAtX = (window as any).__freeLookAtX ?? 0;
+      const lookAtY = (window as any).__freeLookAtY ?? 0;
+      const lookAtZ = (window as any).__freeLookAtZ ?? 0;
 
       cam.fov = 50;
       cam.aspect = this.cameraManager.viewportWidth / this.cameraManager.viewportHeight;
 
-      // Camera position is absolute world position (no orbit-around-center)
-      cam.position.set(camX, camY, camZ);
+      // Camera position orbits around the focal point
+      const camX = lookAtX + dist * Math.sin(yaw) * Math.cos(pitch);
+      const camY = lookAtY + dist * Math.sin(pitch);
+      const camZ = lookAtZ + dist * Math.cos(yaw) * Math.cos(pitch);
 
-      // Look direction derived from yaw + pitch
-      const lookX = Math.sin(yaw) * Math.cos(pitch);
-      const lookY = Math.sin(pitch);
-      const lookZ = Math.cos(yaw) * Math.cos(pitch);
-      cam.lookAt(camX + lookX, camY + lookY, camZ + lookZ);
+      cam.position.set(camX, camY, camZ);
+      cam.lookAt(lookAtX, lookAtY, lookAtZ);
+
+      // Sync legacy globals so other systems (scroll, WASD) stay consistent
+      (window as any).__freeCamX = camX;
+      (window as any).__freeCamY = camY;
+      (window as any).__freeCamZ = camZ;
     } else {
       // ── Active Camera: use comp camera settings ──
       const fov = comp.cameraFOV ?? 50;
@@ -1528,22 +1534,28 @@ private _syncModel3DLayer(layer: any): void {
     this.renderer.clear(true, true, true);
     this.renderer.render(this.sceneManager.scene, cam);
 
-    // Copy FBO pixels → targetCanvas (flip Y because WebGL is bottom-up)
-    const gl = this.renderer.getContext() as WebGL2RenderingContext;
-    if (gl) {
-      // Ensure GPU rendering is complete before readback
-      gl.finish();
-      const pixels = new Uint8Array(pw * ph * 4);
-      gl.readPixels(0, 0, pw, ph, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-      const ctx = targetCanvas.getContext('2d');
-      if (ctx) {
-        const imgData = ctx.createImageData(pw, ph);
-        const rowBytes = pw * 4;
-        for (let y = 0; y < ph; y++) {
-          imgData.data.set(pixels.subarray(y * rowBytes, y * rowBytes + rowBytes), (ph - 1 - y) * rowBytes);
-        }
-        ctx.putImageData(imgData, 0, 0);
+    // Read FBO pixels → targetCanvas using Three.js API (more reliable than raw gl.readPixels)
+    const pixelBuffer = new Uint8Array(pw * ph * 4);
+    try {
+      this.renderer.readRenderTargetPixels(this._previewFBO, 0, 0, pw, ph, pixelBuffer);
+    } catch {
+      // Fallback: raw gl.readPixels if readRenderTargetPixels fails
+      const gl = this.renderer.getContext() as WebGL2RenderingContext;
+      if (gl) {
+        gl.finish();
+        gl.readPixels(0, 0, pw, ph, gl.RGBA, gl.UNSIGNED_BYTE, pixelBuffer);
       }
+    }
+
+    // Copy to 2D canvas (flip Y because WebGL is bottom-up)
+    const ctx = targetCanvas.getContext('2d');
+    if (ctx) {
+      const imgData = ctx.createImageData(pw, ph);
+      const rowBytes = pw * 4;
+      for (let y = 0; y < ph; y++) {
+        imgData.data.set(pixelBuffer.subarray(y * rowBytes, y * rowBytes + rowBytes), (ph - 1 - y) * rowBytes);
+      }
+      ctx.putImageData(imgData, 0, 0);
     }
 
     this.renderer.setViewport(0, 0, this.renderer.domElement.width, this.renderer.domElement.height);

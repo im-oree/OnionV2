@@ -5,6 +5,7 @@ import { useKeyframeStore } from '../../../state/keyframeStore';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useLayerBarDrag } from './useLayerBarDrag';
 import { useKeyframeDrag } from './useKeyframeDrag';
+import { useStaggerDrag } from './useStaggerDrag';
 import { useTimelineExpanded } from './useTimelineExpanded';
 import { useContextMenu } from '../../common/useContextMenu';
 import { ContextMenu } from '../../common/ContextMenu';
@@ -36,6 +37,7 @@ export const KeyframeArea: React.FC<Props> = ({ layers, zoom, totalFrames, compI
   const ctx = useContextMenu();
   const sortedLayers = [...layers].sort((a, b) => b.zIndex - a.zIndex);
   const boxRef = useRef<HTMLDivElement>(null);
+  const staggerDrag = useStaggerDrag({ containerRef: boxRef, compId, zoom });
   const boxSelectState = useRef<{ startX: number; startY: number } | null>(null);
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
@@ -102,6 +104,19 @@ export const KeyframeArea: React.FC<Props> = ({ layers, zoom, totalFrames, compI
 
   return (
     <div ref={boxRef} data-timeline-tracks="1" className="relative" onMouseDown={onMouseDown} onContextMenu={onContextMenu}>
+      {/* Stagger drag HUD chip */}
+      {staggerDrag.hud.visible && (
+        <div className="fixed z-50 pointer-events-none px-2 py-1 rounded text-xs font-mono"
+          style={{
+            left: staggerDrag.hud.x + 16,
+            top: staggerDrag.hud.y - 12,
+            background: 'rgba(0,0,0,0.8)',
+            color: '#fff',
+            border: '1px solid var(--color-accent)',
+          }}>
+          {staggerDrag.hud.target === 'keyframes' ? 'Keyframes' : 'Layers'}: {'±'}{Math.abs(staggerDrag.hud.step)}f ×{staggerDrag.hud.count}
+        </div>
+      )}
       {compId && workArea && workArea.start !== undefined && workArea.end !== undefined && (
         <>
           {workArea.start > 0 && (

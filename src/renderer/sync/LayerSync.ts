@@ -283,12 +283,17 @@ export class LayerSync {
         // 3D layers: use proper depth testing so objects occlude each other
         // based on their Z position. Three.js handles depth ordering natively.
         r.mesh.renderOrder = 0;
-        const mat = r.mesh.material as THREE.Material;
-        if (mat) {
-          mat.depthTest = true;
-          mat.depthWrite = true;
-          mat.needsUpdate = true;
-        }
+        r.group.position.z = 0; // Don't offset 3D groups
+        // Enable depth testing on ALL meshes in the group (including model3d children)
+        r.group.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            const mat = child.material as THREE.Material;
+            mat.depthTest = true;
+            // Transparent materials need depthWrite=false to avoid back-face hiding
+            mat.depthWrite = !(mat.transparent && mat.opacity < 1);
+            mat.needsUpdate = true;
+          }
+        });
       } else {
         // 2D layers: no depth testing, use renderOrder for stacking
         r.mesh.renderOrder = sorted.length - 1 - i;

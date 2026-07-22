@@ -123,6 +123,42 @@ export class Model3DLayerRenderer extends BaseLayerRenderer {
     return box.isEmpty() ? null : box;
   }
 
+  /** Get local-space bounding box of the model (pre-world-transform).
+   *  Used by SelectionOverlay to compute oriented bounding box outlines. */
+  getLocalBoundingBox(): THREE.Box3 | null {
+    if (!this._modelGroup) return super.getLocalBoundingBox();
+    this._modelGroup.updateMatrixWorld(true);
+    // Compute inverse of the model group's world matrix to convert world-space
+    // child positions back into the model group's local space
+    const groupWorldInverse = this._modelGroup.matrixWorld.clone().invert();
+    const box = new THREE.Box3();
+    this._modelGroup.traverse((child) => {
+      if (child instanceof THREE.Mesh && child.geometry) {
+        child.geometry.computeBoundingBox();
+        if (child.geometry.boundingBox) {
+          const childBox = child.geometry.boundingBox.clone();
+          const corners = [
+            new THREE.Vector3(childBox.min.x, childBox.min.y, childBox.min.z),
+            new THREE.Vector3(childBox.max.x, childBox.min.y, childBox.min.z),
+            new THREE.Vector3(childBox.max.x, childBox.max.y, childBox.min.z),
+            new THREE.Vector3(childBox.min.x, childBox.max.y, childBox.min.z),
+            new THREE.Vector3(childBox.min.x, childBox.min.y, childBox.max.z),
+            new THREE.Vector3(childBox.max.x, childBox.min.y, childBox.max.z),
+            new THREE.Vector3(childBox.max.x, childBox.max.y, childBox.max.z),
+            new THREE.Vector3(childBox.min.x, childBox.max.y, childBox.max.z),
+          ];
+          // Transform corners from geometry local space → world space → model group local space
+          for (const c of corners) {
+            c.applyMatrix4(child.matrixWorld); // geometry local → world
+            c.applyMatrix4(groupWorldInverse); // world → model group local
+            box.expandByPoint(c);
+          }
+        }
+      }
+    });
+    return box.isEmpty() ? null : box;
+  }
+
   /** Get access to the model group for hit testing and selection */
   getModelGroup(): THREE.Group | null { return this._modelGroup; }
 

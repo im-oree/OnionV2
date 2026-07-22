@@ -1,6 +1,7 @@
 import React, { useEffect, useCallback, useState } from 'react';
 import { useUIStore } from '../../state/uiStore';
 import { MenuBar } from '../menubar/MenuBar';
+import { TitleBar } from './TitleBar';
 import { Toolbar } from '../toolbar/Toolbar';
 import { RightSidebar } from './RightSidebar';
 import { StatusBar } from './StatusBar';
@@ -46,7 +47,9 @@ export const AppShell: React.FC = () => {
   const RSB = 36;
 
   return (
-    <div className="h-full w-full overflow-hidden"
+    <div className="h-full w-full overflow-hidden" style={{ display: 'flex', flexDirection: 'column' }}>
+    <TitleBar />
+    <div className="flex-1 min-h-0 overflow-hidden"
       style={{
         display: 'grid', padding: `0 ${G}px ${G}px ${G}px`,
         gridTemplateColumns: `${TB}px ${G}px ${showLeft ? `${leftW}px` : '0px'} ${G}px 1fr ${G}px ${showRight ? `${rightW}px` : '0px'} ${G}px ${showRight ? `${RSB}px` : '0px'}`,
@@ -104,6 +107,7 @@ export const AppShell: React.FC = () => {
       {showRight && (
         <div style={{ gridColumn: '9', gridRow: '3 / 6' }} className="overflow-hidden"><RightSidebar /></div>
       )}
+    </div>
     </div>
   );
 };
