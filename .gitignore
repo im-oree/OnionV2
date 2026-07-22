@@ -5,3 +5,4 @@ nul
 *.db
 *.db-shm
 *.db-wal
+release/
