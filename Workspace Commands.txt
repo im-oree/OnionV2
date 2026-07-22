@@ -1,0 +1,3 @@
+npm run electron:dev      # Dev mode (Vite + Electron)
+npm run electron:start    # Production (builds + launches)
+npm run electron:build    # Package as installer
