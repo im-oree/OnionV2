@@ -19,6 +19,7 @@ import { saveFile } from './FileSaver';
 import { ImageSequenceEncoder, type SequenceDelivery } from './ImageSequenceEncoder';
 import { MediaRecorderEncoder } from './MediaRecorderEncoder';
 import { WebCodecsEncoder, type WebCodecsCodec, checkCodecConfig } from './WebCodecsEncoder';
+import { GifExportEncoder } from './GifEncoder';
 import {
   formatCategory,
   FORMAT_EXTENSIONS,
@@ -359,8 +360,7 @@ export class ExportEngine {
       case 'mp4-h264':  container = 'mp4';  wcCodec = 'h264'; break;
       case 'mp4-h265':  container = 'mp4';  wcCodec = 'h265'; break;
       case 'gif':
-        this.setStatus('error');
-        this.emit('error', { message: 'GIF export arrives in Stage G.' });
+        await this._exportGif(comp, settings);
         return;
       default:
         container = 'webm'; wcCodec = 'vp9';
@@ -586,6 +586,93 @@ export class ExportEngine {
       }
       if (!saveRes.saved) {
         throw new Error(saveRes.error ?? 'Failed to save video');
+      }
+
+      this.setStatus('done');
+      this.emit('done', {
+        blob, size: blob.size,
+        name: saveRes.path ?? settings.fileName,
+        method: saveRes.method,
+        frameCount: totalFrames,
+      } satisfies ExportDonePayload);
+    } catch (err) {
+      encoder.cancel();
+      throw err;
+    }
+  }
+
+  // ── GIF export (gifenc, WASM-free) ────────────────────────────────
+  private async _exportGif(
+    comp: Composition,
+    settings: ExportSettings,
+  ): Promise<void> {
+    const startFrame = Math.max(0, settings.range.startFrame);
+    const endFrame = Math.min(
+      Math.floor(comp.duration * comp.fps) - 1,
+      settings.range.endFrame,
+    );
+    if (endFrame < startFrame) {
+      throw new Error(`Invalid frame range: ${startFrame} to ${endFrame}`);
+    }
+    const totalFrames = endFrame - startFrame + 1;
+
+    const encoder = new GifExportEncoder({
+      width: settings.width,
+      height: settings.height,
+      fps: settings.fps,
+      quality: settings.quality,
+      loopCount: settings.gifLoopCount,
+    });
+
+    this.frameRenderer.beginExport(settings.width, settings.height);
+    this.setStatus('preparing');
+    await encoder.start();
+    this.setStatus('rendering');
+
+    try {
+      for (let f = startFrame; f <= endFrame; f++) {
+        await this._throttleIfPaused();
+        if (this._cancelled) {
+          encoder.cancel();
+          throw new Error('cancelled');
+        }
+
+        const frameStart = performance.now();
+        const rendered = await this.frameRenderer.renderFrame(
+          comp.id, f, settings.fps,
+          settings.width, settings.height,
+        );
+
+        this.emit('preview', { bitmap: rendered.bitmap, frameNumber: f });
+        await encoder.addFrame(rendered.bitmap);
+        rendered.bitmap.close();
+
+        const totalFrameMs = performance.now() - frameStart;
+        this._frameTimes.push(totalFrameMs);
+        const currentCount = f - startFrame + 1;
+        this._emitProgress(currentCount, totalFrames, totalFrameMs);
+
+        if (currentCount % 4 === 0) {
+          await new Promise(r => setTimeout(r, 0));
+        }
+      }
+
+      this.setStatus('encoding');
+      const blob = await encoder.finish();
+
+      if (this._cancelled) throw new Error('cancelled');
+
+      const saveRes = await saveFile(
+        blob, settings.fileName, 'gif', settings.useSaveDialog, 'image/gif',
+      );
+
+      if (saveRes.cancelled) {
+        this.setStatus('cancelled');
+        this.emit('cancelled');
+        return;
+      }
+      if (!saveRes.saved) {
+        throw new Error(saveRes.error ?? 'Failed to save GIF');
       }
 
       this.setStatus('done');
