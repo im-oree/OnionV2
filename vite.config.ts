@@ -18,5 +18,15 @@ export default defineConfig({
     target: 'ES2020',
     sourcemap: true,
     outDir: 'dist',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          three: ['three'],
+          react: ['react', 'react-dom'],
+          state: ['zustand'],
+          icons: ['lucide-react'],
+        },
+      },
+    },
   },
 });
