@@ -6,6 +6,7 @@ import { ConfirmDialogContainer } from './ui/common/ConfirmDialog';
 import { CommandPalette } from './ui/common/CommandPalette';
 import { AlertModal } from './ui/common/AlertModal';
 import { MoveSegmentsDialog } from './ui/panels/timeline/MoveSegmentsDialog';
+import { PlaybackController } from './ui/PlaybackController';
 import { useKeyboardManager, registerAllShortcuts } from './input/KeyboardManager';
 import { useCompositionStore } from './state/compositionStore';
 import { useNavigationStore } from './state/navigationStore';
@@ -202,8 +203,38 @@ const App: React.FC = () => {
     setPendingRecoveries(prev => prev.filter(r => r.projectId !== projectId));
   }, []);
 
+  // Suspend audio on tab hide, resume on show if playing
+  React.useEffect(() => {
+    const handler = () => {
+      if (document.hidden) {
+        import('./renderer/audio/audioContext').then(m => m.suspendAudio());
+        const renderer = (window as any).__renderer;
+        if (renderer) {
+          renderer.pauseAllVideos?.();
+          renderer.pauseAllAudio?.();
+        }
+        // Pause the animation clock so timeline doesn't drift while hidden
+        import('./ui/panels/timeline/PlaybackControls').then(({ animationClock }) => {
+          animationClock.pause();
+        });
+      } else {
+        import('./state/timelineStore').then(({ useTimelineStore }) => {
+          if (useTimelineStore.getState().playbackState === 'playing') {
+            import('./renderer/audio/audioContext').then(m => m.resumeAudio());
+            import('./ui/panels/timeline/PlaybackControls').then(({ animationClock }) => {
+              animationClock.play();
+            });
+          }
+        });
+      }
+    };
+    document.addEventListener('visibilitychange', handler);
+    return () => document.removeEventListener('visibilitychange', handler);
+  }, []);
+
   return (
     <>
+      <PlaybackController />
       <CommandPalette />
       <AppShell />
       <DialogManager />

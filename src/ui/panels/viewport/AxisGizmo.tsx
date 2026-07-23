@@ -1,75 +1,32 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { cameraController } from '../../../renderer/CameraController';
+import { onCameraChange } from '../../../renderer/utils/CameraEvents';
 
 interface Props {
-  onAxisClick?: (axis: 'x' | 'y' | 'z' | '-x' | '-y' | '-z') => void;
+  onAxisClick?: (axis: '+x' | '-x' | '+y' | '-y' | '+z' | '-z') => void;
 }
 
 /**
- * AxisGizmo â€” Blender-style 3D orientation sphere.
- * Rotates with the free-view camera orbit.
- * Shows X=red, Y=green, Z=blue with proper 3D projection and depth sorting.
- *
- * CLICK BEHAVIOR:
- *  - Click positive axis end (+X, +Y, +Z) â†’ snap view to look down that axis
- *  - Click negative axis end (-X, -Y, -Z) â†’ snap view from opposite side
- *  - Click center dot â†’ reset to default 3/4 perspective view
- *
- * Snapping updates window.__freeOrbitX / __freeOrbitY (pitch/yaw of the
- * free-view camera), then dispatches 'viewport:viewmode' so the renderer
- * re-applies the camera and re-renders.
+ * AxisGizmo — Blender-style 3D orientation sphere at the top-right.
+ * Rotates with the Free View camera orbit. Clicking axis endpoints
+ * snaps the Free View to that axis-aligned direction.
  */
 export const AxisGizmo: React.FC<Props> = ({ onAxisClick }) => {
   const [, forceUpdate] = useState(0);
 
   useEffect(() => {
-    let rafId = 0;
-    let lastOrbitX = (window as any).__freeOrbitX ?? 0.3;
-    let lastOrbitY = (window as any).__freeOrbitY ?? 0.5;
-
-    const tick = () => {
-      const curX = (window as any).__freeOrbitX ?? 0.3;
-      const curY = (window as any).__freeOrbitY ?? 0.5;
-      if (curX !== lastOrbitX || curY !== lastOrbitY) {
-        lastOrbitX = curX;
-        lastOrbitY = curY;
-        forceUpdate(n => n + 1);
-      }
-      rafId = requestAnimationFrame(tick);
-    };
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
+    // Update whenever camera changes (RAF-throttled via bus)
+    const unsub = onCameraChange(() => forceUpdate((n) => n + 1));
+    return unsub;
   }, []);
 
-  /**
-   * Snap the free-view camera to a specific direction.
-   * Angles chosen so the camera looks *down* the given axis toward origin.
-   */
-  const snapView = useCallback((dir: 'x' | 'y' | 'z' | '-x' | '-y' | '-z' | 'reset') => {
-    let pitch = 0.3;
-    let yaw = 0.5;
-
-    switch (dir) {
-      case 'x':   pitch = 0;              yaw = Math.PI / 2;  break; // look down +X
-      case '-x':  pitch = 0;              yaw = -Math.PI / 2; break;
-      case 'y':   pitch = Math.PI / 2 - 0.001; yaw = 0;       break; // top view
-      case '-y':  pitch = -Math.PI / 2 + 0.001; yaw = 0;      break; // bottom view
-      case 'z':   pitch = 0;              yaw = 0;            break; // front view (look down +Z)
-      case '-z':  pitch = 0;              yaw = Math.PI;      break; // back view
-      case 'reset':
-      default:
-        pitch = 0.3; yaw = 0.5;
-        break;
+  const snapView = useCallback((dir: '+x' | '-x' | '+y' | '-y' | '+z' | '-z' | 'reset') => {
+    // Ensure Free View is active before snapping
+    if (!cameraController.isFreeView) {
+      cameraController.setMode('freeView');
+      document.dispatchEvent(new CustomEvent('viewport:viewmode', { detail: { free: true } }));
     }
-
-    (window as any).__freeOrbitX = pitch;
-    (window as any).__freeOrbitY = yaw;
-
-    // Ensure we're in free view so the snap is visible
-    (window as any).__freeViewMode = true;
-    document.dispatchEvent(new CustomEvent('viewport:viewmode', {
-      detail: { free: true },
-    }));
-
+    cameraController.snapToAxisView(dir);
     if (dir !== 'reset') onAxisClick?.(dir);
   }, [onAxisClick]);
 
@@ -78,28 +35,28 @@ export const AxisGizmo: React.FC<Props> = ({ onAxisClick }) => {
   const cy = size / 2;
   const armLen = 24;
 
-  const orbitX = (window as any).__freeOrbitX ?? 0.3;
-  const orbitY = (window as any).__freeOrbitY ?? 0.5;
+  const st = cameraController.freeState;
+  const pitch = -st.pitch;
+  const yaw = -st.yaw;
 
-  const cosX = Math.cos(-orbitX), sinX = Math.sin(-orbitX);
-  const cosY = Math.cos(-orbitY), sinY = Math.sin(-orbitY);
+  const cosX = Math.cos(pitch), sinX = Math.sin(pitch);
+  const cosY = Math.cos(yaw), sinY = Math.sin(yaw);
 
   const project3D = (x: number, y: number, z: number) => {
-    let rx = x * cosY + z * sinY;
-    let ry = y;
-    let rz = -x * sinY + z * cosY;
-    let ry2 = ry * cosX - rz * sinX;
-    let rz2 = ry * sinX + rz * cosX;
+    const rx = x * cosY + z * sinY;
+    const ry = y;
+    const rz = -x * sinY + z * cosY;
+    const ry2 = ry * cosX - rz * sinX;
+    const rz2 = ry * sinX + rz * cosX;
     return { sx: rx, sy: -ry2, depth: rz2 };
   };
 
-  // Positive AND negative endpoints for each axis
   const endpoints = [
-    { dir: 'x'  as const, color: '#ff3355', label: 'X', x3d:  1, y3d:  0, z3d:  0, filled: true  },
+    { dir: '+x' as const, color: '#ff3355', label: 'X', x3d:  1, y3d:  0, z3d:  0, filled: true  },
     { dir: '-x' as const, color: '#ff3355', label: '',  x3d: -1, y3d:  0, z3d:  0, filled: false },
-    { dir: 'y'  as const, color: '#55dd33', label: 'Y', x3d:  0, y3d:  1, z3d:  0, filled: true  },
+    { dir: '+y' as const, color: '#55dd33', label: 'Y', x3d:  0, y3d:  1, z3d:  0, filled: true  },
     { dir: '-y' as const, color: '#55dd33', label: '',  x3d:  0, y3d: -1, z3d:  0, filled: false },
-    { dir: 'z'  as const, color: '#3388ff', label: 'Z', x3d:  0, y3d:  0, z3d:  1, filled: true  },
+    { dir: '+z' as const, color: '#3388ff', label: 'Z', x3d:  0, y3d:  0, z3d:  1, filled: true  },
     { dir: '-z' as const, color: '#3388ff', label: '',  x3d:  0, y3d:  0, z3d: -1, filled: false },
   ];
 
@@ -119,7 +76,6 @@ export const AxisGizmo: React.FC<Props> = ({ onAxisClick }) => {
         viewBox={`0 0 ${size} ${size}`}
         style={{ cursor: 'default', display: 'block' }}
       >
-        {/* Background sphere â€” clickable to reset view */}
         <circle
           cx={cx} cy={cy} r={size / 2 - 1}
           fill="rgba(0,0,0,0.55)"
@@ -131,10 +87,10 @@ export const AxisGizmo: React.FC<Props> = ({ onAxisClick }) => {
           <title>Reset to default view</title>
         </circle>
 
-        {/* Faint axis lines through center (both directions) */}
+        {/* Axis lines through center */}
         {['x', 'y', 'z'].map(axisKey => {
-          const posEnd = projected.find(p => p.dir === axisKey);
-          const negEnd = projected.find(p => p.dir === '-' + axisKey);
+          const posEnd = projected.find(p => p.dir === ('+' + axisKey));
+          const negEnd = projected.find(p => p.dir === ('-' + axisKey));
           if (!posEnd || !negEnd) return null;
           return (
             <line
@@ -157,7 +113,6 @@ export const AxisGizmo: React.FC<Props> = ({ onAxisClick }) => {
           const ey = cy + sy * armLen;
           const opacity = depth > 0 ? 1.0 : 0.55;
           const r = filled ? 7 : 5.5;
-
           return (
             <g
               key={dir}
@@ -193,7 +148,6 @@ export const AxisGizmo: React.FC<Props> = ({ onAxisClick }) => {
           );
         })}
 
-        {/* Center dot */}
         <circle
           cx={cx} cy={cy} r={2.5}
           fill="rgba(255,255,255,0.7)"

@@ -18,7 +18,7 @@ import { TextAnimatorSection } from './TextAnimatorSection';
 import { ModelSection } from './ModelSection';
 import { MaterialSection } from './MaterialSection';
 
-type TabId = 'transform' | 'object' | 'modifiers';
+type TabId = 'transform' | 'object' | 'audio' | 'modifiers';
 
 interface TabDef {
   id: TabId;
@@ -59,6 +59,13 @@ const LAYER_TYPE_ICONS: Record<string, React.ReactNode> = {
       <line x1="2" y1="12" x2="22" y2="12" />
     </svg>
   ),
+  audio: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+    </svg>
+  ),
   comp: (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
@@ -67,6 +74,8 @@ const LAYER_TYPE_ICONS: Record<string, React.ReactNode> = {
     </svg>
   ),
 };
+
+const AUDIO_ICON = LAYER_TYPE_ICONS.audio;
 
 function buildTabs(layerType: string | undefined): TabDef[] {
   const tabs: TabDef[] = [
@@ -87,6 +96,15 @@ function buildTabs(layerType: string | undefined): TabDef[] {
       id: 'object',
       label: 'Object Data',
       icon: LAYER_TYPE_ICONS[layerType] ?? LAYER_TYPE_ICONS.solid,
+    });
+  }
+
+  // Audio tab — shown for audio AND video layers
+  if (layerType === 'audio' || layerType === 'video') {
+    tabs.push({
+      id: 'audio',
+      label: 'Audio',
+      icon: AUDIO_ICON,
     });
   }
 
@@ -161,10 +179,8 @@ export const PropertiesPanel: React.FC = () => {
   const selectedLayers = layers.filter((l) => selectedIds.includes(l.id));
   const single = selectedLayers.length === 1 ? selectedLayers[0] : null;
 
-  // Memoize tabs to avoid unnecessary re-renders
   const tabs = React.useMemo(() => buildTabs(single?.type), [single?.type]);
 
-  // Reset to a valid tab if current tab becomes unavailable (e.g. layer deselected)
   React.useEffect(() => {
     if (!tabs.some(t => t.id === activeTab) && tabs.length > 0) {
       setActiveTab(tabs[0].id);
@@ -191,7 +207,7 @@ export const PropertiesPanel: React.FC = () => {
 
   return (
     <div className="flex h-full min-h-0 overflow-hidden">
-      {/* Vertical tab bar — Blender-style narrow left column */}
+      {/* Left rail — vertical tab bar */}
       <div
         className="flex flex-col items-center gap-1 py-2 shrink-0"
         style={{
@@ -211,9 +227,9 @@ export const PropertiesPanel: React.FC = () => {
         ))}
       </div>
 
-      {/* Tab content area */}
+      {/* Content area */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {/* Layer name header (single selection only) */}
+        {/* Layer name header */}
         {single && (
           <div
             className="flex items-center px-3 gap-2"
@@ -244,7 +260,6 @@ export const PropertiesPanel: React.FC = () => {
           </div>
         )}
 
-        {/* Multi-selection header */}
         {selectedLayers.length > 1 && (
           <div
             className="flex items-center px-3"
@@ -256,12 +271,10 @@ export const PropertiesPanel: React.FC = () => {
           </div>
         )}
 
-        {/* Tab content */}
         <div className="py-1">
           {activeTab === 'transform' && single && (
             <TransformSection layer={single} compId={comp.id} />
           )}
-
           {activeTab === 'transform' && selectedLayers.length > 1 && (
             <Placeholder text="Multi-layer transform editing coming soon" />
           )}
@@ -276,7 +289,6 @@ export const PropertiesPanel: React.FC = () => {
                 <TextAnimatorSection key={anim.id} anim={anim} compId={comp.id} layerId={single.id} />
               ))}
               {single.type === 'video' && <VideoSection layer={single} compId={comp.id} />}
-              {single.type === 'audio' && <AudioSection layer={single} compId={comp.id} />}
               {single.type === 'chart' && <ChartSection layer={single} compId={comp.id} />}
               {single.type === 'spline' && <SplineSection layer={single} compId={comp.id} />}
               {single.type === 'model3d' && <ModelSection layer={single} compId={comp.id} />}
@@ -285,9 +297,16 @@ export const PropertiesPanel: React.FC = () => {
               )}
             </>
           )}
-
           {activeTab === 'object' && selectedLayers.length > 1 && (
             <Placeholder text="Multi-layer object editing coming soon" />
+          )}
+
+          {/* AUDIO TAB */}
+          {activeTab === 'audio' && single && (
+            <AudioSection layer={single} compId={comp.id} />
+          )}
+          {activeTab === 'audio' && selectedLayers.length > 1 && (
+            <Placeholder text="Multi-layer audio editing coming soon" />
           )}
 
           {activeTab === 'modifiers' && single && (
@@ -297,7 +316,6 @@ export const PropertiesPanel: React.FC = () => {
               <ModifierSection layer={single} compId={comp.id} />
             </>
           )}
-
           {activeTab === 'modifiers' && selectedLayers.length > 1 && (
             <Placeholder text="Multi-layer effect editing coming soon" />
           )}

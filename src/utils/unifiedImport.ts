@@ -359,7 +359,7 @@ function buildLayerFromAsset(
           naturalHeight: asset.naturalHeight ?? 100,
           duration: asset.duration ?? 10,
           muted: false,
-          volume: 1,
+          volume: 0.5,
           playbackRate: 1,
         },
         ...transformOverride,
@@ -372,7 +372,7 @@ function buildLayerFromAsset(
         data: {
           assetId: asset.id,
           duration: asset.duration ?? 10,
-          volume: 1,
+          volume: 0.5,
           muted: false,
           playbackRate: 1,
         },

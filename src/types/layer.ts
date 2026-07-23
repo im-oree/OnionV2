@@ -12,6 +12,67 @@ export type BlendMode =
 
 export type FadeCurve = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' | 'bezier';
 
+// ── Audio effects & EQ ─────────────────────────────────────
+
+/**
+ * Base audio effect types — each maps to a Web Audio node graph.
+ */
+export type AudioEffectType =
+  | 'reverb'
+  | 'delay'
+  | 'distortion'
+  | 'lowpass'
+  | 'highpass'
+  | 'bandpass'
+  | 'compressor'
+  | 'limiter'
+  | 'pitchShift'
+  | 'chorus'
+  | 'phaser'
+  | 'tremolo'
+  | 'bitcrusher'
+  | 'stereoWiden';
+
+/**
+ * An audio effect instance attached to a layer.
+ * Chains in order. Each has independent params (keyframeable).
+ */
+export interface AudioEffectInstance {
+  id: string;
+  /** Underlying effect type — determines which Web Audio nodes to build */
+  baseType: AudioEffectType;
+  /** Human-readable name (from preset or default effect name) */
+  name: string;
+  /** Preset id, if this effect was applied from a preset */
+  presetId?: string;
+  /** Preset category, for UI grouping */
+  presetCategory?: 'voice-filter' | 'voice-character' | 'speech-to-song' | 'custom';
+  enabled: boolean;
+  /** Dry/wet mix (0 = fully dry, 1 = fully wet) */
+  mix: number;
+  /** Effect-specific params */
+  params: Record<string, number>;
+}
+
+/**
+ * 5-band EQ.
+ */
+export interface EQBand {
+  /** Center frequency in Hz */
+  frequency: number;
+  /** Gain in dB (-24 to +24) */
+  gain: number;
+  /** Q factor (sharpness) */
+  q: number;
+  /** Filter type per band */
+  type: 'lowshelf' | 'peaking' | 'highshelf';
+}
+
+export interface AudioEQ {
+  enabled: boolean;
+  bands: EQBand[];
+}
+
 export interface Transform {
   position: { x: number; y: number };
   scale: { x: number; y: number };
@@ -221,6 +282,8 @@ export interface VideoData {
   /** Custom bezier control points [x1,y1,x2,y2] when curve = 'bezier' */
   fadeInBezier?: [number, number, number, number];
   fadeOutBezier?: [number, number, number, number];
+  audioEffects?: AudioEffectInstance[];
+  eq?: AudioEQ;
 }
 
 export interface AudioData {
@@ -241,6 +304,8 @@ export interface AudioData {
   fadeOutCurve?: FadeCurve;
   fadeInBezier?: [number, number, number, number];
   fadeOutBezier?: [number, number, number, number];
+  audioEffects?: AudioEffectInstance[];
+  eq?: AudioEQ;
 }
 
 export type TextAlignment = 'left'|'center'|'right'|'justify';

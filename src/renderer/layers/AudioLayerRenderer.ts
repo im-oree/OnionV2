@@ -9,40 +9,10 @@ import { getActiveSegment } from '../../types/layer';
 import { assetManager } from '../../storage/AssetManager';
 import { useProjectStore } from '../../state/projectStore';
 import { computeFadeEnvelope } from '../audio/audioEnvelope';
+import { getAudioContext, registerForUnlock, unregisterForUnlock, installUnlockHandler } from '../audio/audioContext';
+import { createAudioEffect, type EffectNode } from '../audio/audioEffects';
+import type { AudioEffectInstance, AudioEQ } from '../../types/layer';
 
-/** Shared AudioContext across all audio layers */
-let _sharedCtx: AudioContext | null = null;
-function getAudioContext(): AudioContext {
-  if (!_sharedCtx) {
-    _sharedCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-  }
-  return _sharedCtx;
-}
-
-/** Global unlock handler for autoplay policy */
-const pendingUnlock = new Set<HTMLAudioElement>();
-let unlockHandlerInstalled = false;
-
-function installUnlockHandler(): void {
-  if (unlockHandlerInstalled) return;
-  unlockHandlerInstalled = true;
-  const unlock = () => {
-    const ctx = getAudioContext();
-    if (ctx.state === 'suspended') ctx.resume();
-    for (const a of pendingUnlock) {
-      const wasMuted = a.muted;
-      a.muted = true;
-      a.play().then(() => {
-        a.pause();
-        a.muted = wasMuted;
-      }).catch(() => { a.muted = wasMuted; });
-    }
-    pendingUnlock.clear();
-  };
-  document.addEventListener('pointerdown', unlock, { capture: true });
-  document.addEventListener('keydown', unlock, { capture: true });
-  document.addEventListener('click', unlock, { capture: true });
-}
 
 export class AudioLayerRenderer {
   readonly id: string;
@@ -50,6 +20,14 @@ export class AudioLayerRenderer {
   private _source: MediaElementAudioSourceNode | null = null;
   private _gainNode: GainNode | null = null;
   private _panNode: StereoPannerNode | null = null;
+  private _effectsInput: GainNode | null = null;
+  private _effectsOutput: GainNode | null = null;
+  private _eqInput: GainNode | null = null;
+  private _eqOutput: GainNode | null = null;
+  private _activeEffects: Array<{ instanceId: string; node: EffectNode }> = [];
+  private _activeEQBands: BiquadFilterNode[] = [];
+  private _lastEffectsHash = '';
+  private _lastEQHash = '';
   private _assetId: string = '';
   private _disposed = false;
   private _ready = false;
@@ -126,6 +104,10 @@ export class AudioLayerRenderer {
       this._panNode.pan.value = pan;
     }
 
+    // ── Update effects chain + EQ if changed ──
+    this._syncEffectsChain(data);
+    this._syncEQ(data);
+
     audio.muted = !!data.muted;
     const rate = data.playbackRate;
     const safeRate = (typeof rate === 'number' && isFinite(rate) && rate > 0) ? rate : 1;
@@ -143,7 +125,7 @@ export class AudioLayerRenderer {
             p.catch((err) => {
               if (err?.name === 'NotAllowedError') {
                 this._wasPlayingWhenLoaded = true;
-                pendingUnlock.add(audio);
+                registerForUnlock(audio);
                 console.warn('[AudioLayer] Autoplay blocked — will start after next user gesture');
               } else {
                 console.warn('[AudioLayer] Play failed:', err?.message ?? err);
@@ -176,7 +158,7 @@ export class AudioLayerRenderer {
     this._wasPlayingWhenLoaded = false;
     this._teardownAudioGraph();
     if (this._audio) {
-      pendingUnlock.delete(this._audio);
+      unregisterForUnlock(this._audio);
       this._audio.pause();
       this._audio.removeAttribute('src');
       this._audio.load();
@@ -185,12 +167,100 @@ export class AudioLayerRenderer {
   }
 
   private _teardownAudioGraph(): void {
+    // Dispose active effects
+    for (const { node } of this._activeEffects) node.dispose();
+    this._activeEffects = [];
+    // Disconnect EQ bands
+    for (const b of this._activeEQBands) { try { b.disconnect(); } catch {} }
+    this._activeEQBands = [];
+    // Disconnect graph nodes in order
+    try { this._eqOutput?.disconnect(); } catch {}
+    try { this._eqInput?.disconnect(); } catch {}
+    try { this._effectsOutput?.disconnect(); } catch {}
+    try { this._effectsInput?.disconnect(); } catch {}
     try { this._panNode?.disconnect(); } catch {}
     try { this._gainNode?.disconnect(); } catch {}
     try { this._source?.disconnect(); } catch {}
+    this._eqOutput = null;
+    this._eqInput = null;
+    this._effectsOutput = null;
+    this._effectsInput = null;
     this._panNode = null;
     this._gainNode = null;
     this._source = null;
+    this._lastEffectsHash = '';
+    this._lastEQHash = '';
+  }
+
+  // ── Effects chain ───────────────────────────────────────────
+
+  private _syncEffectsChain(data: AudioData): void {
+    if (!this._effectsInput || !this._effectsOutput) return;
+    const effects = (data.audioEffects ?? []) as AudioEffectInstance[];
+    const enabledEffects = effects.filter(e => e.enabled !== false);
+    const hash = JSON.stringify(
+      enabledEffects.map(e => ({ id: e.id, type: e.baseType, params: e.params, mix: e.mix })),
+    );
+    if (hash === this._lastEffectsHash) return;
+    this._lastEffectsHash = hash;
+
+    // Rebuild chain from scratch (cheap for small chains)
+    for (const { node } of this._activeEffects) node.dispose();
+    this._activeEffects = [];
+
+    try { this._effectsInput.disconnect(); } catch {}
+
+    if (enabledEffects.length === 0) {
+      // Bypass — connect input directly to output
+      this._effectsInput.connect(this._effectsOutput);
+      return;
+    }
+
+    const ctx = getAudioContext();
+    let prevOutput: AudioNode = this._effectsInput;
+    for (const fx of enabledEffects) {
+      const node = createAudioEffect(ctx, fx.baseType, fx.params);
+      node.setMix(fx.mix ?? 1);
+      prevOutput.connect(node.input);
+      prevOutput = node.output;
+      this._activeEffects.push({ instanceId: fx.id, node });
+    }
+    prevOutput.connect(this._effectsOutput);
+  }
+
+  // ── EQ chain ───────────────────────────────────────────────
+
+  private _syncEQ(data: AudioData): void {
+    if (!this._eqInput || !this._eqOutput) return;
+    const eq = data.eq as AudioEQ | undefined;
+    const enabled = eq?.enabled !== false && eq && eq.bands && eq.bands.length > 0;
+    const hash = JSON.stringify(enabled ? eq!.bands : []);
+    if (hash === this._lastEQHash) return;
+    this._lastEQHash = hash;
+
+    // Rebuild EQ
+    for (const b of this._activeEQBands) { try { b.disconnect(); } catch {} }
+    this._activeEQBands = [];
+    try { this._eqInput.disconnect(); } catch {}
+
+    if (!enabled) {
+      this._eqInput.connect(this._eqOutput);
+      return;
+    }
+
+    const ctx = getAudioContext();
+    let prev: AudioNode = this._eqInput;
+    for (const band of eq!.bands) {
+      const filter = ctx.createBiquadFilter();
+      filter.type = band.type;
+      filter.frequency.value = band.frequency;
+      filter.gain.value = band.gain;
+      filter.Q.value = band.q;
+      prev.connect(filter);
+      prev = filter;
+      this._activeEQBands.push(filter);
+    }
+    prev.connect(this._eqOutput);
   }
 
   private _loadAudio(assetId: string, layer: Layer): void {
@@ -200,7 +270,7 @@ export class AudioLayerRenderer {
     this._teardownAudioGraph();
 
     if (this._audio) {
-      pendingUnlock.delete(this._audio);
+      unregisterForUnlock(this._audio);
       this._audio.pause();
       this._audio.removeAttribute('src');
       this._audio.load();
@@ -231,17 +301,26 @@ export class AudioLayerRenderer {
       if (this._ready || this._disposed) return;
       this._ready = true;
 
-      // Set up Web Audio graph now that audio is ready
+      // Set up Web Audio graph:
+      // source → gain → pan → [effects chain] → [EQ chain] → destination
       try {
         const ctx = getAudioContext();
-        // MediaElementSource can only be created once per element — if it
-        // fails we fall back to plain HTMLAudioElement.volume
         this._source = ctx.createMediaElementSource(audio);
         this._gainNode = ctx.createGain();
         this._panNode = ctx.createStereoPanner();
+        this._effectsInput = ctx.createGain();
+        this._effectsOutput = ctx.createGain();
+        this._eqInput = ctx.createGain();
+        this._eqOutput = ctx.createGain();
+
+        // Baseline routing (no effects/EQ yet):
         this._source.connect(this._gainNode);
         this._gainNode.connect(this._panNode);
-        this._panNode.connect(ctx.destination);
+        this._panNode.connect(this._effectsInput);
+        this._effectsInput.connect(this._effectsOutput);
+        this._effectsOutput.connect(this._eqInput);
+        this._eqInput.connect(this._eqOutput);
+        this._eqOutput.connect(ctx.destination);
       } catch (err) {
         console.warn('[AudioLayer] Web Audio setup failed, using element volume:', err);
         this._teardownAudioGraph();
@@ -253,7 +332,7 @@ export class AudioLayerRenderer {
         if (p && typeof p.catch === 'function') {
           p.catch((err) => {
             if (err?.name === 'NotAllowedError') {
-              pendingUnlock.add(audio);
+              registerForUnlock(audio);
             }
           });
         }
@@ -274,7 +353,7 @@ export class AudioLayerRenderer {
 
     audio.src = url;
     audio.load();
-    pendingUnlock.add(audio);
+    registerForUnlock(audio);
     this._audio = audio;
   }
 }

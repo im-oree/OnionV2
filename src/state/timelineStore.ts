@@ -29,7 +29,10 @@ export interface TimelineState{
   toggleSnapping:()=>void;
 }
 
-const DEFAULT_ZOOM=10;
+const DEFAULT_ZOOM = 10;
+// Hard limits — 2000 px per frame is deep zoom; 0.005 handles hour-long comps
+export const ZOOM_MIN = 0.005;
+export const ZOOM_MAX = 2000;
 
 export const useTimelineStore = create<TimelineState>((set)=>({
   playbackState:'stopped', timeDisplay:TIME_DISPLAY.FRAMES as TimeDisplayMode,
@@ -44,16 +47,17 @@ export const useTimelineStore = create<TimelineState>((set)=>({
   stop:()=>set({playbackState:'stopped'}),
   togglePlayback:()=>set(s=>({playbackState:s.playbackState==='playing'?'paused':'playing'})),
   setTimeDisplay:(m)=>set({timeDisplay:m}),
-  setZoom:(z)=>set({zoom:Math.max(0.01,Math.min(500,z))}),
+  setZoom:(z)=>set({zoom:Math.max(ZOOM_MIN,Math.min(ZOOM_MAX,z))}),
   setScrollX:(x)=>set({scrollX:Math.max(0,x)}),
   setScrollY:(y)=>set({scrollY:y}),
   setSnapping:(snapping)=>set({snapping}),
   setAutoScroll:(s)=>set({autoScroll:s}),
   setLoop:(l)=>set({loop:l}),
-  zoomIn:()=>set(s=>({zoom:Math.min(500,s.zoom*1.25)})),
-  zoomOut:()=>set(s=>({zoom:Math.max(0.01,s.zoom/1.25)})),
+  zoomIn:()=>set(s=>({zoom:Math.min(ZOOM_MAX,s.zoom*1.25)})),
+  zoomOut:()=>set(s=>({zoom:Math.max(ZOOM_MIN,s.zoom/1.25)})),
   zoomToFit:()=>{
-    set({ zoom: DEFAULT_ZOOM, scrollX: 0 });
+    // Actual fit is computed by TimelinePanel using the panel width;
+    // just dispatch the event so it re-runs.
     document.dispatchEvent(new CustomEvent('timeline:zoomToFit'));
   },
   setWorkArea:(start,end)=>set({workAreaStart:start,workAreaEnd:end}),

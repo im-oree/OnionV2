@@ -1026,12 +1026,10 @@ export class Renderer {
       if (layer.type !== 'video') continue;
       const r = this.layerSync.getRenderer(layer.id);
       if (!(r instanceof VideoLayerRenderer)) continue;
-      const video = r.videoElement;
-      if (!video) continue;
       const vdata = layer.data as VideoData | undefined;
       if (!vdata) continue;
 
-      // ── Compute effective volume with fade envelope ──
+      // Compute effective volume with fade envelope
       const overrides = this.propertyBinder.overrides.get(layer.id);
       let baseVol = overrides?.volume != null ? overrides.volume : (vdata.volume ?? 1);
       if (baseVol > 1) baseVol /= 100;
@@ -1040,10 +1038,8 @@ export class Renderer {
       const activeSeg = getActiveSegment(layer, currentFrame);
 
       // In a gap between segments → silence immediately.
-      // _syncVideoLayers runs AFTER this and hides the mesh,
-      // but without this guard the audio would pop for one frame.
       if (!activeSeg) {
-        if (Math.abs(video.volume) > 0.001) video.volume = 0;
+        r.syncAudio(0, true, 0, [], undefined);
         continue;
       }
 
@@ -1064,10 +1060,14 @@ export class Renderer {
         );
       }
 
-      const targetVol = baseVol * envelope;
-      const targetMuted = vdata.muted ?? false;
-      if (Math.abs(video.volume - targetVol) > 0.005) video.volume = targetVol;
-      if (video.muted !== targetMuted) video.muted = targetMuted;
+      const effectiveVol = baseVol * envelope;
+      const muted = !!vdata.muted;
+      const pan = vdata.pan ?? 0;
+      const effects = vdata.audioEffects ?? [];
+      const eq = vdata.eq;
+
+      // Route everything through VideoLayerRenderer's Web Audio pipeline
+      r.syncAudio(effectiveVol, muted, pan, effects, eq);
     }
   }
 
@@ -1126,7 +1126,6 @@ export class Renderer {
               console.warn('[Video] Autoplay blocked');
               video.muted = true;
               video.play().catch(() => {});
-              this._setupVideoUnmuteOnGesture();
             } else {
               console.warn('[Video] Playback error:', err?.message ?? err);
             }
@@ -1229,18 +1228,6 @@ export class Renderer {
 
   pauseAllAudio(): void {
     for (const [, r] of this._audioRenderers) r.pause();
-  }
-
-  private _setupVideoUnmuteOnGesture(): void {
-    const handler = () => {
-      for (const [, r] of this.layerSync.getAllRenderers()) {
-        if (r instanceof VideoLayerRenderer && r.videoElement) {
-          r.videoElement.muted = false;
-        }
-      }
-      document.removeEventListener('pointerdown', handler);
-    };
-    document.addEventListener('pointerdown', handler, { once: true });
   }
 
   stopAllAudio(): void {

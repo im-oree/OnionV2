@@ -157,6 +157,14 @@ export class ModalTransform {
     document.dispatchEvent(new CustomEvent('renderer:interactive', { detail: { on: true } }));
     this._axisLock = null;
     this._axisExclude = null;
+
+    // CRITICAL: clear window-level axis-lock globals so a fresh modal transform
+    // always starts in unconstrained mode. Otherwise a stale __3DAxisLock from a
+    // previously-cancelled transform locks scale/rotate/grab to that axis and
+    // (for scale) causes only ONE axis to change instead of uniform scaling.
+    (window as any).__3DAxisLock = null;
+    (window as any).__moveZActive = false;
+    (window as any).__pendingBlenderKey = null;
     this._accumulatedDelta = { x: 0, y: 0 };
     this._numericBuffer = '';
     this._numericActive = false;
@@ -737,7 +745,13 @@ export class ModalTransform {
 
       case 'scale': {
         const is3DPerspective = !!(window as any).__perspectiveActive;
-        const zLockScale = (window as any).__3DAxisLock as string | undefined;
+        // Only consult the window-level axis lock if the user actually pressed
+        // X/Y/Z DURING this modal transform (indicated by _axisLock also being
+        // set by docKeydown). This prevents a stale __3DAxisLock from another
+        // transform from hijacking the scale into a single-axis operation.
+        const zLockScale = this._axisLock
+          ? ((window as any).__3DAxisLock as string | undefined)
+          : undefined;
 
         // ── Compute the base uniform scale factor ──────────────────
         let baseFactor = 1;

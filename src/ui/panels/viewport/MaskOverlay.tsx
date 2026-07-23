@@ -1,15 +1,20 @@
 /**
- * MaskOverlay — draws mask outlines and handles for editing masks in the viewport.
- * When 'mask' tool is active:
- *   - Shows all masks on the selected layer with their outlines
- *   - Allows dragging anchor points of the selected mask
- *   - Clicking adds rectangle/ellipse mask directly
+ * MaskOverlay — draws mask outlines with transform (position + rotation)
+ * and interactive handles for the selected mask in the Properties panel.
+ *
+ * Handles:
+ *  - 4 corner handles → resize (respects linkSize)
+ *  - 4 edge handles → resize single axis
+ *  - Rotation handle above the mask → rotate
+ *  - Body drag → move (updates positionX/Y)
+ *
+ * Brush mode: click+drag paints strokes into the active brush mask.
  */
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useMaskStore } from '../../../state/maskStore';
 import { useSelectionStore } from '../../../state/selectionStore';
 import { useCompositionStore } from '../../../state/compositionStore';
-import { useToolStore } from '../../../state/toolStore';
+import type { VectorMask, BrushStroke } from '../../../types/mask';
 import { useCameraSubscribe } from './hooks/useCameraSubscribe';
 import type { CameraManager } from '../../../renderer/CameraManager';
 import type { PathCommand } from '../../../types/layer';
@@ -19,100 +24,326 @@ interface Props {
   viewportSize: { width: number; height: number };
 }
 
+type HandleId =
+  | 'move'
+  | 'rotate'
+  | 'tl' | 'tr' | 'br' | 'bl'
+  | 'top' | 'right' | 'bottom' | 'left';
+
+// ── Helpers ─────────────────────────────────────────────────
+
+function genStrokeId(): string {
+  return `stroke_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+}
+
+/** Apply mask transform (position + rotation) to a local point → returns layer-space point */
+function applyMaskTransform(
+  localX: number, localY: number, mask: VectorMask,
+): { x: number; y: number } {
+  const rad = (mask.rotation * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return {
+    x: mask.positionX + localX * cos - localY * sin,
+    y: mask.positionY + localX * sin + localY * cos,
+  };
+}
+
+/** Inverse — layer-space point → mask-local point */
+function inverseMaskTransform(
+  worldX: number, worldY: number, mask: VectorMask,
+): { x: number; y: number } {
+  const rad = -(mask.rotation * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const dx = worldX - mask.positionX;
+  const dy = worldY - mask.positionY;
+  return { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
+}
+
+// ── Main component ──────────────────────────────────────────
+
 export const MaskOverlay: React.FC<Props> = ({ cameraManager, viewportSize }) => {
-  const tool = useToolStore(s => s.activeTool);
   const [, forceUpdate] = useState(0);
   useCameraSubscribe(cameraManager, () => forceUpdate(n => n + 1));
 
   const selectedIds = useSelectionStore(s =>
-    s.selected.filter(x => x.type === 'layer').map(x => x.id)
+    s.selected.filter(x => x.type === 'layer').map(x => x.id),
   );
   const comp = useCompositionStore(s =>
     s.activeCompositionId
       ? s.compositions.find(c => c.id === s.activeCompositionId) ?? null
-      : null
+      : null,
   );
 
+  // Subscribe to store so we re-render on mask changes
+  const masksRevision = useMaskStore(s => s.revision);
+  void masksRevision;
   const maskStore = useMaskStore();
   const selectedMaskId = useMaskStore(s => s.selectedMaskId);
+  const brushMode = useMaskStore(s => (s as any).brushMode as 'paint'|'erase' | undefined) ?? 'paint';
 
-  const dragRef = useRef<{
+  // Track drag state via ref (avoids stale closures)
+  const dragRef = useRef<null | {
+    handle: HandleId;
+    startMouse: { x: number; y: number };
+    startMask: {
+      positionX: number; positionY: number;
+      sizeW: number; sizeH: number; rotation: number;
+    };
     layerId: string;
     maskId: string;
-    pointIdx: number;
-    cmdIdx: number;
-    startWorld: { x: number; y: number };
-  } | null>(null);
+  }>(null);
 
-  // ── Safe sx/sy before early returns so useCallback is always registered ──
-  const sx = comp && selectedIds.length === 1
-    ? (comp.layers.find(l => l.id === selectedIds[0])?.transform.scale.x ?? 100) / 100
-    : 1;
-  const sy = comp && selectedIds.length === 1
-    ? (comp.layers.find(l => l.id === selectedIds[0])?.transform.scale.y ?? 100) / 100
-    : 1;
+  // Brush stroke in progress
+  const strokeRef = useRef<null | {
+    layerId: string;
+    maskId: string;
+    points: { x: number; y: number }[];
+    size: number;
+    erase: boolean;
+  }>(null);
 
-  // handleAnchorDown must be BEFORE early returns (it's hook #9)
-  // l2w/w2s are NOT used here — world position is computed inline
-  const handleAnchorDown = useCallback((
-    e: React.MouseEvent,
-    layerId: string,
-    maskId: string,
-    localX: number,
-    localY: number,
-    cmdIdx: number,
-    ptIdx: number,
+  const [_, setStrokePreview] = useState<{ x: number; y: number }[] | null>(null);
+
+  // ── Handle mouse events for gizmo drag ──────────────────────
+
+  const handleMouseDown = useCallback((
+    e: React.MouseEvent, handle: HandleId, layerId: string, maskId: string,
   ) => {
     e.preventDefault();
     e.stopPropagation();
-    // Compute world position inline — avoids referencing l2w (defined after early returns)
-    const cs = useCompositionStore.getState();
-    const c = cs.compositions.find(c => c.id === cs.activeCompositionId);
-    const l = c?.layers.find(l => l.id === layerId);
-    const tx = l?.transform.position.x ?? 0;
-    const ty = l?.transform.position.y ?? 0;
-    const world = { x: tx + localX * sx, y: ty + localY * sy };
-    dragRef.current = { layerId, maskId, pointIdx: ptIdx, cmdIdx, startWorld: world };
-    maskStore.selectMask(maskId);
+    const mask = maskStore.getMasksForLayer(layerId).find(m => m.id === maskId);
+    if (!mask) return;
 
-    const onMove = (ev: MouseEvent) => {
+    dragRef.current = {
+      handle,
+      startMouse: { x: e.clientX, y: e.clientY },
+      startMask: {
+        positionX: mask.positionX,
+        positionY: mask.positionY,
+        sizeW: mask.sizeW,
+        sizeH: mask.sizeH,
+        rotation: mask.rotation,
+      },
+      layerId,
+      maskId,
+    };
+    maskStore.selectMask(maskId);
+  }, [maskStore]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
       const d = dragRef.current;
       if (!d || !cameraManager) return;
-      const canvas = document.querySelector('canvas');
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const newWorld = cameraManager.screenToWorld(ev.clientX - rect.left, ev.clientY - rect.top);
-      const dx = (newWorld.x - d.startWorld.x) / sx;
-      const dy = (newWorld.y - d.startWorld.y) / sy;
+      const dxPx = e.clientX - d.startMouse.x;
+      const dyPx = e.clientY - d.startMouse.y;
 
-      const mask = useMaskStore.getState().getMasksForLayer(d.layerId).find(m => m.id === d.maskId);
+      const zoom = cameraManager.zoom || 1;
+      const dxWorld = dxPx / zoom;
+      const dyWorld = dyPx / zoom;
+
+      const mask = maskStore.getMasksForLayer(d.layerId).find(m => m.id === d.maskId);
       if (!mask) return;
-      const newCmds = mask.commands.map((cmd, ci) => {
-        if (ci !== d.cmdIdx) return cmd;
-        const pts = [...cmd.points];
-        pts[d.pointIdx] += dx;
-        pts[d.pointIdx + 1] += dy;
-        return { ...cmd, points: pts };
-      });
-      useMaskStore.getState().updateMaskCommands(d.layerId, d.maskId, newCmds);
-      d.startWorld = newWorld;
+
+      switch (d.handle) {
+        case 'move': {
+          maskStore.updateMask(d.layerId, d.maskId, {
+            positionX: d.startMask.positionX + dxWorld,
+            positionY: d.startMask.positionY + dyWorld,
+          });
+          break;
+        }
+        case 'rotate': {
+          const cs = useCompositionStore.getState();
+          const c = cs.compositions.find(cc => cc.id === cs.activeCompositionId);
+          const layer = c?.layers.find(l => l.id === d.layerId);
+          if (!layer) return;
+          // Rotation handle: compute angle from mask center to mouse
+          const cx = layer.transform.position.x + d.startMask.positionX;
+          const cy = layer.transform.position.y + d.startMask.positionY;
+          const canvas = document.querySelector('canvas');
+          if (!canvas) return;
+          const rect = canvas.getBoundingClientRect();
+          const mouseWorld = cameraManager.screenToWorld(
+            e.clientX - rect.left, e.clientY - rect.top,
+          );
+          const startWorld = cameraManager.screenToWorld(
+            d.startMouse.x - rect.left, d.startMouse.y - rect.top,
+          );
+          const startAngle = Math.atan2(startWorld.y - cy, startWorld.x - cx);
+          const curAngle = Math.atan2(mouseWorld.y - cy, mouseWorld.x - cx);
+          let deltaDeg = ((curAngle - startAngle) * 180) / Math.PI;
+          const newRot = d.startMask.rotation + deltaDeg;
+          maskStore.updateMask(d.layerId, d.maskId, { rotation: newRot });
+          break;
+        }
+        default: {
+          // Resize handles — rotate the mouse delta into mask-local space
+          const rad = -(d.startMask.rotation * Math.PI) / 180;
+          const cos = Math.cos(rad), sin = Math.sin(rad);
+          const localDx = dxWorld * cos - dyWorld * sin;
+          const localDy = dxWorld * sin + dyWorld * cos;
+
+          let newW = d.startMask.sizeW;
+          let newH = d.startMask.sizeH;
+          let dPosX = 0;
+          let dPosY = 0;
+
+          // For each handle, adjust size + position so opposite edge stays put
+          switch (d.handle) {
+            case 'right':
+              newW = Math.max(4, d.startMask.sizeW + localDx * 2);
+              break;
+            case 'left':
+              newW = Math.max(4, d.startMask.sizeW - localDx * 2);
+              break;
+            case 'top':
+              newH = Math.max(4, d.startMask.sizeH - localDy * 2);
+              break;
+            case 'bottom':
+              newH = Math.max(4, d.startMask.sizeH + localDy * 2);
+              break;
+            case 'tl':
+              newW = Math.max(4, d.startMask.sizeW - localDx * 2);
+              newH = Math.max(4, d.startMask.sizeH - localDy * 2);
+              break;
+            case 'tr':
+              newW = Math.max(4, d.startMask.sizeW + localDx * 2);
+              newH = Math.max(4, d.startMask.sizeH - localDy * 2);
+              break;
+            case 'br':
+              newW = Math.max(4, d.startMask.sizeW + localDx * 2);
+              newH = Math.max(4, d.startMask.sizeH + localDy * 2);
+              break;
+            case 'bl':
+              newW = Math.max(4, d.startMask.sizeW - localDx * 2);
+              newH = Math.max(4, d.startMask.sizeH + localDy * 2);
+              break;
+          }
+
+          // Respect link — keep aspect ratio when link is on
+          if (mask.linkSize && (d.handle === 'tl' || d.handle === 'tr' ||
+              d.handle === 'br' || d.handle === 'bl')) {
+            const scale = Math.max(newW / d.startMask.sizeW, newH / d.startMask.sizeH);
+            newW = d.startMask.sizeW * scale;
+            newH = d.startMask.sizeH * scale;
+          }
+
+          maskStore.updateMask(d.layerId, d.maskId, {
+            sizeW: Math.round(newW),
+            sizeH: Math.round(newH),
+            positionX: d.startMask.positionX + dPosX,
+            positionY: d.startMask.positionY + dPosY,
+          });
+          break;
+        }
+      }
     };
 
     const onUp = () => {
       dragRef.current = null;
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
     };
 
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
-  }, [cameraManager, maskStore, sx, sy]);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, [cameraManager, maskStore]);
 
-  // ── Early returns (all hooks are above, so this is safe) ──
+  // ── Brush painting ──────────────────────────────────────────
+
+  const startBrushStroke = useCallback((e: React.MouseEvent, mask: VectorMask, layerId: string) => {
+    if (!cameraManager) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const cs = useCompositionStore.getState();
+    const c = cs.compositions.find(cc => cc.id === cs.activeCompositionId);
+    const layer = c?.layers.find(l => l.id === layerId);
+    if (!layer) return;
+
+    const canvas = document.querySelector('canvas');
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const world = cameraManager.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+    // Convert layer-world to mask-local
+    const layerLocal = {
+      x: (world.x - layer.transform.position.x) / (layer.transform.scale.x / 100),
+      y: (world.y - layer.transform.position.y) / (layer.transform.scale.y / 100),
+    };
+    const maskLocal = inverseMaskTransform(layerLocal.x, layerLocal.y, mask);
+
+    strokeRef.current = {
+      layerId,
+      maskId: mask.id,
+      points: [maskLocal],
+      size: mask.params.brushSize ?? 60,
+      erase: brushMode === 'erase',
+    };
+    setStrokePreview([maskLocal]);
+  }, [cameraManager, brushMode]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const s = strokeRef.current;
+      if (!s || !cameraManager) return;
+      const cs = useCompositionStore.getState();
+      const c = cs.compositions.find(cc => cc.id === cs.activeCompositionId);
+      const layer = c?.layers.find(l => l.id === s.layerId);
+      const mask = maskStore.getMasksForLayer(s.layerId).find(m => m.id === s.maskId);
+      if (!layer || !mask) return;
+      const canvas = document.querySelector('canvas');
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const world = cameraManager.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+      const layerLocal = {
+        x: (world.x - layer.transform.position.x) / (layer.transform.scale.x / 100),
+        y: (world.y - layer.transform.position.y) / (layer.transform.scale.y / 100),
+      };
+      const maskLocal = inverseMaskTransform(layerLocal.x, layerLocal.y, mask);
+      // Only sample every ~4 units to keep stroke smooth but light
+      const last = s.points[s.points.length - 1];
+      if (Math.hypot(maskLocal.x - last.x, maskLocal.y - last.y) > 3) {
+        s.points.push(maskLocal);
+        setStrokePreview([...s.points]);
+      }
+    };
+
+    const onUp = () => {
+      const s = strokeRef.current;
+      if (!s) return;
+      if (s.points.length >= 2) {
+        const stroke: BrushStroke = {
+          id: genStrokeId(),
+          points: s.points,
+          size: s.size,
+          erase: s.erase,
+        };
+        maskStore.addBrushStroke(s.layerId, s.maskId, stroke);
+      }
+      strokeRef.current = null;
+      setStrokePreview(null);
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, [cameraManager, maskStore]);
+
+  // ── Early returns AFTER all hooks ──
+
   if (!cameraManager || selectedIds.length !== 1 || !comp) return null;
-  if (tool !== 'select' && tool !== 'pen' && tool !== 'mask') return null;
 
   const layerId = selectedIds[0];
+  const isEnabled = maskStore.isMaskEnabled(layerId);
+  if (!isEnabled) return null;
+
   const masks = maskStore.getMasksForLayer(layerId);
   if (masks.length === 0) return null;
 
@@ -121,48 +352,39 @@ export const MaskOverlay: React.FC<Props> = ({ cameraManager, viewportSize }) =>
 
   const tx = layer.transform.position.x;
   const ty = layer.transform.position.y;
+  const sx = layer.transform.scale.x / 100;
+  const sy = layer.transform.scale.y / 100;
 
-  // local-to-world for mask coords
-  const l2w = (x: number, y: number) => ({
-    x: tx + x * sx,
-    y: ty + y * sy,
-  });
+  const activeMask = masks.find(m => m.id === selectedMaskId);
 
-  const w2s = (wx: number, wy: number) => cameraManager.worldToScreen(wx, wy);
-
-  const getAnchors = (commands: PathCommand[]) => {
-    const pts: { x: number; y: number; cmdIdx: number; ptIdx: number }[] = [];
-    commands.forEach((cmd, ci) => {
-      if (cmd.type === 'M' || cmd.type === 'L') {
-        pts.push({ x: cmd.points[0], y: cmd.points[1], cmdIdx: ci, ptIdx: 0 });
-      } else if (cmd.type === 'C') {
-        pts.push({ x: cmd.points[4], y: cmd.points[5], cmdIdx: ci, ptIdx: 4 });
-      } else if (cmd.type === 'Q') {
-        pts.push({ x: cmd.points[2], y: cmd.points[3], cmdIdx: ci, ptIdx: 2 });
-      }
-    });
-    return pts;
+  // Convert mask-local → layer-space → world-space → screen-space
+  const toScreen = (mask: VectorMask, localX: number, localY: number) => {
+    const t = applyMaskTransform(localX, localY, mask);
+    const wx = tx + t.x * sx;
+    const wy = ty + t.y * sy;
+    return cameraManager.worldToScreen(wx, wy);
   };
 
-  const maskToSvgD = (commands: PathCommand[]) => {
+  // Build SVG path d-string for a mask (using its commands + transform)
+  const maskToSvgD = (mask: VectorMask): string => {
     let d = '';
-    for (const cmd of commands) {
-      const p = cmd.points;
+    for (const cmd of mask.commands) {
+      const pts = cmd.points;
       if (cmd.type === 'M') {
-        const w = l2w(p[0], p[1]); const s = w2s(w.x, w.y);
+        const s = toScreen(mask, pts[0], pts[1]);
         d += `M${s.x},${s.y}`;
       } else if (cmd.type === 'L') {
-        const w = l2w(p[0], p[1]); const s = w2s(w.x, w.y);
+        const s = toScreen(mask, pts[0], pts[1]);
         d += ` L${s.x},${s.y}`;
       } else if (cmd.type === 'C') {
-        const w1 = l2w(p[0], p[1]); const s1 = w2s(w1.x, w1.y);
-        const w2_ = l2w(p[2], p[3]); const s2 = w2s(w2_.x, w2_.y);
-        const we = l2w(p[4], p[5]); const se = w2s(we.x, we.y);
-        d += ` C${s1.x},${s1.y} ${s2.x},${s2.y} ${se.x},${se.y}`;
+        const c1 = toScreen(mask, pts[0], pts[1]);
+        const c2 = toScreen(mask, pts[2], pts[3]);
+        const e = toScreen(mask, pts[4], pts[5]);
+        d += ` C${c1.x},${c1.y} ${c2.x},${c2.y} ${e.x},${e.y}`;
       } else if (cmd.type === 'Q') {
-        const wq = l2w(p[0], p[1]); const sq = w2s(wq.x, wq.y);
-        const we = l2w(p[2], p[3]); const se = w2s(we.x, we.y);
-        d += ` Q${sq.x},${sq.y} ${se.x},${se.y}`;
+        const c = toScreen(mask, pts[0], pts[1]);
+        const e = toScreen(mask, pts[2], pts[3]);
+        d += ` Q${c.x},${c.y} ${e.x},${e.y}`;
       } else if (cmd.type === 'Z') {
         d += ' Z';
       }
@@ -170,80 +392,189 @@ export const MaskOverlay: React.FC<Props> = ({ cameraManager, viewportSize }) =>
     return d;
   };
 
+  // ── Compute handle positions for the active mask ──
+  const handles: { id: HandleId; x: number; y: number }[] = [];
+  let rotHandlePos: { x: number; y: number } | null = null;
+  let bodyBox: { d: string } | null = null;
+
+  if (activeMask && activeMask.shapeType !== 'brush' && activeMask.shapeType !== 'pen' && activeMask.shapeType !== 'path') {
+    const hw = activeMask.sizeW / 2;
+    const hh = activeMask.sizeH / 2;
+    const cornerLocal: Array<{ id: HandleId; lx: number; ly: number }> = [
+      { id: 'tl', lx: -hw, ly: -hh },
+      { id: 'tr', lx:  hw, ly: -hh },
+      { id: 'br', lx:  hw, ly:  hh },
+      { id: 'bl', lx: -hw, ly:  hh },
+      { id: 'top',    lx: 0,    ly: -hh },
+      { id: 'right',  lx:  hw,  ly: 0 },
+      { id: 'bottom', lx: 0,    ly:  hh },
+      { id: 'left',   lx: -hw,  ly: 0 },
+    ];
+    for (const c of cornerLocal) {
+      const s = toScreen(activeMask, c.lx, c.ly);
+      handles.push({ id: c.id, x: s.x, y: s.y });
+    }
+    // Rotation handle: 30 px above the top center in local space
+    const rotOffset = 30 / cameraManager.zoom;
+    const rs = toScreen(activeMask, 0, -hh - rotOffset);
+    rotHandlePos = { x: rs.x, y: rs.y };
+    // Bounding rectangle for the body drag handle
+    const tl = toScreen(activeMask, -hw, -hh);
+    const tr = toScreen(activeMask,  hw, -hh);
+    const br = toScreen(activeMask,  hw,  hh);
+    const bl = toScreen(activeMask, -hw,  hh);
+    bodyBox = {
+      d: `M${tl.x},${tl.y} L${tr.x},${tr.y} L${br.x},${br.y} L${bl.x},${bl.y} Z`,
+    };
+  }
+
+  // Brush stroke preview
+  const strokePrev = strokeRef.current;
+  const previewPoints = strokePrev
+    ? strokePrev.points.map(p => {
+        const s = toScreen(activeMask!, p.x, p.y);
+        return `${s.x},${s.y}`;
+      })
+    : null;
+
+  const isBrushActive = activeMask?.shapeType === 'brush';
+
   return (
     <svg
-      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 27 }}
+      style={{
+        position: 'absolute', inset: 0,
+        width: '100%', height: '100%',
+        pointerEvents: 'none', zIndex: 27,
+      }}
       width={viewportSize.width}
       height={viewportSize.height}
     >
-      {masks.map(mask => {
-        const isSelected = mask.id === selectedMaskId;
-        const d = maskToSvgD(mask.commands);
-        const anchors = isSelected ? getAnchors(mask.commands) : [];
+      {/* Non-active mask outlines */}
+      {masks.filter(m => m.id !== selectedMaskId).map(mask => (
+        <path
+          key={mask.id}
+          d={maskToSvgD(mask)}
+          fill="rgba(255,255,255,0.03)"
+          stroke="rgba(255,255,255,0.35)"
+          strokeWidth={1}
+          strokeDasharray="4 3"
+          style={{ pointerEvents: 'all', cursor: 'pointer' }}
+          onMouseDown={(e) => { e.stopPropagation(); maskStore.selectMask(mask.id); }}
+        />
+      ))}
 
-        return (
-          <g key={mask.id}>
-            {/* Mask outline */}
+      {/* Active mask outline */}
+      {activeMask && (
+        <>
+          <path
+            d={maskToSvgD(activeMask)}
+            fill={activeMask.mode === 'add' ? 'rgba(74,144,226,0.10)' : 'rgba(226,91,74,0.10)'}
+            stroke={activeMask.color}
+            strokeWidth={1.5}
+            strokeDasharray={activeMask.inverted ? '5 3' : 'none'}
+            style={{
+              pointerEvents: isBrushActive ? 'none' : 'all',
+              cursor: isBrushActive ? 'crosshair' : 'move',
+            }}
+            onMouseDown={(e) => {
+              if (isBrushActive) startBrushStroke(e, activeMask, layerId);
+              else handleMouseDown(e, 'move', layerId, activeMask.id);
+            }}
+          />
+
+          {/* Bounding box body handle for shape masks (transparent, catches drags) */}
+          {bodyBox && !isBrushActive && (
             <path
-              d={d}
-              fill={mask.mode === 'add' ? 'rgba(74,144,226,0.08)' : 'rgba(226,91,74,0.08)'}
-              stroke={isSelected ? mask.color : 'rgba(255,255,255,0.4)'}
-              strokeWidth={isSelected ? 1.5 : 1}
-              strokeDasharray={mask.inverted ? '5 3' : 'none'}
-              style={{ pointerEvents: 'all', cursor: 'pointer' }}
-              onClick={() => maskStore.selectMask(mask.id)}
+              d={bodyBox.d}
+              fill="transparent"
+              style={{ pointerEvents: 'all', cursor: 'move' }}
+              onMouseDown={(e) => handleMouseDown(e, 'move', layerId, activeMask.id)}
             />
+          )}
 
-            {/* Feather outline (dashed ring outside mask when feather > 0) */}
-            {mask.feather > 0 && (
-              <path
-                d={d}
-                fill="none"
-                stroke={mask.color}
-                strokeWidth={mask.feather * 2}
-                opacity={0.12}
-                style={{ pointerEvents: 'none' }}
-              />
-            )}
-
-            {/* Expansion outline */}
-            {mask.expansion !== 0 && (
-              <path
-                d={d}
-                fill="none"
-                stroke={mask.color}
-                strokeWidth={1}
-                opacity={0.3}
-                strokeDasharray={mask.expansion > 0 ? '2 2' : '6 2'}
-                style={{ pointerEvents: 'none' }}
-                transform={mask.expansion > 0 ? `scale(${1 + mask.expansion / 50})` : `scale(${1 + mask.expansion / 100})`}
-              />
-            )}
-
-            {/* Anchor points when selected */}
-            {isSelected && anchors.map((anchor, i) => {
-              const world = l2w(anchor.x, anchor.y);
-              const screen = w2s(world.x, world.y);
-              return (
-                <rect
-                  key={i}
-                  x={screen.x - 4} y={screen.y - 4}
-                  width={8} height={8}
-                  fill="white"
-                  stroke={mask.color}
-                  strokeWidth={1.5}
-                  style={{ pointerEvents: 'all', cursor: 'move' }}
-                  onMouseDown={(e) => handleAnchorDown(
-                    e, layerId, mask.id,
-                    anchor.x, anchor.y,
-                    anchor.cmdIdx, anchor.ptIdx,
-                  )}
+          {/* Rotation handle line + circle */}
+          {rotHandlePos && bodyBox && !isBrushActive && (() => {
+            const hw = activeMask.sizeW / 2;
+            const hh = activeMask.sizeH / 2;
+            const topCenter = toScreen(activeMask, 0, -hh);
+            return (
+              <>
+                <line
+                  x1={topCenter.x} y1={topCenter.y}
+                  x2={rotHandlePos.x} y2={rotHandlePos.y}
+                  stroke={activeMask.color}
+                  strokeWidth={1}
+                  opacity={0.7}
                 />
-              );
-            })}
-          </g>
-        );
-      })}
+                <circle
+                  cx={rotHandlePos.x} cy={rotHandlePos.y}
+                  r={7}
+                  fill="white"
+                  stroke={activeMask.color}
+                  strokeWidth={1.5}
+                  style={{ pointerEvents: 'all', cursor: 'grab' }}
+                  onMouseDown={(e) => handleMouseDown(e, 'rotate', layerId, activeMask.id)}
+                />
+                <circle
+                  cx={rotHandlePos.x} cy={rotHandlePos.y}
+                  r={2.5}
+                  fill={activeMask.color}
+                  style={{ pointerEvents: 'none' }}
+                />
+              </>
+            );
+          })()}
+
+          {/* Resize handles */}
+          {!isBrushActive && handles.map(h => {
+            const isCorner = ['tl', 'tr', 'br', 'bl'].includes(h.id);
+            const cursor =
+              h.id === 'tl' || h.id === 'br' ? 'nwse-resize' :
+              h.id === 'tr' || h.id === 'bl' ? 'nesw-resize' :
+              h.id === 'top' || h.id === 'bottom' ? 'ns-resize' : 'ew-resize';
+            return (
+              <rect
+                key={h.id}
+                x={h.x - 5} y={h.y - 5}
+                width={10} height={10}
+                fill="white"
+                stroke={activeMask.color}
+                strokeWidth={1.5}
+                rx={isCorner ? 0 : 5}
+                style={{ pointerEvents: 'all', cursor }}
+                onMouseDown={(e) => handleMouseDown(e, h.id, layerId, activeMask.id)}
+              />
+            );
+          })}
+
+          {/* Brush mode: catch-all overlay for painting */}
+          {isBrushActive && (
+            <rect
+              x={0} y={0}
+              width={viewportSize.width} height={viewportSize.height}
+              fill="transparent"
+              style={{ pointerEvents: 'all', cursor: 'crosshair' }}
+              onMouseDown={(e) => startBrushStroke(e, activeMask, layerId)}
+            />
+          )}
+
+          {/* Brush stroke live preview */}
+          {previewPoints && previewPoints.length > 1 && (
+            <polyline
+              points={previewPoints.join(' ')}
+              fill="none"
+              stroke={brushMode === 'erase' ? '#ff5b4a' : activeMask.color}
+              strokeWidth={(activeMask.params.brushSize ?? 60) * cameraManager.zoom * sx}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity={0.5}
+              style={{ pointerEvents: 'none' }}
+            />
+          )}
+        </>
+      )}
     </svg>
   );
 };
+
+export default MaskOverlay;

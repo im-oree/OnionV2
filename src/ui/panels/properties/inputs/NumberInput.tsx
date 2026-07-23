@@ -1,4 +1,5 @@
 import React, { useRef, useCallback, useState, useEffect } from 'react';
+import { debouncedCapture, flushDebouncedSnapshot } from '../../../../state/historyStore';
 
 interface NumberInputProps {
   value: number;
@@ -9,17 +10,11 @@ interface NumberInputProps {
   precision?: number;
   label?: string;
   disabled?: boolean;
-  /** Hard clamp typed input to [min,max]. Default: false (soft — only
-   *  drag/wheel/arrow-keys respect min/max as hints; keyboard entry is free). */
   hardClamp?: boolean;
-  /** Keyframe button (diamond). Pass a function to show the button. */
   onKeyframe?: () => void;
-  /** Lock the value — prevents all editing (drag, type, wheel, arrows) when locked */
   locked?: boolean;
 }
 
-/** Clamp during interactive change (drag/wheel/arrows). Keyboard entry
- *  bypasses this so users can type any value including negatives. */
 const softClamp = (v: number, min?: number, max?: number): number => {
   if (min !== undefined && v < min) return min;
   if (max !== undefined && v > max) return max;
@@ -45,42 +40,21 @@ export const NumberInput: React.FC<NumberInputProps> = ({
   valueRef.current = value;
   const justCommitted = useRef(false);
 
-  /* DEBUG: trace render count & value prop */
-  const renderCount = useRef(0);
-  renderCount.current++;
-  const prevValue = useRef(value);
-  if (prevValue.current !== value) {
-    console.log(`[NumberInput DEBUG] render #${renderCount.current} | label=${label} | value PROP changed: ${prevValue.current} → ${value}`);
-    prevValue.current = value;
-  } else if (renderCount.current <= 5) {
-    console.log(`[NumberInput DEBUG] render #${renderCount.current} | label=${label} | value prop = ${value} (same)`);
-  }
-
   useEffect(() => {
-    // While the user is actively editing (input focused OR editing flag on),
-    // NEVER overwrite the local value from props. This prevents parent
-    // re-renders (e.g. from debounced history captures) from resetting the
-    // input's text while the user is mid-typing.
     if (editing || focused) return;
     if (justCommitted.current) {
       justCommitted.current = false;
       return;
     }
-    const newLocal = String(roundTo(value, precision));
-    setLocalValue(newLocal);
+    setLocalValue(String(roundTo(value, precision)));
   }, [value, precision, editing, focused]);
 
-  /** Commit from interactive input (drag / wheel / arrow keys).
-   *  Applies soft clamp so drag hints don't runaway. */
   const commitInteractive = useCallback((v: number) => {
     const clamped = softClamp(v, min, max);
     onChange(clamped);
     setLocalValue(String(roundTo(clamped, precision)));
   }, [onChange, min, max, precision]);
 
-  /** Commit from a typed / pasted value.
-   *  Passes through as-is unless hardClamp is on. Users can type any
-   *  number including negatives and values past min/max. */
   const commitTyped = useCallback((v: number) => {
     const finalV = hardClamp ? softClamp(v, min, max) : v;
     onChange(finalV);
@@ -88,22 +62,16 @@ export const NumberInput: React.FC<NumberInputProps> = ({
     justCommitted.current = true;
   }, [onChange, min, max, precision, hardClamp]);
 
-  /**
-   * Scrub-to-change with drag detection:
-   * - Label click → always scrub immediately
-   * - Input click (no drag) → focus input for manual typing
-   * - Input click + drag (>3px) → scrub value
-   */
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (disabled || locked) return;
     const isLabelClick = e.target !== inputRef.current;
 
-    // Label clicks always start scrub immediately
     if (isLabelClick) {
       e.preventDefault();
       document.body.style.cursor = 'ew-resize';
       isScrubbing.current = true;
       scrubStart.current = { x: e.clientX, val: value };
+      debouncedCapture('Change Value');
       const onMove = (ev: MouseEvent) => {
         const delta = ev.clientX - scrubStart.current.x;
         const multiplier = ev.shiftKey ? 0.05 : 0.5;
@@ -114,13 +82,13 @@ export const NumberInput: React.FC<NumberInputProps> = ({
         document.body.style.cursor = '';
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
+        flushDebouncedSnapshot();
       };
       window.addEventListener('mousemove', onMove);
       window.addEventListener('mouseup', onUp);
       return;
     }
 
-    // Input clicks: drag-detect (click=type, drag=scrub)
     const startX = e.clientX;
     const startVal = value;
     let dragging = false;
@@ -133,6 +101,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
         document.body.style.cursor = 'ew-resize';
         isScrubbing.current = true;
         scrubStart.current = { x: startX, val: startVal };
+        debouncedCapture('Change Value');
       }
       if (!dragging) return;
       const multiplier = ev.shiftKey ? 0.05 : 0.5;
@@ -144,6 +113,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
       if (dragging) {
         isScrubbing.current = false;
         document.body.style.cursor = '';
+        flushDebouncedSnapshot();
       } else {
         inputRef.current?.focus();
         inputRef.current?.select();
@@ -151,14 +121,12 @@ export const NumberInput: React.FC<NumberInputProps> = ({
     };
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
-  }, [value, step, commitInteractive, disabled]);
+  }, [value, step, commitInteractive, disabled, locked]);
 
-  // Non-passive wheel listener via useEffect to allow preventDefault()
   useEffect(() => {
     const el = inputRef.current;
     if (!el || disabled || locked) return;
     const onWheel = (e: WheelEvent) => {
-      // Only scrub with wheel while focused, so page scrolling isn't hijacked.
       if (document.activeElement !== el) return;
       e.preventDefault();
       const delta = e.deltaY < 0 ? step : -step;
@@ -167,7 +135,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [step, commitInteractive, disabled]);
+  }, [step, commitInteractive, disabled, locked]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') { inputRef.current?.blur(); return; }
@@ -234,7 +202,6 @@ export const NumberInput: React.FC<NumberInputProps> = ({
           opacity: disabled || locked ? 0.4 : 1,
         }}
       />
-      {/* Keyframe diamond button */}
       {onKeyframe && (
         <button
           onClick={onKeyframe}

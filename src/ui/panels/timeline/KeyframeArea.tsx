@@ -30,9 +30,9 @@ const LAYER_ROW_H = 32;
 const PROP_ROW_H = 26;
 
 // ── Frame grid + composition boundary background ────────────────
-// Renders vertical guide lines dropping through the tracks area from
-// every labeled frame in the ruler. Also darkens the out-of-comp region
-// and draws a bright accent line at the composition end.
+// Renders vertical guide lines through the tracks area. Canvas is
+// viewport-sized (NOT content-sized) so it never exceeds browser max
+// canvas dimensions (~16k px). We redraw whenever scroll or zoom change.
 function niceStep(zoom: number, targetPx: number): number {
   const rawFrames = targetPx / zoom;
   const steps = [
@@ -43,6 +43,9 @@ function niceStep(zoom: number, targetPx: number): number {
   return steps[steps.length - 1];
 }
 
+/** Max safe canvas dimension in physical pixels (works across all GPUs) */
+const MAX_CANVAS_DIM = 8192;
+
 const FrameGridBackground: React.FC<{
   zoom: number;
   totalFrames: number;
@@ -50,89 +53,126 @@ const FrameGridBackground: React.FC<{
 }> = ({ zoom, totalFrames, contentHeight }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
+  // Track VIEWPORT size (the visible tracks scroll container), not the
+  // full scrollable content size. Also track scrollLeft so we redraw
+  // as the user scrolls horizontally.
+  const [viewport, setViewport] = useState({ w: 0, h: 0, scrollX: 0 });
 
-  // Track container width so we can render enough grid lines
+  // Locate the tracks scroll container (the parent that actually scrolls)
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(entries => {
-      setWidth(entries[0]?.contentRect.width ?? 0);
-    });
-    ro.observe(el);
-    setWidth(el.clientWidth);
-    return () => ro.disconnect();
+    const scroller = el.closest('[data-timeline-tracks="1"]')?.parentElement;
+    if (!scroller) return;
+
+    const update = () => {
+      const rect = scroller.getBoundingClientRect();
+      setViewport({
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+        scrollX: scroller.scrollLeft,
+      });
+    };
+    update();
+
+    const ro = new ResizeObserver(update);
+    ro.observe(scroller);
+    scroller.addEventListener('scroll', update, { passive: true });
+    return () => {
+      ro.disconnect();
+      scroller.removeEventListener('scroll', update);
+    };
   }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Match device pixel ratio for crisp lines
-    const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(1, Math.floor(width));
-    const h = Math.max(1, Math.floor(contentHeight));
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); // cap DPR at 2
+    // Cap physical dimensions to MAX_CANVAS_DIM to prevent white-canvas at high zoom
+    const cssW = Math.max(1, viewport.w);
+    const cssH = Math.max(1, Math.min(contentHeight, MAX_CANVAS_DIM / dpr));
+    const physW = Math.min(MAX_CANVAS_DIM, Math.floor(cssW * dpr));
+    const physH = Math.min(MAX_CANVAS_DIM, Math.floor(cssH * dpr));
+
+    canvas.width = physW;
+    canvas.height = physH;
+    canvas.style.width = `${cssW}px`;
+    canvas.style.height = `${cssH}px`;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, w, h);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
 
-    // Compute step matching ruler's labels
+    if (cssW <= 0 || zoom <= 0) return;
+
+    // Draw ticks in viewport coordinates. Convert frame → visible x.
     const labelStep = niceStep(zoom, 60);
     const minorStep = Math.max(1, Math.round(labelStep / 5));
 
-    const compEndPx = totalFrames * zoom;
+    const scrollX = viewport.scrollX;
+    const firstFrameVisible = Math.max(0, Math.floor(scrollX / zoom) - minorStep);
+    const lastFrameVisible  = Math.ceil((scrollX + cssW) / zoom) + minorStep;
 
-    // Minor tick lines — very subtle
+    // Minor lines
     ctx.strokeStyle = 'rgba(255,255,255,0.025)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    const firstMinor = 0;
-    const lastMinor = Math.ceil(w / zoom);
-    for (let f = firstMinor; f <= lastMinor; f += minorStep) {
-      if (f % labelStep === 0) continue; // skip — will draw as major
-      const x = Math.floor(f * zoom) + 0.5;
-      if (x < 0 || x > w) continue;
+    const start = Math.floor(firstFrameVisible / minorStep) * minorStep;
+    for (let f = start; f <= lastFrameVisible; f += minorStep) {
+      if (f < 0) continue;
+      if (f % labelStep === 0) continue;
+      const x = Math.floor(f * zoom - scrollX) + 0.5;
+      if (x < 0 || x > cssW) continue;
       const isPastComp = f > totalFrames;
       ctx.globalAlpha = isPastComp ? 0.4 : 1;
       ctx.moveTo(x, 0);
-      ctx.lineTo(x, h);
+      ctx.lineTo(x, cssH);
     }
     ctx.stroke();
     ctx.globalAlpha = 1;
 
-    // Major (labeled) tick lines — more visible
+    // Major (labeled) lines
     ctx.strokeStyle = 'rgba(255,255,255,0.07)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let f = firstMinor; f <= lastMinor; f += labelStep) {
-      const x = Math.floor(f * zoom) + 0.5;
-      if (x < 0 || x > w) continue;
+    for (let f = start; f <= lastFrameVisible; f += labelStep) {
+      if (f < 0) continue;
+      const x = Math.floor(f * zoom - scrollX) + 0.5;
+      if (x < 0 || x > cssW) continue;
       const isPastComp = f > totalFrames;
       ctx.globalAlpha = isPastComp ? 0.4 : 1;
       ctx.moveTo(x, 0);
-      ctx.lineTo(x, h);
+      ctx.lineTo(x, cssH);
     }
     ctx.stroke();
     ctx.globalAlpha = 1;
-  }, [zoom, totalFrames, width, contentHeight]);
+  }, [zoom, totalFrames, viewport.w, viewport.h, viewport.scrollX, contentHeight]);
 
+  // Out-of-comp darken overlay + end marker — these are DOM (not canvas)
+  // and drawn in CONTENT space so they scroll naturally with the tracks.
   return (
     <div
       ref={wrapRef}
       className="absolute inset-0 pointer-events-none"
       style={{ zIndex: 0 }}
     >
+      {/* Viewport-sized canvas positioned STICKY so it stays glued to
+          the left edge of the visible tracks area as the user scrolls. */}
       <canvas
         ref={canvasRef}
-        style={{ display: 'block', position: 'absolute', top: 0, left: 0 }}
+        style={{
+          display: 'block',
+          position: 'sticky',
+          top: 0,
+          left: 0,
+          // Translate the canvas by the current scroll offset so it
+          // paints over the visible portion of the scrolling content.
+          transform: `translateX(${viewport.scrollX}px)`,
+        }}
       />
-      {/* Out-of-composition darken overlay */}
+      {/* Out-of-composition darken overlay (content-space) */}
       <div
         className="absolute top-0 bottom-0 pointer-events-none"
         style={{
@@ -141,7 +181,7 @@ const FrameGridBackground: React.FC<{
           background: 'rgba(0,0,0,0.5)',
         }}
       />
-      {/* Composition END border — red/orange (matches ruler END marker) */}
+      {/* Composition END border (content-space) */}
       <div
         className="absolute top-0 bottom-0 pointer-events-none"
         style={{

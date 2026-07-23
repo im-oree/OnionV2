@@ -1,9 +1,124 @@
-// Legacy compatibility shim — new system uses VectorMask from state/maskStore
+/**
+ * Mask type definitions — the new mask system supports many shape types
+ * with per-shape parameters. All numeric properties are keyframeable via
+ * property paths like "mask.<maskId>.positionX".
+ */
+import type { PathCommand } from './layer';
+
+export type MaskShapeType =
+  | 'rectangle'
+  | 'ellipse'
+  | 'circle'
+  | 'star'
+  | 'heart'
+  | 'filmstrip'
+  | 'split'
+  | 'text'
+  | 'brush'
+  | 'pen'
+  | 'path';   // legacy — freeform pen result
+
+export type MaskMode =
+  | 'add'
+  | 'subtract'
+  | 'intersect'
+  | 'difference';
+
+export type TrackDirection = 'both' | 'horizontal' | 'vertical';
+export type SplitDirection = 'vertical' | 'horizontal';
+
+/** Per-shape parameters (only the fields relevant to shapeType are used) */
+export interface MaskShapeParams {
+  // Common
+  width?: number;
+  height?: number;
+
+  // Rectangle
+  roundCorners?: number;
+
+  // Star
+  sides?: number;              // 3..20
+  innerRatio?: number;         // 0..1
+
+  // Filmstrip
+  stripCount?: number;         // 2..40
+  stripGap?: number;           // 0..1 (fraction of strip width)
+
+  // Split
+  splitDirection?: SplitDirection;
+  splitOffset?: number;        // -1..1 (0 = center)
+
+  // Text mask
+  textContent?: string;
+  textFont?: string;
+  textSize?: number;
+  textBold?: boolean;
+  textItalic?: boolean;
+  textUnderline?: boolean;
+  textAlign?: 'left' | 'center' | 'right';
+  textCharacterSpacing?: number;
+  textLineSpacing?: number;
+  textZoom?: number;           // 100 = default
+
+  // Brush
+  brushSize?: number;
+  brushStrokes?: BrushStroke[];
+}
+
+/** A single brush stroke — sequence of world-space points */
+export interface BrushStroke {
+  id: string;
+  points: { x: number; y: number }[];
+  size: number;
+  /** true = paint (add), false = erase (subtract from this brush layer) */
+  erase: boolean;
+}
+
+/** The new mask model */
+export interface VectorMask {
+  id: string;
+  name: string;
+  layerId: string;
+  shapeType: MaskShapeType;
+
+  // Per-shape parameters
+  params: MaskShapeParams;
+
+  // Baked path — recomputed when shapeType/params/size change,
+  // used by the compositor + viewport overlay for rendering
+  commands: PathCommand[];
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
+
+  // Transform (all keyframeable)
+  positionX: number;
+  positionY: number;
+  rotation: number;      // degrees
+  sizeW: number;
+  sizeH: number;
+  linkSize: boolean;     // when true, sizeW & sizeH change together
+
+  // Blend / appearance
+  mode: MaskMode;
+  inverted: boolean;
+  opacity: number;       // 0..100
+  feather: number;       // 0..500 px
+  expansion: number;     // -500..500 px
+
+  // Tracking
+  trackDirection: TrackDirection;
+
+  // UI
+  enabled: boolean;
+  locked: boolean;
+  color: string;
+  collapsed: boolean;
+}
+
+/** Legacy Mask interface (kept for storage migration compatibility only) */
 export interface MaskShape {
   type: 'rectangle' | 'ellipse';
-  /** Bounds relative to layer center */
   bounds: { x: number; y: number; width: number; height: number };
-  cornerRadius: number; // rectangle only
+  cornerRadius: number;
 }
 
 export interface Mask {
@@ -13,12 +128,12 @@ export interface Mask {
   shape: MaskShape;
   mode: 'add' | 'subtract' | 'intersect' | 'lighten' | 'darken' | 'difference';
   inverted: boolean;
-  opacity: number; // 0-100
+  opacity: number;
   feather: { x: number; y: number };
-  expansion: number; // pixels, negative shrinks
+  expansion: number;
   enabled: boolean;
   locked: boolean;
-  color: string; // UI color
+  color: string;
   collapsed: boolean;
 }
 

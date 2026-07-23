@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { BaseLayerRenderer } from './BaseLayerRenderer';
 import { assetManager } from '../../storage/AssetManager';
+import { getAudioContext, installUnlockHandler, registerForUnlock, unregisterForUnlock } from '../audio/audioContext';
+import { createAudioEffect } from '../audio/audioEffects';
 
 /**
  * Each VideoLayerRenderer owns its own HTMLVideoElement.
@@ -19,6 +21,19 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
   // Scrub queue — only the latest seek matters
   private _pendingScrubTime: number | null = null;
   private _scrubbing = false;
+
+  // ── Web Audio pipeline for video audio ──
+  private _audioSource: MediaElementAudioSourceNode | null = null;
+  private _audioGain: GainNode | null = null;
+  private _audioPan: StereoPannerNode | null = null;
+  private _audioEffectsIn: GainNode | null = null;
+  private _audioEffectsOut: GainNode | null = null;
+  private _audioEQIn: GainNode | null = null;
+  private _audioEQOut: GainNode | null = null;
+  private _activeEffects: Array<{ instanceId: string; node: ReturnType<typeof createAudioEffect> }> = [];
+  private _activeEQBands: BiquadFilterNode[] = [];
+  private _lastEffectsHash = '';
+  private _lastEQHash = '';
 
   constructor(
     id: string,
@@ -40,6 +55,9 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
   }
 
   private loadVideo(): void {
+    // Tear down old audio graph before creating new video (asset swap)
+    this._teardownAudioGraph();
+
     const asset = assetManager.getAsset(this.assetId);
     if (!asset) return;
 
@@ -48,10 +66,10 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     video.crossOrigin = 'anonymous';
     video.loop = false;
 
-    // Fix #1 — muted must be true to allow autoplay / seeked events
-    // to fire reliably across all browsers. Unmuted video is often
-    // blocked by browser autoplay policy and causes seeked events
-    // to never fire, which breaks scrubbing entirely.
+    // Keep muted=true for autoplay policy compatibility (Chrome/Firefox block
+    // unmuted autoplay). Audio data still reaches MediaElementSource regardless
+    // of the muted property — it only affects the element's direct speaker output.
+    // The GainNode controls all volume. installUnlockHandler unmutes after gesture.
     video.muted = true;
 
     video.playsInline = true;
@@ -77,6 +95,33 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     this.video = video;
     this.texture = texture;
     this._liveTexture = texture;
+
+    // ── Web Audio pipeline for video audio ──
+    try {
+      const ctx = getAudioContext();
+      installUnlockHandler();
+      registerForUnlock(video);
+      this._audioSource = ctx.createMediaElementSource(video);
+      this._audioGain = ctx.createGain();
+      this._audioPan = ctx.createStereoPanner();
+      this._audioEffectsIn = ctx.createGain();
+      this._audioEffectsOut = ctx.createGain();
+      this._audioEQIn = ctx.createGain();
+      this._audioEQOut = ctx.createGain();
+
+      this._audioSource.connect(this._audioGain);
+      this._audioGain.connect(this._audioPan);
+      this._audioPan.connect(this._audioEffectsIn);
+      this._audioEffectsIn.connect(this._audioEffectsOut);
+      this._audioEffectsOut.connect(this._audioEQIn);
+      this._audioEQIn.connect(this._audioEQOut);
+      this._audioEQOut.connect(ctx.destination);
+      // Start with gain at 0 — Renderer._syncVideoAudio will set the correct
+      // volume on the next tick. This prevents a loud burst on first load.
+      this._audioGain.gain.value = 0;
+    } catch (err) {
+      console.warn('[VideoLayer] Web Audio pipeline setup failed:', err);
+    }
   }
 
   play(): void {
@@ -236,7 +281,140 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     this._usingCachedFrame = false;
   }
 
+  /**
+   * Apply audio properties from VideoData (volume, pan, effects, EQ).
+   * Called each frame by Renderer._syncVideoAudio.
+   */
+  syncAudio(
+    volume: number,
+    muted: boolean,
+    pan: number,
+    effects: import('../../types/layer').AudioEffectInstance[],
+    eq: import('../../types/layer').AudioEQ | undefined,
+  ): void {
+    if (!this._audioGain) {
+      // Fallback: video.volume if Web Audio setup failed
+      if (this.video) {
+        this.video.volume = volume;
+        this.video.muted = muted;
+      }
+      return;
+    }
+
+    // Volume via gain node
+    this._audioGain.gain.value = muted ? 0 : volume;
+
+    // Pan
+    if (this._audioPan) {
+      this._audioPan.pan.value = Math.max(-1, Math.min(1, pan));
+    }
+
+    // Effects chain
+    this._syncEffectsChain(effects);
+    this._syncEQ(eq);
+  }
+
+  private _teardownAudioGraph(): void {
+    for (const { node } of this._activeEffects) node.dispose();
+    this._activeEffects = [];
+    for (const b of this._activeEQBands) { try { b.disconnect(); } catch {} }
+    this._activeEQBands = [];
+    if (this.video) unregisterForUnlock(this.video);
+    try { this._audioEQOut?.disconnect(); } catch {}
+    try { this._audioEQIn?.disconnect(); } catch {}
+    try { this._audioEffectsOut?.disconnect(); } catch {}
+    try { this._audioEffectsIn?.disconnect(); } catch {}
+    try { this._audioPan?.disconnect(); } catch {}
+    try { this._audioGain?.disconnect(); } catch {}
+    try { this._audioSource?.disconnect(); } catch {}
+    this._audioEQOut = null;
+    this._audioEQIn = null;
+    this._audioEffectsOut = null;
+    this._audioEffectsIn = null;
+    this._audioPan = null;
+    this._audioGain = null;
+    this._audioSource = null;
+    this._lastEffectsHash = '';
+    this._lastEQHash = '';
+  }
+
+  private _syncEffectsChain(effects: import('../../types/layer').AudioEffectInstance[]): void {
+    if (!this._audioEffectsIn || !this._audioEffectsOut) return;
+    const enabledEffects = (effects ?? []).filter(e => e.enabled !== false);
+    const hash = JSON.stringify(enabledEffects.map(e => ({
+      id: e.id, type: e.baseType, params: e.params, mix: e.mix,
+    })));
+    if (hash === this._lastEffectsHash) return;
+    this._lastEffectsHash = hash;
+
+    // Teardown previous chain
+    for (const { node } of this._activeEffects) node.dispose();
+    this._activeEffects = [];
+    try { this._audioEffectsIn.disconnect(); } catch {}
+
+    if (enabledEffects.length === 0) {
+      this._audioEffectsIn.connect(this._audioEffectsOut);
+      return;
+    }
+
+    const ctx = getAudioContext();
+    let prev: AudioNode = this._audioEffectsIn;
+    for (const fx of enabledEffects) {
+      const node = createAudioEffect(ctx, fx.baseType, fx.params);
+      node.setMix(fx.mix ?? 1);
+      prev.connect(node.input);
+      prev = node.output;
+      this._activeEffects.push({ instanceId: fx.id, node });
+    }
+    prev.connect(this._audioEffectsOut);
+  }
+
+  private _syncEQ(eq: import('../../types/layer').AudioEQ | undefined): void {
+    if (!this._audioEQIn || !this._audioEQOut) return;
+    const enabled = eq?.enabled !== false && eq?.bands && eq.bands.length > 0;
+    const hash = JSON.stringify(enabled ? eq!.bands : []);
+    if (hash === this._lastEQHash) return;
+    this._lastEQHash = hash;
+
+    for (const b of this._activeEQBands) { try { b.disconnect(); } catch {} }
+    this._activeEQBands = [];
+    try { this._audioEQIn.disconnect(); } catch {}
+
+    if (!enabled) {
+      this._audioEQIn.connect(this._audioEQOut);
+      return;
+    }
+
+    const ctx = getAudioContext();
+    let prev: AudioNode = this._audioEQIn;
+    for (const band of eq!.bands) {
+      const filter = ctx.createBiquadFilter();
+      filter.type = band.type;
+      filter.frequency.value = band.frequency;
+      filter.gain.value = band.gain;
+      filter.Q.value = band.q;
+      prev.connect(filter);
+      prev = filter;
+      this._activeEQBands.push(filter);
+    }
+    prev.connect(this._audioEQOut);
+  }
+
   override dispose(): void {
+    // Teardown Web Audio
+    for (const { node } of this._activeEffects) node.dispose();
+    this._activeEffects = [];
+    for (const b of this._activeEQBands) { try { b.disconnect(); } catch {} }
+    this._activeEQBands = [];
+    if (this.video) unregisterForUnlock(this.video);
+    try { this._audioEQOut?.disconnect(); } catch {}
+    try { this._audioEQIn?.disconnect(); } catch {}
+    try { this._audioEffectsOut?.disconnect(); } catch {}
+    try { this._audioEffectsIn?.disconnect(); } catch {}
+    try { this._audioPan?.disconnect(); } catch {}
+    try { this._audioGain?.disconnect(); } catch {}
+    try { this._audioSource?.disconnect(); } catch {}
+
     if (this.video) {
       this.video.pause();
       // Fix #8 — clear event listeners before nulling src

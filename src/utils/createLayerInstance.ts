@@ -89,10 +89,10 @@ export function createLayerInstance(
         (layer as any).data = { assetId:'', naturalWidth:100, naturalHeight:100 };
         break;
       case 'video':
-        (layer as any).data = { assetId:'', naturalWidth:100, naturalHeight:100, duration:10, muted:false, volume:1, playbackRate:1 };
+        (layer as any).data = { assetId:'', naturalWidth:100, naturalHeight:100, duration:10, muted:false, volume:0.5, playbackRate:1 };
         break;
       case 'audio':
-        (layer as any).data = { assetId:'', duration:10, volume:1, muted:false, playbackRate:1 };
+        (layer as any).data = { assetId:'', duration:10, volume:0.5, muted:false, playbackRate:1 };
         break;
       case 'adjustment':
         (layer as any).data = {};

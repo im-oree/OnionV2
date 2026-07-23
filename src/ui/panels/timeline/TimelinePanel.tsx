@@ -50,41 +50,78 @@ export const TimelinePanel: React.FC = () => {
   const trimToPlayhead = useTrimToPlayhead();
   const rippleDelete = useRippleDelete();
 
-  // Timeline-specific keyboard shortcuts: split, trim, ripple
+  // Timeline-specific keyboard shortcuts: split, trim, ripple, zoom
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Ignore if user is typing in an input/textarea
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       const isCtrl = e.ctrlKey || e.metaKey;
       const isShift = e.shiftKey;
+
+      // ── Zoom shortcuts — only when mouse is over the timeline panel ──
+      const overTimeline = (document as any)._lastMouseInTimeline;
+      if (overTimeline && !isCtrl && !e.altKey) {
+        // + or = → zoom in (anchored on playhead)
+        if (e.key === '+' || e.key === '=') {
+          e.preventDefault();
+          zoomAtPlayhead(1.25);
+          return;
+        }
+        // - or _ → zoom out
+        if (e.key === '-' || e.key === '_') {
+          e.preventDefault();
+          zoomAtPlayhead(1 / 1.25);
+          return;
+        }
+        // . (period) → zoom to fit
+        if (e.key === '.' && !isShift) {
+          e.preventDefault();
+          useTimelineStore.getState().zoomToFit();
+          return;
+        }
+      }
 
       // Split at playhead — Ctrl+Shift+D
       if (isCtrl && isShift && (e.key === 'd' || e.key === 'D')) {
         e.preventDefault(); splitLayer(); return;
       }
-      // Trim in / delete before — Ctrl+[
       if (isCtrl && e.key === '[') {
         e.preventDefault(); trimToPlayhead('in'); return;
       }
-      // Trim out / delete after — Ctrl+]
       if (isCtrl && e.key === ']') {
         e.preventDefault(); trimToPlayhead('out'); return;
       }
-      // Ripple trim — Alt+[ / Alt+]
       if (e.altKey && e.key === '[') {
         e.preventDefault(); trimToPlayhead('in'); return;
       }
       if (e.altKey && e.key === ']') {
         e.preventDefault(); trimToPlayhead('out'); return;
       }
-      // Ripple delete — Shift+Del (exclusive: no Ctrl/Alt)
       if (isShift && !isCtrl && !e.altKey && (e.key === 'Delete' || e.key === 'Backspace')) {
         e.preventDefault(); rippleDelete(); return;
       }
     };
+
+    // Zoom around the playhead so the current frame stays put
+    const zoomAtPlayhead = (factor: number) => {
+      const st = useTimelineStore.getState();
+      const oldZ = st.zoom;
+      const newZ = Math.max(0.005, Math.min(2000, oldZ * factor));
+      if (newZ === oldZ) return;
+      const el = rightSideRef.current;
+      if (!el) { setZoom(newZ); return; }
+      const rect = el.getBoundingClientRect();
+      // Anchor: use the visual center of the tracks area
+      const anchorPx = rect.width / 2;
+      const frameUnder = (anchorPx + st.scrollX) / oldZ;
+      setZoom(newZ);
+      const newSx = Math.max(0, frameUnder * newZ - anchorPx);
+      setScrollX(newSx);
+      if (tracksScrollRef.current) tracksScrollRef.current.scrollLeft = newSx;
+    };
+
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [splitLayer, trimToPlayhead, rippleDelete]);
+  }, [splitLayer, trimToPlayhead, rippleDelete, setZoom, setScrollX]);
 
   useEffect(() => {
     const el = rootRef.current;
@@ -159,7 +196,7 @@ export const TimelinePanel: React.FC = () => {
         const st = useTimelineStore.getState();
         const oldZ = st.zoom;
         const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-        const newZ = Math.max(0.01, Math.min(500, oldZ * factor));
+        const newZ = Math.max(0.005, Math.min(2000, oldZ * factor));
         if (newZ === oldZ) return; // hit clamp — nothing to do
         const frameUnder = (mouseX + st.scrollX) / oldZ;
         setZoom(newZ);
