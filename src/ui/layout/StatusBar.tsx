@@ -10,13 +10,10 @@ export const StatusBar: React.FC = () => {
   const projectName = useProjectStore((s) => s.project.name);
   const dirty = useProjectStore((s) => s.dirty);
   const activeTool = useToolStore((s) => s.activeTool);
-  const [cacheMB, setCacheMB] = React.useState(0);
   const [saveStatus, setSaveStatus] = React.useState<string>('');
 
   React.useEffect(() => {
     const interval = setInterval(() => {
-      const fc = (window as any).__frameCache;
-      if (fc) setCacheMB(Math.round(fc.getMemoryUsage() / (1024 * 1024)));
       const sm = StorageManager.getInstance();
       const handle = sm.currentProjectHandle;
       if (handle) {
@@ -61,8 +58,6 @@ export const StatusBar: React.FC = () => {
 
       <Divider />
       <span className="capitalize">{activeTool.replace('-', ' ')}</span>
-      <Divider />
-      <span>RAM: {cacheMB} MB</span>
 
       {saveStatus && (<>
         <Divider />

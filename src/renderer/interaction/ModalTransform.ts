@@ -443,7 +443,7 @@ export class ModalTransform {
       _compId, _mode, _accumulatedDelta: delta,
       _axisLock, _axisExclude,
       _numericBuffer, _numericActive,
-      _precisionMode, _snapMode, _aspectLock,
+      _precisionMode, _snapMode,
       _startTransforms, _cachedSnapTargets,
     } = this;
     const zoom = this.cameraManager.zoom;
@@ -739,27 +739,36 @@ export class ModalTransform {
         const is3DPerspective = !!(window as any).__perspectiveActive;
         const zLockScale = (window as any).__3DAxisLock as string | undefined;
 
-        let factorX = 1, factorY = 1, factorZ = 1;
+        // ── Compute the base uniform scale factor ──────────────────
+        let baseFactor = 1;
+        let handleFactorX = 1;
+        let handleFactorY = 1;
+        let usingHandle = false;
 
         if (this._handlePivotWorld) {
-          // Signed screen-space distance from pivot to mouse
+          // Handle drag: measure signed X/Y distance from pivot
+          usingHandle = true;
           const pivot = this._handlePivotWorld;
           const startWorld = this.cameraManager.screenToWorld(
             this.startMouseScreen.x, this.startMouseScreen.y,
           );
           const currentScreenX = this.startMouseScreen.x + delta.x;
           const currentScreenY = this.startMouseScreen.y - delta.y;
-          const currentWorld = this.cameraManager.screenToWorld(currentScreenX, currentScreenY);
+          const currentWorld = this.cameraManager.screenToWorld(
+            currentScreenX, currentScreenY,
+          );
           const startDistX = startWorld.x - pivot.x;
           const startDistY = startWorld.y - pivot.y;
           const curDistX = currentWorld.x - pivot.x;
           const curDistY = currentWorld.y - pivot.y;
-          factorX = Math.abs(startDistX) > 0.5 ? curDistX / startDistX : 1;
-          factorY = Math.abs(startDistY) > 0.5 ? curDistY / startDistY : 1;
-          factorX = Math.max(0.01, factorX);
-          factorY = Math.max(0.01, factorY);
+          handleFactorX = Math.abs(startDistX) > 0.5 ? curDistX / startDistX : 1;
+          handleFactorY = Math.abs(startDistY) > 0.5 ? curDistY / startDistY : 1;
+          handleFactorX = Math.max(0.01, Math.abs(handleFactorX));
+          handleFactorY = Math.max(0.01, Math.abs(handleFactorY));
+          baseFactor = Math.max(handleFactorX, handleFactorY);
         } else {
-          // Keyboard S — measure screen distance from selection center
+          // Keyboard S: measure screen-space distance from pivot to mouse.
+          // Blender-style: this ALWAYS produces a single uniform scale value.
           const firstId = Array.from(_startTransforms.keys())[0];
           if (firstId) {
             const start = _startTransforms.get(firstId)!;
@@ -776,63 +785,64 @@ export class ModalTransform {
             const curDy = curMouseY - pivotScreen.y;
             const curDist = Math.hypot(curDx, curDy);
 
-            let factor: number;
             if (startDist < 10) {
+              // Mouse started too close to pivot — use travel distance
               const sign = curDist > startDist ? 1 : -1;
               const travel = Math.hypot(delta.x, delta.y);
-              factor = Math.max(0.01, 1 + sign * travel * 0.02);
+              baseFactor = Math.max(0.01, 1 + sign * travel * 0.02);
             } else {
-              factor = Math.max(0.01, curDist / startDist);
+              baseFactor = Math.max(0.01, curDist / startDist);
             }
-            // Blender/AE convention: unconstrained S in 3D = uniform on all axes
-            factorX = factor;
-            factorY = factor;
-            factorZ = factor;
           }
         }
 
         if (_precisionMode) {
-          factorX = 1 + (factorX - 1) * 0.1;
-          factorY = 1 + (factorY - 1) * 0.1;
-          factorZ = 1 + (factorZ - 1) * 0.1;
-        }
-
-        // Axis constraints
-        if (zLockScale === 'x') { factorY = 1; factorZ = 1; }
-        else if (zLockScale === 'y') { factorX = 1; factorZ = 1; }
-        else if (zLockScale === 'z') { factorX = 1; factorY = 1; }
-        else {
-          // Legacy 2D axis locks (when no 3D axis lock)
-          if (_axisLock === 'x') factorY = 1;
-          else if (_axisLock === 'y') factorX = 1;
-          else if (_axisExclude === 'x') factorY = 1;
-          else if (_axisExclude === 'y') factorX = 1;
-          // 3D uniform: if no lock at all and not from handle, ensure Z scales too
-          if (!this._handlePivotWorld && is3DPerspective &&
-              _axisLock === null && _axisExclude === null) {
-            // factorZ already set above from the same base factor
-          } else if (!is3DPerspective) {
-            factorZ = 1; // 2D mode: never scale Z
-          }
-        }
-
-        if (_aspectLock && !_axisLock && !_axisExclude && !zLockScale) {
-          const uniform = Math.max(factorX, factorY);
-          factorX = uniform;
-          factorY = uniform;
-          if (is3DPerspective) factorZ = uniform;
+          baseFactor = 1 + (baseFactor - 1) * 0.1;
+          handleFactorX = 1 + (handleFactorX - 1) * 0.1;
+          handleFactorY = 1 + (handleFactorY - 1) * 0.1;
         }
 
         if (_snapMode) {
-          factorX = Math.round(factorX * 20) / 20 || 0.05;
-          factorY = Math.round(factorY * 20) / 20 || 0.05;
-          factorZ = Math.round(factorZ * 20) / 20 || 0.05;
+          baseFactor = Math.round(baseFactor * 20) / 20 || 0.05;
+          handleFactorX = Math.round(handleFactorX * 20) / 20 || 0.05;
+          handleFactorY = Math.round(handleFactorY * 20) / 20 || 0.05;
+        }
+
+        // ── Apply axis constraints (Blender: S = uniform, SX/SY/SZ = axis) ──
+        let factorX: number, factorY: number, factorZ: number;
+
+        if (usingHandle) {
+          // Handle drags always use per-axis screen-space factors
+          factorX = handleFactorX;
+          factorY = handleFactorY;
+          factorZ = 1; // handles are 2D
+        } else if (zLockScale === 'x') {
+          factorX = baseFactor; factorY = 1; factorZ = 1;
+        } else if (zLockScale === 'y') {
+          factorX = 1; factorY = baseFactor; factorZ = 1;
+        } else if (zLockScale === 'z') {
+          factorX = 1; factorY = 1; factorZ = baseFactor;
+        } else if (_axisLock === 'x') {
+          factorX = baseFactor; factorY = 1; factorZ = 1;
+        } else if (_axisLock === 'y') {
+          factorX = 1; factorY = baseFactor; factorZ = 1;
+        } else if (_axisExclude === 'x') {
+          factorX = 1; factorY = baseFactor; factorZ = 1;
+        } else if (_axisExclude === 'y') {
+          factorX = baseFactor; factorY = 1; factorZ = 1;
+        } else {
+          // ⚠ NO axis constraint = UNIFORM scale on all axes (Blender behaviour)
+          // In 2D mode, factorZ is meaningless (never applied). In 3D, all three.
+          factorX = baseFactor;
+          factorY = baseFactor;
+          factorZ = is3DPerspective ? baseFactor : 1;
         }
 
         factorX = Math.max(0.01, factorX);
         factorY = Math.max(0.01, factorY);
         factorZ = Math.max(0.01, factorZ);
 
+        // ── Apply to all selected layers ───────────────────────────
         for (const [layerId, start] of _startTransforms) {
           store.updateLayer(_compId, layerId, {
             transform: {

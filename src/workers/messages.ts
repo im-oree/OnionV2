@@ -36,7 +36,7 @@ export interface AssetDecodeResult {
   error?: string;
 }
 
-// ── Cache Trim Worker ──────────────────────────────────
+// ── Cache Trim Worker ───────────────────────────────────────────
 export interface CacheTrimRequest {
   type: 'cache-trim';
   entries: Array<{ compId: string; frame: number; lastAccessed: number; byteSize: number }>;
@@ -48,6 +48,51 @@ export interface CacheTrimResult {
   evictedIds: Array<{ compId: string; frame: number }>;
 }
 
-// ── Union type for message handling ─────────────────────
-export type WorkerRequest = KeyframeEvalRequest | AssetDecodeRequest | CacheTrimRequest;
-export type WorkerResult = KeyframeEvalResult | AssetDecodeResult | CacheTrimResult;
+// ── Disk Cache OPFS Worker ──────────────────────────────────────
+export interface DiskOPFSReadRequest {
+  type: 'disk-opfs-read';
+  hash: string;
+}
+
+export interface DiskOPFSReadResult {
+  type: 'disk-opfs-read';
+  buffer: ArrayBuffer | null;
+}
+
+export interface DiskOPFSWriteRequest {
+  type: 'disk-opfs-write';
+  hash: string;
+  buffer: ArrayBuffer;
+}
+
+export interface DiskOPFSWriteResult {
+  type: 'disk-opfs-write';
+  success: boolean;
+}
+
+export interface DiskOPFSDeleteRequest {
+  type: 'disk-opfs-delete';
+  hash: string;
+}
+
+export interface DiskOPFSDeleteResult {
+  type: 'disk-opfs-delete';
+  success: boolean;
+}
+
+// ── Union types ─────────────────────────────────────────────────
+export type WorkerRequest =
+  | KeyframeEvalRequest
+  | AssetDecodeRequest
+  | CacheTrimRequest
+  | DiskOPFSReadRequest
+  | DiskOPFSWriteRequest
+  | DiskOPFSDeleteRequest;
+
+export type WorkerResult =
+  | KeyframeEvalResult
+  | AssetDecodeResult
+  | CacheTrimResult
+  | DiskOPFSReadResult
+  | DiskOPFSWriteResult
+  | DiskOPFSDeleteResult;

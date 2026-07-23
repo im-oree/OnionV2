@@ -1,7 +1,11 @@
 /**
- * AudioWaveform — renders a waveform visualization inside an audio layer bar.
+ * AudioWaveform — renders a waveform visualization inside an audio/video layer bar.
  * Uses Web Audio API's decodeAudioData to extract peak amplitude data,
- * then draws it as an SVG path overlay on the layer bar.
+ * then draws it as a canvas overlay on the layer bar.
+ *
+ * Optional `sourceStart` / `sourceEnd` props (0-1) render only a slice of
+ * the source waveform, mapped to fill `width`. Used by segment pills so each
+ * segment shows the correct portion of the source audio.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { useProjectStore } from '../../../state/projectStore';
@@ -12,16 +16,20 @@ interface Props {
   width: number;
   height: number;
   color: string;
+  /** If set, only render this slice of the source (as a fraction 0-1) */
+  sourceStart?: number;  // 0..1
+  sourceEnd?: number;    // 0..1
 }
 
 /** Cache decoded peak data by asset ID to avoid re-decoding on every render. */
 const peakCache = new Map<string, Float32Array>();
+const PEAK_RESOLUTION = 500;
 
 /**
  * Decode audio file and extract peak amplitude data.
  * Returns an array of peak values (0-1) for rendering.
  */
-async function decodePeaks(assetId: string, numBins: number): Promise<Float32Array> {
+async function decodePeaks(assetId: string): Promise<Float32Array> {
   if (peakCache.has(assetId)) return peakCache.get(assetId)!;
 
   // Resolve the audio URL
@@ -32,7 +40,7 @@ async function decodePeaks(assetId: string, numBins: number): Promise<Float32Arr
     const pa = useProjectStore.getState().project.assets.find(a => a.id === assetId);
     if (pa?.path) url = pa.path;
   }
-  if (!url) return new Float32Array(numBins).fill(0);
+  if (!url) return new Float32Array(PEAK_RESOLUTION).fill(0);
 
   const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
   try {
@@ -40,11 +48,11 @@ async function decodePeaks(assetId: string, numBins: number): Promise<Float32Arr
     const arrayBuffer = await resp.arrayBuffer();
     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
-    const rawData = audioBuffer.getChannelData(0); // mono or first channel
-    const peaks = new Float32Array(numBins);
-    const samplesPerBin = Math.max(1, Math.floor(rawData.length / numBins));
+    const rawData = audioBuffer.getChannelData(0);
+    const peaks = new Float32Array(PEAK_RESOLUTION);
+    const samplesPerBin = Math.max(1, Math.floor(rawData.length / PEAK_RESOLUTION));
 
-    for (let i = 0; i < numBins; i++) {
+    for (let i = 0; i < PEAK_RESOLUTION; i++) {
       let max = 0;
       const start = i * samplesPerBin;
       const end = Math.min(start + samplesPerBin, rawData.length);
@@ -59,21 +67,23 @@ async function decodePeaks(assetId: string, numBins: number): Promise<Float32Arr
     return peaks;
   } catch (err) {
     console.warn('[AudioWaveform] Failed to decode audio:', err);
-    return new Float32Array(numBins).fill(0);
+    return new Float32Array(PEAK_RESOLUTION).fill(0);
   } finally {
     audioCtx.close();
   }
 }
 
-export const AudioWaveform: React.FC<Props> = React.memo(({ assetId, width, height, color }) => {
+export const AudioWaveform: React.FC<Props> = React.memo(({
+  assetId, width, height, color,
+  sourceStart = 0,
+  sourceEnd = 1,
+}) => {
   const [peaks, setPeaks] = useState<Float32Array | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     let cancelled = false;
-    // Use a fixed bin count for decoding (500 peaks) — don't re-decode on resize.
-    // The canvas drawing scales these peaks to the actual width.
-    decodePeaks(assetId, 500).then(data => {
+    decodePeaks(assetId).then(data => {
       if (!cancelled) setPeaks(data);
     });
     return () => { cancelled = true; };
@@ -89,24 +99,35 @@ export const AudioWaveform: React.FC<Props> = React.memo(({ assetId, width, heig
     canvas.height = height;
     ctx.clearRect(0, 0, width, height);
 
-    const midY = height / 2;
-    const numBins = peaks.length;
+    if (width <= 0) return;
 
-    // Draw waveform as a mirrored shape
+    const midY = height / 2;
+    const totalBins = peaks.length;
+
+    // Compute which slice of peaks to render
+    const startFrac = Math.max(0, Math.min(1, sourceStart));
+    const endFrac = Math.max(startFrac, Math.min(1, sourceEnd));
+    const binStart = Math.floor(startFrac * totalBins);
+    const binEnd = Math.min(totalBins, Math.floor(endFrac * totalBins));
+    const sliceBins = Math.max(1, binEnd - binStart);
+
+    // Draw waveform as a mirrored shape — sample the slice into `width` pixels
     ctx.beginPath();
     ctx.moveTo(0, midY);
 
     // Top half (going right)
-    for (let i = 0; i < numBins; i++) {
-      const x = (i / numBins) * width;
-      const amp = peaks[i] * midY * 0.9;
+    for (let x = 0; x < width; x++) {
+      const fractionAlongSlice = x / width;
+      const binIdx = binStart + Math.floor(fractionAlongSlice * sliceBins);
+      const amp = (peaks[binIdx] ?? 0) * midY * 0.9;
       ctx.lineTo(x, midY - amp);
     }
 
     // Bottom half (going left, mirrored)
-    for (let i = numBins - 1; i >= 0; i--) {
-      const x = (i / numBins) * width;
-      const amp = peaks[i] * midY * 0.9;
+    for (let x = width - 1; x >= 0; x--) {
+      const fractionAlongSlice = x / width;
+      const binIdx = binStart + Math.floor(fractionAlongSlice * sliceBins);
+      const amp = (peaks[binIdx] ?? 0) * midY * 0.9;
       ctx.lineTo(x, midY + amp);
     }
 
@@ -128,7 +149,7 @@ export const AudioWaveform: React.FC<Props> = React.memo(({ assetId, width, heig
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
     ctx.lineWidth = 0.5;
     ctx.stroke();
-  }, [peaks, width, height]);
+  }, [peaks, width, height, sourceStart, sourceEnd]);
 
   return (
     <canvas

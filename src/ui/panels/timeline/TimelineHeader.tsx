@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo } from 'react';
-import { ChevronDown, Grid3X3, Circle, Magnet, Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight, Trash2, MonitorPlay, Zap, LineChart } from 'lucide-react';
+import { ChevronDown, Grid3X3, Circle, Magnet, Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight, Zap, LineChart } from 'lucide-react';
 import { useTimelineStore } from '../../../state/timelineStore';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useUIStore } from '../../../state/uiStore';
@@ -8,6 +8,7 @@ import { useContextMenu } from '../../common/useContextMenu';
 import { ContextMenu, type ContextMenuItem } from '../../common/ContextMenu';
 import { FrameInput } from './FrameInput';
 import { animationClock } from './PlaybackControls';
+import { RamPreviewButton } from './RamPreviewButton';
 import type { Composition } from '../../../types/composition';
 
 interface Props { comp: Composition; currentFrame: number; totalFrames: number; }
@@ -93,8 +94,6 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
   const toggleAutoKey = useTimelineStore(s => s.toggleAutoKey);
   const snapping = useTimelineStore(s => s.snapping);
   const toggleSnapping = useTimelineStore(s => s.toggleSnapping);
-  const autoCache = useTimelineStore(s => s.autoCache);
-  const toggleAutoCache = useTimelineStore(s => s.toggleAutoCache);
   const timeDisplay = useTimelineStore(s => s.timeDisplay);
   const setTimeDisplay = useTimelineStore(s => s.setTimeDisplay);
   const ctx = useContextMenu();
@@ -168,9 +167,8 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
   const playbackMenu = useMemo((): ContextMenuItem[] => [
     { id: 'p.loop', label: 'Loop', checked: loop, onClick: () => setLoop(!loop) },
     { id: 'p.autoKey', label: 'Auto Keying', checked: autoKey, onClick: toggleAutoKey },
-    { id: 'p.autoCache', label: 'Auto Cache', checked: autoCache, onClick: toggleAutoCache },
     { id: 'p.snap', label: 'Snap', checked: snapping, onClick: toggleSnapping },
-  ], [loop, setLoop, autoKey, toggleAutoKey, autoCache, toggleAutoCache, snapping, toggleSnapping]);
+  ], [loop, setLoop, autoKey, toggleAutoKey, snapping, toggleSnapping]);
 
   return (
     <div className="flex items-center gap-1 px-3 flex-shrink-0" style={{ height: 36, borderBottom: '1px solid var(--color-border)' }}>
@@ -256,12 +254,12 @@ export const TimelineHeader: React.FC<Props> = ({ comp, currentFrame, totalFrame
 
       <Sep />
 
-      <RAMPreviewButton compId={comp.id} />
+      <RamPreviewButton compId={comp.id} />
+
       <Sep />
 
       {/* Graph Editor toggle */}
       <GraphEditorToggle />
-      <ClearCacheButton />
 
       {ctx.menu && <ContextMenu items={ctx.menu.items} position={ctx.menu.position} onClose={ctx.close} />}
     </div>
@@ -292,47 +290,3 @@ const GraphEditorToggle: React.FC = () => {
   );
 };
 
-const ClearCacheButton: React.FC = () => {
-  const [mb, setMb] = React.useState(0);
-  React.useEffect(() => {
-    const interval = setInterval(() => {
-      const fc = (window as any).__frameCache;
-      if (fc) setMb(Math.round(fc.getMemoryUsage() / (1024 * 1024)));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
-  return (
-    <HdrBtn onClick={() => { const fc = (window as any).__frameCache; if (fc) { fc.invalidateAllCompositions(); setMb(0); } }} title={`Clear cache (${mb} MB used)`}>
-      <Trash2 size={12} strokeWidth={1.75} />
-      {mb > 0 && <span style={{ fontSize: 10, fontFamily: 'var(--font-family-mono)' }}>{mb}MB</span>}
-    </HdrBtn>
-  );
-};
-
-const RAMPreviewButton: React.FC<{ compId: string }> = ({ compId }) => {
-  const [status, setStatus] = React.useState<'idle' | 'building' | 'complete'>('idle');
-  React.useEffect(() => { setStatus('idle'); }, [compId]);
-  const handleClick = () => {
-    const builder = (window as any).__ramPreviewBuilder;
-    if (!builder) return;
-    if (builder.isBuilding) { builder.cancel(); setStatus('idle'); return; }
-    setStatus('building'); builder.startManualPreview(compId, 'half');
-    builder.onProgress = (p: { state: string }) => {
-      if (p.state === 'complete') setStatus('complete');
-      else if (p.state === 'cancelled' || p.state === 'idle') setStatus('idle');
-    };
-  };
-  const isBuilding = status === 'building';
-  const color = isBuilding ? '#facc15' : status === 'complete' ? '#4ade80' : undefined;
-  return (
-    <button onClick={handleClick} title={isBuilding ? 'Cancel RAM Preview' : status === 'complete' ? 'RAM Preview (cached)' : 'Start RAM Preview'}
-      className="flex items-center gap-1.5 border-0 bg-transparent cursor-pointer transition-colors shrink-0"
-      style={{ height: 26, padding: '0 10px', borderRadius: 'var(--radius-sm)', color: color ?? 'var(--color-text-secondary)', fontSize: 'var(--font-size-sm)' }}
-      onMouseEnter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--color-panel-hover)'}
-      onMouseLeave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
-    >
-      <MonitorPlay size={12} strokeWidth={1.75} />
-      <span>{isBuilding ? 'Preview...' : status === 'complete' ? 'Cached' : 'Preview'}</span>
-    </button>
-  );
-};

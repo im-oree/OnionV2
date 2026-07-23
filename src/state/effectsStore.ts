@@ -27,7 +27,6 @@ function blendModeIndexToString(idx: number): string | undefined {
 function requestEffectRender(): void {
   try {
     const renderer = (window as any).__renderer;
-    renderer?.frameCache?.clear?.();
     renderer?.gpuTextureCache?.invalidateAll?.(
       renderer?.composition?.id ?? '',
     );

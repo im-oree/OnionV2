@@ -10,6 +10,8 @@ export type BlendMode =
   | 'colorDodge'|'colorBurn'|'hardLight'|'softLight'
   | 'difference'|'exclusion'|'hue'|'saturation'|'color'|'luminosity';
 
+export type FadeCurve = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' | 'bezier';
+
 export interface Transform {
   position: { x: number; y: number };
   scale: { x: number; y: number };
@@ -197,12 +199,28 @@ export interface ImageData { assetId: string; naturalWidth: number; naturalHeigh
 export interface VideoData {
   assetId: string; naturalWidth: number; naturalHeight: number;
   duration: number; muted: boolean; volume: number; playbackRate: number;
+  /** Frames of source media to skip at the start of this clip.
+   *  Set by useSplitLayer so split segments play contiguously. */
+  sourceOffset?: number;
   /** Time Remapping — keyframeable timeline→source time mapping */
   timeRemap?: boolean;
   timeRemapKeyframes?: Array<{ time: number; sourceFrame: number }>;
   /** Frame Blending */
   frameBlending?: boolean;
   frameBlendingType?: 'frameMix' | 'pixelMotion';
+  // ── Audio properties (video layers have audio too) ──
+  /** Stereo pan: -1 = full L, 0 = center, +1 = full R */
+  pan?: number;
+  /** Fade in duration in seconds (0 = no fade) */
+  fadeIn?: number;
+  /** Fade out duration in seconds (0 = no fade) */
+  fadeOut?: number;
+  /** Fade curve type */
+  fadeInCurve?: FadeCurve;
+  fadeOutCurve?: FadeCurve;
+  /** Custom bezier control points [x1,y1,x2,y2] when curve = 'bezier' */
+  fadeInBezier?: [number, number, number, number];
+  fadeOutBezier?: [number, number, number, number];
 }
 
 export interface AudioData {
@@ -211,6 +229,18 @@ export interface AudioData {
   volume: number;
   muted: boolean;
   playbackRate: number;
+  /** Frames of source audio to skip at the start of this clip.
+   *  Set by useSplitLayer so split segments play contiguously. */
+  sourceOffset?: number;
+  // ── Audio-specific properties ──
+  /** Stereo pan: -1 = full L, 0 = center, +1 = full R */
+  pan?: number;
+  fadeIn?: number;
+  fadeOut?: number;
+  fadeInCurve?: FadeCurve;
+  fadeOutCurve?: FadeCurve;
+  fadeInBezier?: [number, number, number, number];
+  fadeOutBezier?: [number, number, number, number];
 }
 
 export type TextAlignment = 'left'|'center'|'right'|'justify';
@@ -328,6 +358,9 @@ export interface BaseLayer {
   lockedProperties?: Record<string, boolean>;
   /** When false, all effects on this layer are skipped during rendering (AE-style). */
   effectsEnabled?: boolean;
+  /** Optional multi-segment mode. When present, segments[] is the source
+   *  of truth for timing; startFrame/endFrame are derived from segment bounds. */
+  segments?: LayerSegment[];
 }
 
 export type Layer = BaseLayer;
@@ -344,4 +377,151 @@ export function defaultShapeCustom(presetId: string, width: number, height: numb
 
 export function defaultTransform(): Transform {
   return { position:{x:0,y:0}, scale:{x:100,y:100}, rotation:0, anchorPoint:{x:0,y:0} };
+}
+
+// ── Layer segments (multi-clip layers) ─────────────────────────
+
+/**
+ * A single clip/segment within a layer.
+ * A layer with no segments field behaves as one implicit segment
+ * spanning startFrame → endFrame with sourceOffset = data.sourceOffset ?? 0.
+ *
+ * When `segments` is present, it becomes the source of truth for
+ * timing. layer.startFrame / layer.endFrame are DERIVED from
+ * min(segments.startFrame) / max(segments.endFrame) — kept in sync
+ * by the store, but the segments array is what actually gets played
+ * and rendered.
+ */
+export interface LayerSegment {
+  id: string;
+  /** Timeline start frame (in composition space) */
+  startFrame: number;
+  /** Timeline end frame (in composition space) */
+  endFrame: number;
+  /**
+   * Frames of source media to skip at the start of this segment.
+   * For video/audio: seeks that many frames into the source when playing.
+   * For static content (image/shape/text/etc): unused, always 0.
+   */
+  sourceOffset: number;
+}
+
+// ── Segment helpers ────────────────────────────────────────────
+
+/**
+ * Return the segments of a layer.
+ * If `layer.segments` is defined and non-empty, returns that.
+ * Otherwise synthesizes a single implicit segment spanning
+ * `startFrame` → `endFrame` with `sourceOffset` from layer.data
+ * (for video/audio) or 0.
+ */
+export function getSegments(layer: BaseLayer): LayerSegment[] {
+  if (layer.segments && layer.segments.length > 0) {
+    return layer.segments;
+  }
+  const sourceOffset =
+    layer.type === 'video' || layer.type === 'audio'
+      ? ((layer.data as any)?.sourceOffset ?? 0)
+      : 0;
+  return [{
+    id: `${layer.id}__implicit`,
+    startFrame: layer.startFrame,
+    endFrame: layer.endFrame,
+    sourceOffset,
+  }];
+}
+
+/**
+ * Return the earliest startFrame across all segments of a layer.
+ * Equivalent to `layer.startFrame` for single-segment layers.
+ */
+export function getLayerStartFrame(layer: BaseLayer): number {
+  const segs = getSegments(layer);
+  if (segs.length === 0) return layer.startFrame;
+  let min = Infinity;
+  for (const s of segs) if (s.startFrame < min) min = s.startFrame;
+  return Number.isFinite(min) ? min : layer.startFrame;
+}
+
+/**
+ * Return the latest endFrame across all segments of a layer.
+ * Equivalent to `layer.endFrame` for single-segment layers.
+ */
+export function getLayerEndFrame(layer: BaseLayer): number {
+  const segs = getSegments(layer);
+  if (segs.length === 0) return layer.endFrame;
+  let max = -Infinity;
+  for (const s of segs) if (s.endFrame > max) max = s.endFrame;
+  return Number.isFinite(max) ? max : layer.endFrame;
+}
+
+/**
+ * Return combined bounds for a layer.
+ * Cheaper than calling both getLayerStartFrame + getLayerEndFrame.
+ */
+export function getLayerBounds(layer: BaseLayer): { start: number; end: number } {
+  const segs = getSegments(layer);
+  if (segs.length === 0) {
+    return { start: layer.startFrame, end: layer.endFrame };
+  }
+  let start = Infinity;
+  let end = -Infinity;
+  for (const s of segs) {
+    if (s.startFrame < start) start = s.startFrame;
+    if (s.endFrame > end) end = s.endFrame;
+  }
+  return {
+    start: Number.isFinite(start) ? start : layer.startFrame,
+    end: Number.isFinite(end) ? end : layer.endFrame,
+  };
+}
+
+/**
+ * Find the segment that covers a given frame.
+ * Returns null if the frame is not inside any segment (i.e. in a gap
+ * or outside the layer entirely).
+ */
+export function getActiveSegment(
+  layer: BaseLayer,
+  frame: number,
+): LayerSegment | null {
+  const segs = getSegments(layer);
+  // Iterate in reverse so LATER segments win at boundary frames
+  // (matches user expectation when playback crosses a split point)
+  for (let i = segs.length - 1; i >= 0; i--) {
+    const s = segs[i];
+    if (frame >= s.startFrame && frame <= s.endFrame) return s;
+  }
+  return null;
+}
+
+/**
+ * Check if the given frame is covered by ANY segment of the layer.
+ * Used by visibility checks — a layer is "in range" if any segment
+ * covers the current frame.
+ */
+export function isFrameInLayer(layer: BaseLayer, frame: number): boolean {
+  return getActiveSegment(layer, frame) !== null;
+}
+
+/**
+ * Compute the source time (in seconds) that should play for a given
+ * timeline frame, based on the active segment's sourceOffset.
+ * Returns null if the frame is in a gap.
+ *
+ * For a layer with segments:
+ *   segment covers frames 100–200, sourceOffset = 150
+ *   at timeline frame 120 → source frame = 120 - 100 + 150 = 170
+ *                        → source time = 170 / fps
+ */
+export function getSourceTimeAtFrame(
+  layer: BaseLayer,
+  frame: number,
+  fps: number,
+): number | null {
+  const seg = getActiveSegment(layer, frame);
+  if (!seg) return null;
+  const framesIntoSegment = frame - seg.startFrame;
+  const sourceFrame = seg.sourceOffset + framesIntoSegment;
+  return sourceFrame / fps;
 }

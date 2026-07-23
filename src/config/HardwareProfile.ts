@@ -24,8 +24,6 @@ export interface HardwareConfig {
   workersEnabled: boolean;
   /** Max worker threads */
   maxWorkers: number;
-  /** Enable background prefetch (idle cache warm) */
-  autoRamPreview: boolean;
   /** Enable OffscreenCanvas rendering (if supported) */
   offscreenCanvas: boolean;
   /** Suggested max pixel ratio */
@@ -89,7 +87,6 @@ export function detectHardware(): HardwareConfig {
         resolutionMode: 'auto',
         workersEnabled: cores > 2,
         maxWorkers: Math.max(1, Math.min(2, cores - 1)),
-        autoRamPreview: false,
         offscreenCanvas: false,
         maxDPR: 1,
         maxLayers1080p: 10,
@@ -102,7 +99,6 @@ export function detectHardware(): HardwareConfig {
         resolutionMode: 'auto',
         workersEnabled: true,
         maxWorkers: Math.max(1, Math.min(4, cores - 1)),
-        autoRamPreview: true,
         offscreenCanvas,
         maxDPR: 2,
         maxLayers1080p: 20,
@@ -115,7 +111,6 @@ export function detectHardware(): HardwareConfig {
         resolutionMode: 'full',
         workersEnabled: true,
         maxWorkers: Math.max(1, Math.min(6, cores - 1)),
-        autoRamPreview: true,
         offscreenCanvas: offscreenCanvas && tier === 'high',
         maxDPR: 2,
         maxLayers1080p: 40,

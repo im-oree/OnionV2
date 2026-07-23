@@ -24,3 +24,11 @@ export type { MarkerState } from './markerStore';
 
 export { useNavigationStore } from './navigationStore';
 export type { NavEntry } from './navigationStore';
+
+// ── Cache ──────────────────────────────────────────────────────
+export { useCacheStore } from './cacheStore';
+export type { CacheStats } from './cacheStore';
+
+// ── RAM Preview ────────────────────────────────────────────────
+export { useRamPreviewStore } from './ramPreviewStore';
+export type { RamPreviewState } from './ramPreviewStore';

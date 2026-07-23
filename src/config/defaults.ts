@@ -73,8 +73,6 @@ export const DEFAULT_PROJECT: Omit<Project, 'id'> = {
   compositions: [],
   assets: [],
   settings: {
-    adaptiveResolution: PERFORMANCE.ADAPTIVE_RESOLUTION_ON,
-    ramPreview: PERFORMANCE.RAM_PREVIEW_ON,
     targetFps: PERFORMANCE.TARGET_FPS,
     gridSnap: true,
     snapToGuides: true,

@@ -112,6 +112,31 @@ export const ModelSection: React.FC<Props> = ({ layer, compId }) => {
               min={0.01} max={100} step={0.1} precision={2}
             />
           </PropRow>
+          <PropRow label="">
+            <button
+              onClick={() => {
+                const renderer = (window as any).__renderer;
+                const lr = renderer?.layerSync?.getRenderer(layer.id);
+                if (lr && typeof lr.centerOriginToGeometry === 'function') {
+                  lr.centerOriginToGeometry();
+                  renderer.renderLoop.requestRender();
+                }
+              }}
+              style={{
+                fontSize: 'var(--font-size-xs)',
+                padding: '3px 10px',
+                background: 'var(--color-surface)',
+                color: 'var(--color-text-secondary)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-sm)',
+                cursor: 'pointer',
+                width: '100%',
+                textAlign: 'center',
+              }}
+            >
+              Set Origin to Geometry Center
+            </button>
+          </PropRow>
           <PropRow label="Auto Rotate">
             <CheckboxInput
               value={data.autoRotate ?? false}

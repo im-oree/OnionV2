@@ -104,8 +104,12 @@ export class Model3DLayerRenderer extends BaseLayerRenderer {
       }
     });
 
-    // Fix #4 — must call updateMatrixWorld BEFORE computing bounding box
-    // or Box3.setFromObject measures stale world matrices.
+    // ── Auto-center origin to geometric center ──────────────
+    // Bake the centering into the geometry so scaling/rotating happens
+    // around the true visual center of the model. Prevents drift and
+    // weird deformation when scaling.
+    this._centerGroupOrigin(scene);
+
     scene.updateMatrixWorld(true);
 
     const box = new THREE.Box3().setFromObject(scene);
@@ -122,6 +126,46 @@ export class Model3DLayerRenderer extends BaseLayerRenderer {
       scene.scale.copy(this.mesh.scale);
       this.mesh.scale.set(1, 1, 1);
     }
+  }
+
+  /**
+   * Recenter the group's origin to the geometric center of all meshes.
+   * Modifies vertex positions in-place so scale/rotate operations happen
+   * around the visual center. Idempotent — safe to call multiple times.
+   */
+  private _centerGroupOrigin(group: THREE.Group): void {
+    group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(group);
+    if (box.isEmpty()) return;
+
+    const center = box.getCenter(new THREE.Vector3());
+    if (center.lengthSq() < 1e-6) return; // already centered
+
+    // Shift all child mesh geometries so vertices are centered.
+    // Convert world-space center offset to each child's local space to
+    // correctly handle child meshes with non-identity local transforms.
+    group.traverse((child) => {
+      if (!(child instanceof THREE.Mesh) || !child.geometry) return;
+      child.updateMatrixWorld(true);
+      const localOffset = center.clone().applyMatrix4(
+        child.matrixWorld.clone().invert(),
+      );
+      child.geometry.translate(-localOffset.x, -localOffset.y, -localOffset.z);
+      child.geometry.computeBoundingBox();
+      child.geometry.computeBoundingSphere();
+    });
+
+    group.updateMatrixWorld(true);
+  }
+
+  /**
+   * Public API: recenter the origin to geometry center on demand.
+   * Used by the "Set Origin to Geometry" button in the Properties panel.
+   */
+  centerOriginToGeometry(): void {
+    if (!this._modelGroup) return;
+    this._centerGroupOrigin(this._modelGroup);
+    this._modelGroup.updateMatrixWorld(true);
   }
 
   updateData(data: any): void {

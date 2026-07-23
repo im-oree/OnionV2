@@ -62,6 +62,9 @@ export interface Composition {
   currentTime: number;
   workAreaStart: number;
   workAreaEnd: number;
+  /** Whether the work area is active. When false/undefined, work area
+   *  markers are hidden and loop/RAM-preview/export use the full comp. */
+  workAreaEnabled?: boolean;
   pixelAspect: number;
   /** 3D environment settings — only meaningful when comp has 3D layers */
   environment3D?: Environment3D;

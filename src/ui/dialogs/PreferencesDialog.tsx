@@ -92,6 +92,10 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
 
   // Playback settings
   const [cacheSizeMB, setCacheSizeMB] = useState(Math.round(hwProfile.cacheBudget / (1024 * 1024)));
+  const [diskCacheMB, setDiskCacheMB] = useState(() => {
+    const saved = localStorage.getItem('pref_diskCacheMB');
+    return saved ? Number(saved) : 10240; // default 10 GB
+  });
   const [gpuMemoryBudgetMB, setGpuMemoryBudgetMB] = useState(() => {
     const saved = localStorage.getItem('pref_gpuMemoryBudgetMB');
     if (saved) return Number(saved);
@@ -99,7 +103,6 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
     return gpuCache ? Math.round(gpuCache.maxBytes / (1024 * 1024)) : 512;
   });
   const [resolutionMode, setResolutionMode] = useState(hwProfile.resolutionMode);
-  const [autoRamPreview, setAutoRamPreview] = useState(hwProfile.autoRamPreview);
   const [workersEnabled, setWorkersEnabled] = useState(hwProfile.workersEnabled);
   const [maxWorkers, setMaxWorkers] = useState(hwProfile.maxWorkers);
   const [playbackModeVal, setPlaybackMode] = useState<'realtime' | 'accurate' | 'cacheOnly'>('realtime');
@@ -156,14 +159,11 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
     setHwProfile(profile);
     setCacheSizeMB(Math.round(profile.cacheBudget / (1024 * 1024)));
     setResolutionMode(profile.resolutionMode);
-    setAutoRamPreview(profile.autoRamPreview);
     setWorkersEnabled(profile.workersEnabled);
     setMaxWorkers(profile.maxWorkers);
   };
 
-  const handleClearCache = () => {
-    (window as any).__frameCache?.invalidateAllCompositions();
-  };
+
 
   const handleClearRecent = () => {
     useRecentProjectsStore.getState().clearAll();
@@ -536,15 +536,96 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
                     <div className="flex justify-between"><span>GPU:</span><span style={valueStyle} className="truncate max-w-[200px]">{hwProfile.gpuRenderer}</span></div>
                   </div>
                 </div>
+                {/* ─── CACHE ─── */}
                 <div style={sectionStyle}>
-                  <div className="text-ui-xs font-medium text-text-primary mb-2">Cache</div>
+                  <div className="text-ui-xs font-medium text-text-primary mb-2">Frame Cache</div>
                   <div className="space-y-2">
-                    <div className="flex items-center justify-between"><span style={labelStyle}>RAM Cache:</span>
+
+                    {/* RAM cache size */}
+                    <div className="flex items-center justify-between">
+                      <span style={labelStyle}>RAM Cache Size</span>
                       <div className="flex items-center gap-2">
-                        <input type="range" min={256} max={8192} step={256} value={cacheSizeMB} onChange={e => setCacheSizeMB(Number(e.target.value))} className="w-24 accent-accent" />
-                        <span style={valueStyle} className="w-16 text-right">{cacheSizeMB >= 1024 ? `${(cacheSizeMB/1024).toFixed(1)} GB` : `${cacheSizeMB} MB`}</span>
+                        <input
+                          type="range" min={256} max={8192} step={256}
+                          value={cacheSizeMB}
+                          onChange={e => {
+                            const v = Number(e.target.value);
+                            setCacheSizeMB(v);
+                            // Apply live
+                            const { setRamMaxBytes } = (window as any).__cacheStoreActions ?? {};
+                            setRamMaxBytes?.(v * 1024 * 1024);
+                            persist('pref_ramCacheMB', v);
+                          }}
+                          className="w-24 accent-accent"
+                        />
+                        <span style={valueStyle} className="w-16 text-right">
+                          {cacheSizeMB >= 1024
+                            ? `${(cacheSizeMB / 1024).toFixed(1)} GB`
+                            : `${cacheSizeMB} MB`}
+                        </span>
                       </div>
                     </div>
+
+                    {/* Disk cache size */}
+                    <div className="flex items-center justify-between">
+                      <span style={labelStyle}>Disk Cache Size</span>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range" min={1024} max={51200} step={1024}
+                          value={diskCacheMB}
+                          onChange={e => {
+                            const v = Number(e.target.value);
+                            setDiskCacheMB(v);
+                            const { setDiskMaxBytes } = (window as any).__cacheStoreActions ?? {};
+                            setDiskMaxBytes?.(v * 1024 * 1024);
+                            persist('pref_diskCacheMB', v);
+                          }}
+                          className="w-24 accent-accent"
+                        />
+                        <span style={valueStyle} className="w-16 text-right">
+                          {diskCacheMB >= 1024
+                            ? `${(diskCacheMB / 1024).toFixed(1)} GB`
+                            : `${diskCacheMB} MB`}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Cache tier info */}
+                    <div className="flex justify-between">
+                      <span style={labelStyle}>Disk Tier</span>
+                      <span style={valueStyle}>
+                        {(window as any).__frameCache?.disk?.isOPFS ? 'OPFS (fast)' : 'IndexedDB'}
+                      </span>
+                    </div>
+
+                    {/* Purge buttons */}
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        onClick={() => {
+                          (window as any).__frameCache?.purge('ram');
+                        }}
+                        className="flex-1 text-ui-xs px-2 py-1 rounded-sm border border-border
+                                   bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer"
+                      >
+                        Empty RAM Cache
+                      </button>
+                      <button
+                        onClick={async () => {
+                          await (window as any).__frameCache?.purge('disk');
+                        }}
+                        className="flex-1 text-ui-xs px-2 py-1 rounded-sm border border-border
+                                   bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer"
+                      >
+                        Empty Disk Cache
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ─── GPU CACHE ─── */}
+                <div style={sectionStyle}>
+                  <div className="text-ui-xs font-medium text-text-primary mb-2">GPU Cache</div>
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between"><span style={labelStyle}>Quality:</span>
                       <select value={resolutionMode} onChange={e => setResolutionMode(e.target.value as any)} className="text-ui-xs bg-surface border border-border rounded-sm px-1 py-0.5 text-text-primary">
                         <option value="auto">Auto</option><option value="full">Full</option><option value="half">Half</option><option value="quarter">Quarter</option>
@@ -564,7 +645,6 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
                         <span style={valueStyle} className="w-16 text-right">{gpuMemoryBudgetMB >= 1024 ? `${(gpuMemoryBudgetMB/1024).toFixed(1)} GB` : `${gpuMemoryBudgetMB} MB`}</span>
                       </div>
                     </div>
-                    <button onClick={handleClearCache} className="text-ui-xs px-2 py-1 rounded-sm border border-border bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer">Clear Cache</button>
                   </div>
                 </div>
                 <div style={sectionStyle}>
@@ -575,7 +655,6 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
                         <option value="realtime">Real-time</option><option value="accurate">Accurate</option><option value="cacheOnly">Cache Only</option>
                       </select>
                     </div>
-                    <div className="flex items-center justify-between"><span style={labelStyle}>Auto RAM Preview:</span><input type="checkbox" checked={autoRamPreview} onChange={e => setAutoRamPreview(e.target.checked)} className="accent-accent" /></div>
                     <div className="flex items-center justify-between"><span style={labelStyle}>Worker Threads:</span>
                       <div className="flex items-center gap-2">
                         <input type="checkbox" checked={workersEnabled} onChange={e => setWorkersEnabled(e.target.checked)} className="accent-accent" />

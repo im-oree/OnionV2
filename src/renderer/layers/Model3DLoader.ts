@@ -247,24 +247,38 @@ async function loadSTL(url: string): Promise<THREE.Group> {
 }
 
 function fitToUnitBox(obj: THREE.Object3D): void {
-  // Fix #7 — must force matrix update before measuring bounding box
-  // or Box3.setFromObject reads stale world matrices
   obj.updateMatrixWorld(true);
 
   const box = new THREE.Box3().setFromObject(obj);
+  if (box.isEmpty()) return;
+
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z);
   if (maxDim === 0) return;
 
+  // 1. Uniformly scale to fit within a 200-unit box
   const scale = 200 / maxDim;
   obj.scale.multiplyScalar(scale);
-
   obj.updateMatrixWorld(true);
-  const newBox = new THREE.Box3().setFromObject(obj);
-  const newCenter = newBox.getCenter(new THREE.Vector3());
-  obj.position.sub(newCenter);
 
-  // Fix #8 — update matrix again after position change
+  // 2. Bake the centering into geometry vertices, not position offset.
+  //    Group.position stays at (0,0,0) so future transforms are predictable
+  //    and scale operations happen around the true geometric center.
+  const scaledBox = new THREE.Box3().setFromObject(obj);
+  const scaledCenter = scaledBox.getCenter(new THREE.Vector3());
+
+  obj.traverse((child) => {
+    if (!(child instanceof THREE.Mesh) || !child.geometry) return;
+    // Convert world-space center offset into local-space of this mesh
+    child.updateMatrixWorld(true);
+    const localCenter = scaledCenter.clone().applyMatrix4(
+      child.matrixWorld.clone().invert(),
+    );
+    child.geometry.translate(-localCenter.x, -localCenter.y, -localCenter.z);
+    child.geometry.computeBoundingBox();
+    child.geometry.computeBoundingSphere();
+  });
+
   obj.updateMatrixWorld(true);
 }
 

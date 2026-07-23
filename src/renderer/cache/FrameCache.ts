@@ -1,239 +1,303 @@
+// FrameCache — unified orchestrator (RAM → Disk → Render)
+// Coordinates the three-tier cache: queries RamCache first, falls through to DiskCache,
+// and finally triggers render on miss. Manages invalidation, budget, and
+// explicit "Bake Preview" capture sessions.
 /**
- * FrameCache — simple, reliable per-composition frame cache.
- * Stores rendered frames as ImageBitmaps with LRU eviction.
+ * FrameCache — AE-style two-tier frame cache.
+ *
+ * Tier 1: RAM  (RamCache)  — ImageData in JS heap, ~0ms access
+ * Tier 2: Disk (DiskCache) — OPFS or IndexedDB, ~2–20ms access
+ *
+ * Usage:
+ *   const result = await frameCache.get(hash);
+ *   if (!result) { ... render ... frameCache.set(hash, imageData, compId, frame); }
+ *
+ * Cache invalidation:
+ *   frameCache.invalidateComp(compId)            — all frames for a comp
+ *   frameCache.invalidateRange(compId, s, e)     — frame range
+ *   frameCache.purge('ram' | 'disk' | 'all')     — manual purge
  */
-export type CacheQuality = 'full' | 'half' | 'quarter';
+import { RamCache } from './RamCache';
+import { DiskCache } from './DiskCache';
+import { hashFrameAtTime } from './CacheHasher';
+import type { Composition } from '../../types/composition';
 
-export interface CachedFrame {
-  imageBitmap: ImageBitmap;
-  byteSize: number;
-  lastAccessed: number;
-  quality: CacheQuality;
-}
-
-const QUALITY_ORDER: CacheQuality[] = ['full', 'half', 'quarter'];
+export { hashFrameAtTime } from './CacheHasher';
 
 export class FrameCache {
-  private _cache = new Map<string, Map<number, CachedFrame>>();
-  private _totalBytes = 0;
-  private _maxBytes: number;
-  private _trimPending = false;
+  readonly ram: RamCache;
+  readonly disk: DiskCache;
 
-  constructor(maxBytes?: number) {
-    this._maxBytes = maxBytes ?? 512 * 1024 * 1024; // 512 MB default
+  private _enabled = true;
+  private _diskEnabled = true;
+  /** Tracks ongoing disk writes so we don't double-write */
+  private _pendingDiskWrites = new Set<string>();
+
+  /** Reusable overlay canvas for blitting cached frames without touching WebGL context */
+  private static _overlayCanvas: HTMLCanvasElement | null = null;
+
+  constructor(ramMaxBytes?: number, diskMaxBytes?: number) {
+    this.ram = new RamCache(ramMaxBytes);
+    this.disk = new DiskCache(diskMaxBytes);
   }
 
-  get maxBytes(): number { return this._maxBytes; }
+  // ── Config ──────────────────────────────────────────────────
 
-  get size(): number {
-    let n = 0;
-    for (const m of this._cache.values()) n += m.size;
-    return n;
+  get enabled(): boolean { return this._enabled; }
+  set enabled(v: boolean) { this._enabled = v; }
+
+  get diskEnabled(): boolean { return this._diskEnabled; }
+  set diskEnabled(v: boolean) { this._diskEnabled = v; }
+
+  // ── Hash ────────────────────────────────────────────────────
+
+  /** Convenience: hash a frame from a full Composition object */
+  hashFor(comp: Composition, frame: number, qualifier?: string): string {
+    return hashFrameAtTime(comp, frame, qualifier);
   }
 
-  getMemoryUsage(): number { return this._totalBytes; }
+  // ── Get ─────────────────────────────────────────────────────
 
-  setMaxBytes(bytes: number): void {
-    this._maxBytes = Math.max(32 * 1024 * 1024, bytes);
-    if (this._totalBytes > this._maxBytes) this._evict();
+  /**
+   * Try RAM first, then disk.
+   * On disk hit, promotes entry to RAM automatically.
+   * Returns null on full miss — caller must render and call set().
+   */
+  async get(hash: string): Promise<ImageData | null> {
+    if (!this._enabled) return null;
+
+    // Tier 1: RAM
+    const ramHit = this.ram.get(hash);
+    if (ramHit) return ramHit.data;
+
+    // Tier 2: Disk
+    if (!this._diskEnabled) return null;
+    const diskHit = await this.disk.get(hash);
+    if (diskHit) {
+      // Promote to RAM (non-blocking)
+      // We don't know compId/frame here, use placeholder — entry still useful
+      this.ram.set(hash, diskHit, '__promoted__', -1);
+      return diskHit;
+    }
+
+    return null;
   }
 
-  /** Store a frame. Closes any existing bitmap at this slot. */
-  store(
+  /**
+   * Store a rendered frame in both RAM and Disk (disk write is async/non-blocking).
+   */
+  set(
+    hash: string,
+    data: ImageData,
     compId: string,
     frame: number,
-    imageBitmap: ImageBitmap,
-    quality: CacheQuality,
   ): void {
-    if (!compId) return;
-    if (!Number.isFinite(frame)) return;
+    if (!this._enabled) return;
 
-    let map = this._cache.get(compId);
-    if (!map) {
-      map = new Map();
-      this._cache.set(compId, map);
-    }
+    // Write to RAM immediately (synchronous)
+    this.ram.set(hash, data, compId, frame);
 
-    const old = map.get(frame);
-    if (old) {
-      this._totalBytes -= old.byteSize;
-      try { old.imageBitmap.close(); } catch {}
-    }
-
-    // More accurate memory estimate (RGBA 4 bytes per pixel)
-    const byteSize = Math.max(0, imageBitmap.width * imageBitmap.height * 4);
-
-    map.set(frame, {
-      imageBitmap,
-      byteSize,
-      lastAccessed: performance.now(),
-      quality,
-    });
-
-    this._totalBytes += byteSize;
-
-    // Lazy eviction — don't block render
-    if (this._totalBytes > this._maxBytes && !this._trimPending) {
-      this._trimPending = true;
-      queueMicrotask(() => {
-        this._trimPending = false;
-        this._evict();
-      });
+    // Write to Disk asynchronously — don't block the render loop
+    if (this._diskEnabled && !this._pendingDiskWrites.has(hash)) {
+      this._pendingDiskWrites.add(hash);
+      this.disk.set(hash, data, compId, frame)
+        .catch(err => console.warn('[FrameCache] Disk write error:', err))
+        .finally(() => this._pendingDiskWrites.delete(hash));
     }
   }
 
-  /** Get a frame for display. Updates LRU timestamp. */
-  get(compId: string, frame: number): CachedFrame | null {
-    const entry = this._cache.get(compId)?.get(frame);
-    if (!entry) return null;
-    entry.lastAccessed = performance.now();
-    return entry;
-  }
+  // ── Invalidation ─────────────────────────────────────────────
 
-  /** Peek without updating LRU. */
-  peek(compId: string, frame: number): CachedFrame | null {
-    return this._cache.get(compId)?.get(frame) ?? null;
-  }
-
-  /** Check if frame exists with optional minimum quality requirement. */
-  has(compId: string, frame: number, minQuality?: CacheQuality): boolean {
-    const entry = this._cache.get(compId)?.get(frame);
-    if (!entry) return false;
-    if (!minQuality) return true;
-
-    const entryIdx = QUALITY_ORDER.indexOf(entry.quality);
-    const requiredIdx = QUALITY_ORDER.indexOf(minQuality);
-
-    if (entryIdx === -1 || requiredIdx === -1) return false;
-
-    return entryIdx <= requiredIdx;
-  }
-
-  /** Invalidate a range of frames (inclusive). */
-  invalidate(compId: string, fromFrame?: number, toFrame?: number): void {
-    const map = this._cache.get(compId);
-    if (!map) return;
-
-    if (
-      fromFrame === undefined ||
-      toFrame === undefined ||
-      !Number.isFinite(fromFrame) ||
-      !Number.isFinite(toFrame)
-    ) {
-      this.invalidateAll(compId);
-      return;
-    }
-
-    const start = Math.floor(Math.min(fromFrame, toFrame));
-    const end = Math.floor(Math.max(fromFrame, toFrame));
-
-    for (let f = start; f <= end; f++) {
-      const e = map.get(f);
-      if (!e) continue;
-
-      this._totalBytes -= e.byteSize;
-      try { e.imageBitmap.close(); } catch {}
-      map.delete(f);
-    }
-
-    if (map.size === 0) this._cache.delete(compId);
-  }
-
-  /** Invalidate all frames for a composition. */
-  invalidateAll(compId: string): void {
-    const map = this._cache.get(compId);
-    if (!map) return;
-
-    for (const e of map.values()) {
-      this._totalBytes -= e.byteSize;
-      try { e.imageBitmap.close(); } catch {}
-    }
-
-    map.clear();
-    this._cache.delete(compId);
-  }
-
-  /** Invalidate ALL compositions. */
-  invalidateAllCompositions(): void {
-    for (const id of Array.from(this._cache.keys())) {
-      this.invalidateAll(id);
+  async invalidateComp(compId: string): Promise<void> {
+    this.ram.invalidateComp(compId);
+    if (this._diskEnabled) {
+      await this.disk.invalidateComp(compId).catch(() => {});
     }
   }
 
-  /** Get coverage fraction (0-1) in a frame range (inclusive). */
-  getCoverage(compId: string, startFrame: number, endFrame: number): number {
-    const map = this._cache.get(compId);
-    if (!map) return 0;
+  invalidateRange(compId: string, startFrame: number, endFrame: number): void {
+    this.ram.invalidateRange(compId, startFrame, endFrame);
+    // Disk range invalidation is expensive — skip for now,
+    // disk eviction handles stale entries on capacity pressure.
+  }
 
-    if (!Number.isFinite(startFrame) || !Number.isFinite(endFrame)) return 0;
+  // ── Range queries ───────────────────────────────────────────
 
-    const start = Math.floor(Math.min(startFrame, endFrame));
-    const end = Math.floor(Math.max(startFrame, endFrame));
+  /**
+   * Check if every frame in [startFrame, endFrame) is present in RAM cache.
+   * Used by PlaybackControls to decide if cache-only playback is possible.
+   */
+  isRangeCached(comp: Composition, startFrame: number, endFrame: number): boolean {
+    if (!this._enabled) return false;
+    for (let f = startFrame; f < endFrame; f++) {
+      const hash = this.hashFor(comp, f);
+      if (!this.ram.has(hash)) return false;
+    }
+    return true;
+  }
 
-    if (end < start) return 0;
-
+  /**
+   * Count how many frames in [startFrame, endFrame) are in RAM cache.
+   * Returns { cached, total }.
+   */
+  cachedFrameCount(
+    comp: Composition,
+    startFrame: number,
+    endFrame: number,
+  ): { cached: number; total: number } {
+    const total = endFrame - startFrame;
+    if (total <= 0) return { cached: 0, total: 0 };
     let cached = 0;
-    for (let f = start; f <= end; f++) {
-      if (map.has(f)) cached++;
+    for (let f = startFrame; f < endFrame; f++) {
+      if (this.ram.has(this.hashFor(comp, f))) cached++;
     }
-
-    const total = end - start + 1;
-    return total > 0 ? cached / total : 0;
+    return { cached, total };
   }
 
-  /** LRU eviction — remove oldest frames until under 80% budget. */
-  private _evict(): void {
-    const target = Math.floor(this._maxBytes * 0.8);
-    if (this._totalBytes <= target) return;
+  /**
+   * Get the ImageData for a specific frame directly from RAM cache.
+   * Returns null if not cached. Does NOT promote from disk (synchronous).
+   */
+  getFrameSync(comp: Composition, frame: number): ImageData | null {
+    const hash = this.hashFor(comp, frame);
+    const entry = this.ram.get(hash);
+    return entry?.data ?? null;
+  }
 
-    const entries: Array<{
-      compId: string;
-      frame: number;
-      lastAccessed: number;
-    }> = [];
-
-    for (const [compId, map] of this._cache) {
-      for (const [frame, e] of map) {
-        entries.push({
-          compId,
-          frame,
-          lastAccessed: e.lastAccessed,
-        });
-      }
+  async purge(tier: 'ram' | 'disk' | 'all'): Promise<void> {
+    if (tier === 'ram' || tier === 'all') {
+      this.ram.clear();
     }
-
-    entries.sort((a, b) => a.lastAccessed - b.lastAccessed);
-
-    for (const e of entries) {
-      if (this._totalBytes <= target) break;
-
-      const map = this._cache.get(e.compId);
-      const entry = map?.get(e.frame);
-      if (!entry) continue;
-
-      this._totalBytes -= entry.byteSize;
-      try { entry.imageBitmap.close(); } catch {}
-      map.delete(e.frame);
-
-      if (map.size === 0) {
-        this._cache.delete(e.compId);
-      }
+    if ((tier === 'disk' || tier === 'all') && this._diskEnabled) {
+      await this.disk.purgeAll().catch(() => {});
     }
   }
 
-  /** Clear everything. */
-  clear(): void {
-    for (const map of this._cache.values()) {
-      for (const e of map.values()) {
-        try { e.imageBitmap.close(); } catch {}
-      }
-    }
-    this._cache.clear();
-    this._totalBytes = 0;
-    this._trimPending = false;
+  // ── Stats ────────────────────────────────────────────────────
+
+  getStats() {
+    return {
+      ram: this.ram.getStats(),
+      disk: this.disk.getStats(),
+      pendingDiskWrites: this._pendingDiskWrites.size,
+    };
   }
 
   dispose(): void {
-    this.clear();
+    this.ram.dispose();
+    this.disk.dispose();
+    FrameCache._overlayCanvas?.remove();
+    FrameCache._overlayCanvas = null;
+  }
+
+  // ── Renderer integration ─────────────────────────────────────
+
+  /**
+   * Read the current WebGL framebuffer into an ImageData and store it.
+   * Call this AFTER renderer.render() completes.
+   * Returns the hash that was stored, or null if skipped.
+   */
+  captureFromRenderer(
+    glRenderer: import('three').WebGLRenderer,
+    hash: string,
+    compId: string,
+    frame: number,
+  ): string | null {
+    if (!this._enabled) return null;
+
+    // Don't re-capture if already in RAM cache
+    if (this.ram.has(hash)) return hash;
+
+    const canvas = glRenderer.domElement;
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w === 0 || h === 0) return null;
+
+    try {
+      const gl = glRenderer.getContext() as WebGL2RenderingContext;
+      // Bind default framebuffer (what the user sees)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      const pixels = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+      // WebGL is bottom-up — flip Y into a top-down ImageData
+      const imageData = new ImageData(w, h);
+      const rowBytes = w * 4;
+      for (let y = 0; y < h; y++) {
+        const src = y * rowBytes;
+        const dst = (h - 1 - y) * rowBytes;
+        imageData.data.set(pixels.subarray(src, src + rowBytes), dst);
+      }
+
+      this.set(hash, imageData, compId, frame);
+      return hash;
+    } catch (err) {
+      console.warn('[FrameCache] captureFromRenderer error:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Blit a cached ImageData back onto the WebGL canvas using a 2D overlay.
+   * Overlay uses CSS pixel dimensions matching the WebGL canvas so it
+   * lines up exactly regardless of devicePixelRatio.
+   */
+  blitToCanvas(
+    imageData: ImageData,
+    targetCanvas: HTMLCanvasElement,
+  ): void {
+    if (!FrameCache._overlayCanvas) {
+      FrameCache._overlayCanvas = document.createElement('canvas');
+      FrameCache._overlayCanvas.style.cssText =
+        'position:absolute;top:0;left:0;pointer-events:none;display:block;';
+    }
+
+    const overlay = FrameCache._overlayCanvas;
+    const targetRect = targetCanvas.getBoundingClientRect();
+
+    // Parent to target's parent (viewport container)
+    if (overlay.parentElement !== targetCanvas.parentElement) {
+      targetCanvas.parentElement?.appendChild(overlay);
+    }
+
+    // Match the ImageData pixel size (what we actually have to draw)
+    if (overlay.width !== imageData.width || overlay.height !== imageData.height) {
+      overlay.width  = imageData.width;
+      overlay.height = imageData.height;
+    }
+
+    // Size in CSS pixels to match the WebGL canvas visual size exactly
+    overlay.style.width  = `${targetRect.width}px`;
+    overlay.style.height = `${targetRect.height}px`;
+    overlay.style.display = 'block';
+    overlay.style.visibility = 'visible';
+
+    const ctx = overlay.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    ctx.putImageData(imageData, 0, 0);
+  }
+
+  /**
+   * Hide the overlay canvas completely so the underlying WebGL canvas is
+   * visible. Sets display:none rather than just clearing pixels, so an
+   * old blitted frame never shows through when we've moved to normal render.
+   */
+  hideOverlay(): void {
+    if (FrameCache._overlayCanvas) {
+      FrameCache._overlayCanvas.style.display = 'none';
+      const ctx = FrameCache._overlayCanvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(
+          0, 0,
+          FrameCache._overlayCanvas.width,
+          FrameCache._overlayCanvas.height,
+        );
+      }
+    }
   }
 }
+
+/** Singleton instance — shared across the app */
+export const frameCache = new FrameCache();

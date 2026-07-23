@@ -13,6 +13,7 @@
  */
 import * as THREE from 'three';
 import type { Renderer } from '../Renderer';
+import { frameCache } from '../cache/FrameCache';
 
 export interface RenderedFrame {
   bitmap: ImageBitmap;
@@ -135,6 +136,9 @@ export class FrameRenderer {
   /**
    * Render a specific frame at the export resolution.
    * beginExport() must have been called first with matching dimensions.
+   *
+   * Cache-aware: if the frame is already cached (from a previous export or
+   * Bake Preview), skips the 3D render entirely and returns the cached bitmap.
    */
   async renderFrame(
     _compId: string,
@@ -144,37 +148,72 @@ export class FrameRenderer {
     targetHeight: number,
   ): Promise<RenderedFrame> {
     if (!this._exporting) {
-      // Auto-enter export mode with these dimensions
       this.beginExport(targetWidth, targetHeight);
     }
 
     const timeSec = frameNumber / fps;
     const r = this.renderer;
+    const comp = r.composition;
 
-    r.setCacheRenderTime(timeSec);
+    // ── Frame cache check ──────────────────────────────────────
+    if (comp && frameCache.enabled) {
+      const hash = frameCache.hashFor(comp, frameNumber);
+      const cached = await frameCache.get(hash);
+      if (cached) {
+        // Convert cached ImageData → ImageBitmap (zero re-render)
+        const bitmap = await createImageBitmap(cached, {
+          resizeWidth:   targetWidth,
+          resizeHeight:  targetHeight,
+          resizeQuality: 'high',
+        });
+        return { bitmap, width: targetWidth, height: targetHeight, frameNumber, timeSec };
+      }
+    }
+
+    // ── Full render ─────────────────────────────────────────────
+    const savedTime = comp?.currentTime ?? 0;
+    if (comp) {
+      const { useCompositionStore: cs } = await import('../../state/compositionStore');
+      cs.getState().setCurrentTime(comp.id, timeSec);
+    }
 
     try {
-      // Run all the frame-preparation hooks (keyframes, effects, layers)
-      r.runBeforeRenderHooks();
-      // Actually render
-      r.renderSynchronous();
+      if (r.renderLoop.beforeRender) r.renderLoop.beforeRender();
+      if (r.renderLoop.afterRender)  r.renderLoop.afterRender();
+      r.renderer.render(r.sceneManager.scene, r.renderLoop.getCamera());
 
-      // Force GPU to complete before reading pixels
       const gl = r.renderer.getContext();
       (gl as WebGL2RenderingContext).finish();
 
       const canvas = r.renderer.domElement;
       const bitmap = await this._readCanvasToBitmap(canvas, targetWidth, targetHeight);
 
-      return {
-        bitmap,
-        width: targetWidth,
-        height: targetHeight,
-        frameNumber,
-        timeSec,
-      };
+      // Store in cache for future exports / RAM preview reuse
+      if (comp && frameCache.enabled) {
+        const hash = frameCache.hashFor(comp, frameNumber);
+        // Read pixels into ImageData and store
+        const pixelBuf = new Uint8Array(targetWidth * targetHeight * 4);
+        const glCtx = r.renderer.getContext() as WebGL2RenderingContext;
+        glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, null);
+        glCtx.readPixels(0, 0, targetWidth, targetHeight, glCtx.RGBA, glCtx.UNSIGNED_BYTE, pixelBuf);
+        // Flip Y
+        const imgData = new ImageData(targetWidth, targetHeight);
+        const rowBytes = targetWidth * 4;
+        for (let y = 0; y < targetHeight; y++) {
+          imgData.data.set(
+            pixelBuf.subarray(y * rowBytes, y * rowBytes + rowBytes),
+            (targetHeight - 1 - y) * rowBytes,
+          );
+        }
+        frameCache.set(hash, imgData, comp.id, frameNumber);
+      }
+
+      return { bitmap, width: targetWidth, height: targetHeight, frameNumber, timeSec };
     } finally {
-      r.clearCacheRenderTime();
+      if (comp) {
+        const { useCompositionStore: cs } = await import('../../state/compositionStore');
+        cs.getState().setCurrentTime(comp.id, savedTime);
+      }
     }
   }
 
@@ -215,7 +254,6 @@ export class FrameRenderer {
   /** Restore the renderer to normal live-display state after export finishes. */
   finish(): void {
     this.endExport();
-    this.renderer.restoreLiveDisplay?.();
   }
 
   // ── Internal helpers ────────────────────────────────────────────

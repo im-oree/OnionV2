@@ -7,7 +7,7 @@ import { useSelectionStore } from '../../../state/selectionStore';
 import { useProjectStore } from '../../../state/projectStore';
 import { useRecentProjectsStore } from '../../../state/recentProjectsStore';
 import { useNotificationStore } from '../../../state/notificationStore';
-import { createLayerInstance } from '../../../utils/createLayerInstance';
+
 
 /**
  * Shared Save As logic — used by both the Save (Ctrl+S) handler
@@ -83,7 +83,6 @@ export const fileMenu: MenuItemDefinition[] = [
       useCompositionStore.getState().clearAll();
       useProjectStore.getState().newProject();
       assetManager.dispose();
-      (window as any).__frameCache?.invalidateAllCompositions();
       useSelectionStore.getState().clearSelection();
       StorageManager.getInstance().closeProject();
       useNotificationStore.getState().addNotification({
@@ -244,52 +243,17 @@ export const fileMenu: MenuItemDefinition[] = [
     label: 'Import File...',
     shortcut: 'Ctrl+I',
     onClick: async () => {
-      const assets = await assetManager.importFromFilePicker();
-      if (assets.length === 0) return;
-      // Assets are already synced to projectStore by ProjectBrowserPanel's
-      // useEffect listener on assetManager.events['assets:changed'].
-      // No manual projectStore.addAsset needed here.
-      useNotificationStore.getState().addNotification({
-        type: 'success',
-        message: `Imported ${assets.length} file${assets.length > 1 ? 's' : ''} to project. Drag to viewport or timeline to add.`,
-        autoDismiss: 3000,
-      });
+      const { openImportFilePicker } = await import('../../../utils/unifiedImport');
+      // Import to project panel only — user drags to timeline manually
+      await openImportFilePicker({ addToTimeline: false });
     },
   },
   {
     id: 'file.importFolder',
     label: 'Import Folder...',
     onClick: async () => {
-      try {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.webkitdirectory = true;
-        input.onchange = async () => {
-          const files = input.files ? Array.from(input.files) : [];
-          const state = useCompositionStore.getState();
-          const compId = state.activeCompositionId;
-          const comp = compId ? state.compositions.find(c => c.id === compId) : null;
-          if (!comp) return;
-          let imported = 0;
-          for (const file of files) {
-            if (!file.type.startsWith('image/') && !file.type.startsWith('video/') && !file.type.startsWith('audio/')) continue;
-            try {
-              const asset = await assetManager.importFile(file);
-              const type = asset.type === 'video' ? 'video' : 'image';
-              const layer = createLayerInstance(type, comp, {
-                name: asset.name,
-                data: { assetId: asset.id, naturalWidth: asset.naturalWidth, naturalHeight: asset.naturalHeight },
-              });
-              state.addLayer(compId!, layer);
-              imported++;
-            } catch { /* skip */ }
-          }
-          useNotificationStore.getState().addNotification({
-            type: 'success', message: `Imported ${imported} files.`, autoDismiss: 3000,
-          });
-        };
-        input.click();
-      } catch {}
+      const { openImportFolderPicker } = await import('../../../utils/unifiedImport');
+      await openImportFolderPicker();
     },
   },
   {
@@ -346,7 +310,6 @@ export const fileMenu: MenuItemDefinition[] = [
     onClick: () => {
       StorageManager.getInstance().closeProject();
       useProjectStore.getState().newProject();
-      (window as any).__frameCache?.invalidateAllCompositions();
       useNotificationStore.getState().addNotification({
         type: 'info', message: 'Project closed.', autoDismiss: 2000,
       });

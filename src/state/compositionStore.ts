@@ -181,9 +181,30 @@ export const useCompositionStore = create<CompositionState>((set, get) => ({
     // ModalTransform.confirm()) is responsible for capturing a snapshot on completion.
     const snapshot = !skipHistory ? captureSnapshot() : null;
     set(s => ({
-      compositions: s.compositions.map(c =>
-        c.id === compId ? { ...c, layers: c.layers.map(l => l.id === layerId ? { ...l, ...updates } : l) } : c,
-      ),
+      compositions: s.compositions.map(c => {
+        if (c.id !== compId) return c;
+        return {
+          ...c,
+          layers: c.layers.map(l => {
+            if (l.id !== layerId) return l;
+            const merged = { ...l, ...updates };
+            // ⚠ Keep startFrame/endFrame synced with segments if present.
+            // Any legacy code reading layer.startFrame/endFrame directly still
+            // gets the correct bounds. segments[] remains source of truth.
+            if (merged.segments && merged.segments.length > 0) {
+              let minStart = Infinity;
+              let maxEnd = -Infinity;
+              for (const seg of merged.segments) {
+                if (seg.startFrame < minStart) minStart = seg.startFrame;
+                if (seg.endFrame > maxEnd) maxEnd = seg.endFrame;
+              }
+              if (Number.isFinite(minStart)) merged.startFrame = minStart;
+              if (Number.isFinite(maxEnd)) merged.endFrame = maxEnd;
+            }
+            return merged;
+          }),
+        };
+      }),
     }));
     markProjectDirty();
     if (!skipHistory && snapshot) {

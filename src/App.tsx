@@ -5,6 +5,7 @@ import { ToastContainer } from './ui/common/Toast';
 import { ConfirmDialogContainer } from './ui/common/ConfirmDialog';
 import { CommandPalette } from './ui/common/CommandPalette';
 import { AlertModal } from './ui/common/AlertModal';
+import { MoveSegmentsDialog } from './ui/panels/timeline/MoveSegmentsDialog';
 import { useKeyboardManager, registerAllShortcuts } from './input/KeyboardManager';
 import { useCompositionStore } from './state/compositionStore';
 import { useNavigationStore } from './state/navigationStore';
@@ -12,6 +13,7 @@ import { useRecentProjectsStore } from './state/recentProjectsStore';
 import { useEffectsStore } from './state/effectsStore';
 import { useMaskStore } from './state/maskStore';
 import { useMarkerStore } from './state/markerStore';
+import { useCacheStore } from './state/cacheStore';
 import { StorageManager } from './storage/StorageManager';
 import { autoSave } from './storage/AutoSave';
 import { crashRecovery, type PendingRecovery } from './storage/CrashRecovery';
@@ -135,6 +137,23 @@ const App: React.FC = () => {
     (window as any).__effectsStore = useEffectsStore;
     (window as any).__maskStore = useMaskStore;
     (window as any).__markerStore = useMarkerStore;
+    // Debugging: expose selection store and animation clock for split diagnosis
+    import('./state/selectionStore').then(({ useSelectionStore }) => {
+      (window as any).__selectionStore = useSelectionStore;
+    });
+    import('./ui/panels/timeline/PlaybackControls').then(({ animationClock }) => {
+      (window as any).__animationClock = animationClock;
+    });
+  }, []);
+
+  // Expose cache store actions for Preferences dialog
+  React.useEffect(() => {
+    (window as any).__cacheStoreActions = {
+      setRamMaxBytes: useCacheStore.getState().setRamMaxBytes,
+      setDiskMaxBytes: useCacheStore.getState().setDiskMaxBytes,
+      purgeRam: useCacheStore.getState().purgeRam,
+      purgeDisk: useCacheStore.getState().purgeDisk,
+    };
   }, []);
 
   // Save the last project handle to localStorage when dirty status changes
@@ -188,6 +207,7 @@ const App: React.FC = () => {
       <CommandPalette />
       <AppShell />
       <DialogManager />
+      <MoveSegmentsDialog />
       <ToastContainer />
       <ConfirmDialogContainer />
       <AlertModal />

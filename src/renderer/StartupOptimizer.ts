@@ -5,12 +5,10 @@
  * 2. Warm up WebGL context with a dummy render.
  * 3. Detect hardware profile and apply defaults.
  * 4. Load worker files eagerly for instant first use.
- * 5. Warm up the FrameCache with default settings.
  */
 import { shaderLoader } from '../renderer/shaders/ShaderLoader';
 import { getHardwareProfile } from '../config/HardwareProfile';
 import { WorkerPool } from '../workers/WorkerPool';
-import { FrameCache } from '../renderer/cache/FrameCache';
 
 /** All effect fragment shader paths to precompile at startup */
 const EFFECT_SHADER_PATHS = [
@@ -56,16 +54,6 @@ export function warmupWebGL(container: HTMLElement): void {
   }
 }
 
-/** Pre-warm the FrameCache with default hardware profile */
-export function warmupFrameCache(): void {
-  const profile = getHardwareProfile();
-  // Apply cache budget from hardware profile
-  const fc = (window as any).__frameCache as FrameCache;
-  if (fc) {
-    fc.setMaxBytes(profile.cacheBudget);
-  }
-}
-
 /** Eagerly load worker scripts (create pool immediately but don't queue work) */
 export function warmupWorkers(): WorkerPool | null {
   try {
@@ -95,10 +83,7 @@ export async function runStartupOptimizations(container?: HTMLElement): Promise<
     warmupWebGL(container);
   }
 
-  // 3. Warm up FrameCache (instant)
-  warmupFrameCache();
-
-  // 4. Warm up workers (async)
+  // 3. Warm up workers (async)
   const pool = warmupWorkers();
   if (pool) {
     // Store for later use

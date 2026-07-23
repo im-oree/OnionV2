@@ -1,5 +1,10 @@
 /**
- * RenderLoop â€” manages the requestAnimationFrame render cycle.
+ * RenderLoop — manages the requestAnimationFrame render cycle.
+ *
+ * Supports two playback modes:
+ *   normal    — standard RAF + Three.js render pipeline
+ *   blit-only — cache-only playback via setInterval blitting
+ *               (zero GPU render cost when all frames are cached)
  */
 import * as THREE from 'three';
 import { VIEWPORT_CONFIG } from '../config/viewportConfig';
@@ -9,6 +14,8 @@ export interface FrameStats {
   fps: number;
   frameCount: number;
 }
+
+export type PlaybackMode = 'normal' | 'blit-only';
 
 export class RenderLoop {
   private renderer: THREE.WebGLRenderer;
@@ -31,7 +38,15 @@ export class RenderLoop {
   private _targetFps = 0;
   private _interactive = false;
 
-  private _pausedForCacheBuild = false;
+  // ── Blit-only mode ─────────────────────────────────────────
+  private _playbackMode: PlaybackMode = 'normal';
+  private _blitIntervalId: ReturnType<typeof setInterval> | null = null;
+  private _blitFrameCallback: ((frame: number) => boolean) | null = null;
+  private _blitCurrentFrame = 0;
+  private _blitStartFrame = 0;
+  private _blitEndFrame = 0;
+  private _blitLoop = false;
+  private _blitLastTime = 0;
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -47,9 +62,17 @@ export class RenderLoop {
   public afterRender: (() => void) | null = null;
   public onFrameDropped: (() => void) | null = null;
 
+  /** Called each blit frame with the frame number. Return false to stop. */
+  public onBlitFrame: ((frame: number, timeSec: number) => void) | null = null;
+  /** Called when blit-only playback reaches the end */
+  public onBlitEnd: (() => void) | null = null;
+
   set onFrame(cb: ((stats: FrameStats) => void) | undefined) {
     this._onFrame = cb;
   }
+
+  get playbackMode(): PlaybackMode { return this._playbackMode; }
+  get isBlitMode(): boolean { return this._playbackMode === 'blit-only'; }
 
   setTargetFps(fps: number): void {
     this._targetFps = Math.max(0, fps);
@@ -61,7 +84,6 @@ export class RenderLoop {
   }
 
   requestRender(): void {
-    if (this._pausedForCacheBuild) return;
     this.needsRender = true;
     if (this.idleTimeout) {
       clearTimeout(this.idleTimeout);
@@ -94,32 +116,11 @@ export class RenderLoop {
       clearTimeout(this.idleTimeout);
       this.idleTimeout = null;
     }
+    this._stopBlitLoop();
   }
 
   render(): void {
     this.renderer.render(this.scene, this.camera);
-  }
-
-  pauseForCacheBuild(): void {
-    this._pausedForCacheBuild = true;
-    if (this.animFrameId !== null) {
-      cancelAnimationFrame(this.animFrameId);
-      this.animFrameId = null;
-    }
-    if (this.idleTimeout) {
-      clearTimeout(this.idleTimeout);
-      this.idleTimeout = null;
-    }
-  }
-
-  resumeFromCacheBuild(): void {
-    if (!this._pausedForCacheBuild) return;
-    this._pausedForCacheBuild = false;
-    if (this.running) {
-      this.needsRender = true;
-      this.lastTime = performance.now();
-      this.animFrameId = requestAnimationFrame(this.tick);
-    }
   }
 
   setCamera(camera: THREE.Camera): void {
@@ -127,16 +128,122 @@ export class RenderLoop {
   }
 
   getCamera(): THREE.Camera { return this.camera; }
-  get isPausedForCacheBuild(): boolean { return this._pausedForCacheBuild; }
   get isRunning(): boolean { return this.running; }
   get currentFps(): number { return this._currentFps; }
   get idlePaused(): boolean { return this._idlePaused; }
   get targetFps(): number { return this._targetFps; }
 
+  // ── Blit-only playback API ──────────────────────────────────
+
+  /**
+   * Switch to cache-only blit playback.
+   *
+   * @param startFrame  First frame to blit
+   * @param endFrame    Last frame (exclusive)
+   * @param fps         Target playback FPS
+   * @param loop        Whether to loop at end
+   * @param getFrame    Callback — given frame number, blit it to screen.
+   *                    Returns true if the frame was available, false to
+   *                    fall back to normal render mode.
+   */
+  startBlitPlayback(
+    startFrame: number,
+    endFrame: number,
+    fps: number,
+    loop: boolean,
+    getFrame: (frame: number) => boolean,
+  ): void {
+    this._stopBlitLoop();
+    this._playbackMode = 'blit-only';
+    this._blitCurrentFrame = startFrame;
+    this._blitStartFrame = startFrame;
+    this._blitEndFrame = endFrame;
+    this._blitLoop = loop;
+    this._blitFrameCallback = getFrame;
+    this._blitLastTime = performance.now();
+
+    const intervalMs = Math.max(8, 1000 / fps);
+
+    this._blitIntervalId = setInterval(() => {
+      this._blitTick();
+    }, intervalMs);
+  }
+
+  stopBlitPlayback(): void {
+    this._stopBlitLoop();
+    this._playbackMode = 'normal';
+    // Resume normal RAF loop
+    this.requestRender();
+  }
+
+  private _blitTick(): void {
+    if (this._playbackMode !== 'blit-only') {
+      this._stopBlitLoop();
+      return;
+    }
+
+    const frame = this._blitCurrentFrame;
+
+    // Ask callback to blit this frame
+    const ok = this._blitFrameCallback?.(frame) ?? false;
+
+    if (!ok) {
+      // Cache miss during playback — fall back to normal mode
+      console.warn(`[RenderLoop] Blit cache miss at frame ${frame} — falling back to render mode`);
+      this.stopBlitPlayback();
+      this.onBlitEnd?.();
+      return;
+    }
+
+    // Update FPS counter
+    const now = performance.now();
+    const deltaMs = now - this._blitLastTime;
+    this._blitLastTime = now;
+    this.fpsAccumulator += deltaMs;
+    this.fpsFrames++;
+    if (this.fpsAccumulator >= 500) {
+      this._currentFps = Math.round((this.fpsFrames * 1000) / this.fpsAccumulator);
+      this.fpsAccumulator = 0;
+      this.fpsFrames = 0;
+    }
+    this.frameCount++;
+
+    // Notify listeners
+    const fps = this._targetFps > 0 ? this._targetFps : 30;
+    this.onBlitFrame?.(frame, frame / fps);
+
+    // Advance frame
+    this._blitCurrentFrame++;
+    if (this._blitCurrentFrame >= this._blitEndFrame) {
+      if (this._blitLoop) {
+        this._blitCurrentFrame = this._blitStartFrame;
+      } else {
+        this._stopBlitLoop();
+        this._playbackMode = 'normal';
+        this.onBlitEnd?.();
+      }
+    }
+  }
+
+  private _stopBlitLoop(): void {
+    if (this._blitIntervalId !== null) {
+      clearInterval(this._blitIntervalId);
+      this._blitIntervalId = null;
+    }
+    if (this._playbackMode === 'blit-only') {
+      this._playbackMode = 'normal';
+    }
+    this._blitFrameCallback = null;
+  }
+
+  // ── Normal RAF tick ─────────────────────────────────────────
+
   private tick = (now: number): void => {
     if (!this.running) return;
-    if (this._pausedForCacheBuild) {
-      this.animFrameId = null;
+
+    // During blit-only mode, the RAF loop idles — setInterval drives playback
+    if (this._playbackMode === 'blit-only') {
+      this.animFrameId = requestAnimationFrame(this.tick);
       return;
     }
 
@@ -184,7 +291,6 @@ export class RenderLoop {
     try {
       this.beforeRender?.();
 
-      // FORCE correct viewport right before scene render
       const canvas = this.renderer.domElement;
       const pr = this.renderer.getPixelRatio();
       this.renderer.setViewport(0, 0, canvas.width / pr, canvas.height / pr);
@@ -193,7 +299,6 @@ export class RenderLoop {
       this.renderer.render(this.scene, this.camera);
       this.afterRender?.();
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error('[RenderLoop] frame error:', err);
     }
 
@@ -204,7 +309,6 @@ export class RenderLoop {
         frameCount: this.frameCount,
       });
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error('[RenderLoop] onFrame error:', err);
     }
 

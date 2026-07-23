@@ -18,7 +18,6 @@ import {
   FolderOpen,
   Image as ImageIcon,
   Music,
-  FileCode,
   Eye,
   Trash2,
   Edit3,
@@ -32,10 +31,12 @@ import { useCompositionStore } from '../../../state/compositionStore';
 import { useProjectStore } from '../../../state/projectStore';
 import { openNewCompositionDialog } from '../../dialogs/DialogManager';
 import { assetManager, type Asset } from '../../../storage/AssetManager';
-import { createLayerInstance } from '../../../utils/createLayerInstance';
-import { useSelectionStore } from '../../../state/selectionStore';
 import { useNotificationStore } from '../../../state/notificationStore';
-import { resolveAsset } from '../../../utils/assetResolver';
+import {
+  importFiles,
+  openImportFilePicker,
+  addAssetIdToTimeline,
+} from '../../../utils/unifiedImport';
 import { confirm } from '../../common/ConfirmDialog';
 import { useContextMenu } from '../../common/useContextMenu';
 import { ContextMenu } from '../../common/ContextMenu';
@@ -891,173 +892,26 @@ export const ProjectBrowserPanel: React.FC = () => {
     setDragOver(false);
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
-
-    let imported = 0;
-    for (const file of files) {
-      if (file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg')) {
-        try {
-          const compId = useCompositionStore.getState().activeCompositionId;
-          if (!compId) {
-            addNotif({
-              type: 'warning',
-              message: 'Create a composition first before importing SVG.',
-              autoDismiss: 3000,
-            });
-            continue;
-          }
-          const { importSvgFile } = await import('../../../utils/svgImport');
-          const count = await importSvgFile(file, compId);
-          if (count > 0) {
-            imported++;
-            addNotif({
-              type: 'success',
-              message: `Imported SVG with ${count} shape${count === 1 ? '' : 's'}`,
-              autoDismiss: 3000,
-            });
-          }
-        } catch (err) {
-          addNotif({
-            type: 'error',
-            message: `Failed to import SVG: ${(err as Error).message}`,
-          });
-        }
-        continue;
-      }
-
-      try {
-        await assetManager.importFile(file);
-        imported++;
-      } catch (err) {
-        addNotif({
-          type: 'error',
-          message: `Failed to import "${file.name}": ${(err as Error)?.message ?? 'Unknown error'}`,
-        });
-      }
-    }
-
-    if (imported > 0) {
-      addNotif({
-        type: 'success',
-        message: `Imported ${imported} file${imported > 1 ? 's' : ''}`,
-        autoDismiss: 3000,
-      });
-    }
-  }, [addNotif]);
-
-  const importFiles = useCallback(() => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.multiple = true;
-    input.accept = 'image/*,video/*,audio/*,.svg,.glb,.gltf,.obj,.ply,.stl';
-    input.onchange = async () => {
-      const files = input.files ? Array.from(input.files) : [];
-      let imported = 0;
-      for (const file of files) {
-        try { await assetManager.importFile(file); imported++; } catch { /* skip */ }
-      }
-      if (imported > 0) {
-        addNotif({
-          type: 'success',
-          message: `Imported ${imported} file${imported > 1 ? 's' : ''}`,
-          autoDismiss: 3000,
-        });
-      }
-    };
-    input.click();
-  }, [addNotif]);
-
-  const importSvgClick = useCallback(() => {
+    // Unified import handles SVG + all other supported types
     const compId = useCompositionStore.getState().activeCompositionId;
-    if (!compId) {
-      addNotif({
-        type: 'warning',
-        message: 'Create a composition first.',
-        autoDismiss: 3000,
-      });
-      return;
-    }
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.svg,image/svg+xml';
-    input.multiple = true;
-    input.onchange = async () => {
-      const files = input.files ? Array.from(input.files) : [];
-      let total = 0;
-      for (const f of files) {
-        try {
-          const { importSvgFile } = await import('../../../utils/svgImport');
-          const count = await importSvgFile(f, compId);
-          total += count;
-        } catch { /* skip */ }
-      }
-      if (total > 0) {
-        addNotif({
-          type: 'success',
-          message: `Imported ${total} shape${total === 1 ? '' : 's'}`,
-          autoDismiss: 3000,
-        });
-      }
-    };
-    input.click();
-  }, [addNotif]);
+    await importFiles(files, {
+      ...(compId ? { compIdForSvg: compId } : {}),
+    });
+  }, []);
+
+  const importFilesClick = useCallback(() => {
+    openImportFilePicker({ addToTimeline: false });
+  }, []);
 
   const handleAssetDoubleClick = useCallback((assetId: string) => {
-    const state = useCompositionStore.getState();
-    const compId = state.activeCompositionId;
-    if (!compId) {
+    const layer = addAssetIdToTimeline(assetId);
+    if (layer) {
       addNotif({
-        type: 'warning',
-        message: 'Select a composition first.',
-        autoDismiss: 3000,
+        type: 'info',
+        message: `Added to timeline`,
+        autoDismiss: 2000,
       });
-      return;
     }
-    const comp = state.compositions.find((c) => c.id === compId);
-    if (!comp) return;
-
-    const asset = resolveAsset(assetId);
-    if (!asset) {
-      addNotif({
-        type: 'warning',
-        message: 'Asset not found.',
-        autoDismiss: 3000,
-      });
-      return;
-    }
-
-    const layer = createLayerInstance(asset.type, comp, { name: asset.name });
-    const layerData = (layer as any).data ?? {};
-    layerData.assetId = asset.id;
-
-    if (asset.type === 'model3d') {
-      const fullAsset = assetManager.getAsset(asset.id);
-      layerData.url = fullAsset?.url ?? '';
-      layerData.fileName = fullAsset?.name ?? asset.name;
-      layerData.mimeType = fullAsset?.mimeType ?? 'model/gltf-binary';
-      // Detect format from file extension
-      const ext = (fullAsset?.name ?? asset.name).split('.').pop()?.toLowerCase() ?? 'glb';
-      layerData.format = (ext === 'gltf' || ext === 'glb') ? ext
-        : (ext === 'obj') ? 'obj'
-        : (ext === 'ply') ? 'ply'
-        : (ext === 'stl') ? 'stl'
-        : 'gltf';
-      layerData.scale = 1;
-    } else if (asset.type === 'video') {
-      layerData.duration = asset.duration ?? 10;
-    }
-
-    (layer as any).data = layerData;
-    state.addLayer(compId, layer);
-    useSelectionStore.getState().select({
-      type: 'layer',
-      id: layer.id,
-      compositionId: compId,
-    });
-    addNotif({
-      type: 'info',
-      message: `Added "${asset.name}" to timeline`,
-      autoDismiss: 2000,
-    });
   }, [addNotif]);
 
   const handleAssetDragStart = useCallback(
@@ -1214,21 +1068,34 @@ export const ProjectBrowserPanel: React.FC = () => {
     e.stopPropagation();
 
     const items: ContextMenuItem[] = [
-      { id: 'pm.import', label: 'Import Files...', shortcut: 'Ctrl+I', onClick: importFiles },
-      { id: 'pm.importSvg', label: 'Import SVG...', onClick: importSvgClick },
+      {
+        id: 'pm.import',
+        label: 'Import Files...',
+        shortcut: 'Ctrl+I',
+        onClick: importFilesClick,
+      },
       { id: 'pm.d1', divider: true },
       { id: 'pm.addComp', label: 'New Composition', onClick: openNewCompositionDialog },
-      { id: 'pm.newFolder', label: 'New Folder', onClick: () => {
-        const name = prompt('Folder name:', 'New Folder');
-        if (name?.trim()) addFolder(name.trim(), null);
-      }},
+      {
+        id: 'pm.newFolder',
+        label: 'New Folder',
+        onClick: () => {
+          const name = prompt('Folder name:', 'New Folder');
+          if (name?.trim()) addFolder(name.trim(), null);
+        },
+      },
       { id: 'pm.d2', divider: true },
-      { id: 'pm.selectAll', label: 'Select All', shortcut: 'Ctrl+A', onClick: () => {
-        setSelectedAssets(new Set(filteredAssets.map((a) => a.id)));
-      }},
+      {
+        id: 'pm.selectAll',
+        label: 'Select All',
+        shortcut: 'Ctrl+A',
+        onClick: () => {
+          setSelectedAssets(new Set(filteredAssets.map((a) => a.id)));
+        },
+      },
     ];
     panelCtx.open(e, items);
-  }, [importFiles, importSvgClick, filteredAssets, panelCtx, addFolder]);
+  }, [importFilesClick, filteredAssets, panelCtx, addFolder]);
 
   const handleAssetContextMenu = useCallback((e: React.MouseEvent, assetId: string) => {
     e.preventDefault();
@@ -1406,9 +1273,7 @@ export const ProjectBrowserPanel: React.FC = () => {
         >
           <Search size={14} strokeWidth={1.75} />
         </IconBtn>
-        <IconBtn onClick={importSvgClick} title="Import SVG">
-          <FileCode size={14} strokeWidth={1.75} />
-        </IconBtn>
+
         <IconBtn onClick={openNewCompositionDialog} title="New Composition">
           <Plus size={15} strokeWidth={2} />
         </IconBtn>

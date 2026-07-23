@@ -13,8 +13,6 @@ export interface TimelineState{
   visibleTrackHeight:TrackHeight; snapKeyframes:boolean;
   playbackRate:number;
   autoKey:boolean;
-  /** Auto-cache frames during playback (off by default — can interfere with interaction) */
-  autoCache:boolean;
   setPlaybackState:(s:PlaybackState)=>void;
   play:()=>void; pause:()=>void; stop:()=>void;
   togglePlayback:()=>void;
@@ -29,7 +27,6 @@ export interface TimelineState{
   setAutoKey:(v:boolean)=>void;
   toggleAutoKey:()=>void;
   toggleSnapping:()=>void;
-  toggleAutoCache:()=>void;
 }
 
 const DEFAULT_ZOOM=10;
@@ -41,22 +38,24 @@ export const useTimelineStore = create<TimelineState>((set)=>({
   workAreaStart:0, workAreaEnd:60,
   visibleTrackHeight:'normal', snapKeyframes:true, playbackRate:1,
   autoKey:false,
-  autoCache:false,
   setPlaybackState:(s)=>set({playbackState:s}),
   play:()=>set({playbackState:'playing'}),
   pause:()=>set({playbackState:'paused'}),
   stop:()=>set({playbackState:'stopped'}),
   togglePlayback:()=>set(s=>({playbackState:s.playbackState==='playing'?'paused':'playing'})),
   setTimeDisplay:(m)=>set({timeDisplay:m}),
-  setZoom:(z)=>set({zoom:Math.max(0.5,Math.min(200,z))}),
+  setZoom:(z)=>set({zoom:Math.max(0.01,Math.min(500,z))}),
   setScrollX:(x)=>set({scrollX:Math.max(0,x)}),
   setScrollY:(y)=>set({scrollY:y}),
   setSnapping:(snapping)=>set({snapping}),
   setAutoScroll:(s)=>set({autoScroll:s}),
   setLoop:(l)=>set({loop:l}),
-  zoomIn:()=>set(s=>({zoom:Math.min(200,s.zoom*1.25)})),
-  zoomOut:()=>set(s=>({zoom:Math.max(0.5,s.zoom/1.25)})),
-  zoomToFit:()=>set({zoom:DEFAULT_ZOOM}),
+  zoomIn:()=>set(s=>({zoom:Math.min(500,s.zoom*1.25)})),
+  zoomOut:()=>set(s=>({zoom:Math.max(0.01,s.zoom/1.25)})),
+  zoomToFit:()=>{
+    set({ zoom: DEFAULT_ZOOM, scrollX: 0 });
+    document.dispatchEvent(new CustomEvent('timeline:zoomToFit'));
+  },
   setWorkArea:(start,end)=>set({workAreaStart:start,workAreaEnd:end}),
   setVisibleTrackHeight:(h)=>set({visibleTrackHeight:h}),
   setSnapKeyframes:(s)=>set({snapKeyframes:s}),
@@ -64,5 +63,4 @@ export const useTimelineStore = create<TimelineState>((set)=>({
   setAutoKey:(v)=>set({autoKey:v}),
   toggleAutoKey:()=>set(s=>({autoKey:!s.autoKey})),
   toggleSnapping:()=>set(s=>({snapping:!s.snapping})),
-  toggleAutoCache:()=>set(s=>({autoCache:!s.autoCache})),
 }));

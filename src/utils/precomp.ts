@@ -248,15 +248,12 @@ export function extractFromComp(compLayerId: string): {
   sel.clearSelection();
   for (const l of adjustedLayers) {
     sel.select({ type: 'layer', id: l.id, compositionId: parentCompId }, true);
-  }
-
-  // Force a render update.
-  try {
-    const renderer = (window as any).__renderer;
-    renderer?.renderLoop?.requestRender?.();
-    renderer?.frameCache?.clear?.();
-    renderer?.gpuTextureCache?.invalidateAll?.(parentCompId);
-  } catch {}
+  }    // Force a render update.
+    try {
+      const renderer = (window as any).__renderer;
+      renderer?.renderLoop?.requestRender?.();
+      renderer?.gpuTextureCache?.invalidateAll?.(parentCompId);
+    } catch {}
 
   return { ok: true, extractedCount: adjustedLayers.length };
 }

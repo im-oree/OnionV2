@@ -10,8 +10,8 @@
  * - Background: idle prefetch → low priority
  * - No-op: nothing changed → don't render
  */
-import type { CacheQuality } from './cache/FrameCache';
-import type { AdaptiveResolution } from './cache/AdaptiveResolution';
+
+export type CacheQuality = 'full' | 'half' | 'quarter';
 
 export type RenderPriority = 'interactive' | 'playback' | 'background' | 'noop';
 
@@ -30,16 +30,11 @@ export class RenderScheduler {
   private _droppedFrames = 0;
   private _frameCount = 0;
   private _overBudgetSince = 0;
-  private _adaptiveRes?: AdaptiveResolution;
   /** Callback invoked when a render request is made — set by Renderer to call renderLoop.requestRender() */
   private _onRequestRender: (() => void) | null = null;
 
   /** Callback fired when a render should be scheduled */
   set onRequestRender(cb: (() => void) | null) { this._onRequestRender = cb; }
-
-  setAdaptiveResolution(ar: AdaptiveResolution): void {
-    this._adaptiveRes = ar;
-  }
 
   get priority(): RenderPriority { return this._priority; }
   get frameBudgetMs(): number { return this._frameBudgetMs; }
@@ -52,28 +47,22 @@ export class RenderScheduler {
     this._frameBudgetMs = fps > 0 ? 1000 / fps : 33.3;
   }
 
-  /** Request a render at the given priority. Higher priority preempts lower. */
-  request(priority: RenderPriority): void {
-    const order: RenderPriority[] = ['noop', 'background', 'playback', 'interactive'];
-    if (order.indexOf(priority) > order.indexOf(this._priority)) {
-      this._priority = priority;
-      // Notify the render loop that rendering is needed
-      this._onRequestRender?.();
-    }
+  /** Request a render. Notifies the render loop that rendering is needed. */
+  request(): void {
+    this._onRequestRender?.();
   }
 
-  /** Called by RenderLoop after rendering — resets priority and reports timing */
+  /** Called by RenderLoop after rendering — reports timing */
   didRender(renderMs: number): void {
     this._renderTimeMs = renderMs;
     this._frameCount++;
 
-    if (renderMs > this._frameBudgetMs * 0.9) {
-      this._overBudgetSince++;
+    if (renderMs > this._frameBudgetMs) {
+      if (this._overBudgetSince === 0) this._overBudgetSince = performance.now();
+      this._droppedFrames++;
     } else {
       this._overBudgetSince = 0;
     }
-
-    this._adaptiveRes?.recordFrameTime(renderMs, this._frameBudgetMs, this._priority);
 
     // Reset priority for next cycle
     this._priority = 'noop';
@@ -86,13 +75,12 @@ export class RenderScheduler {
 
   /** Get current render budget info */
   getBudget(): RenderBudget {
-    const quality = this._adaptiveRes?.currentQuality ?? 'full';
     return {
       frameBudgetMs: this._frameBudgetMs,
       renderTimeMs: this._renderTimeMs,
-      quality,
+      quality: 'full',
       droppedFrames: this._droppedFrames,
-      isOverBudget: this._overBudgetSince > 0,
+      isOverBudget: this._renderTimeMs > this._frameBudgetMs,
     };
   }
 
@@ -103,20 +91,22 @@ export class RenderScheduler {
 
   /** Should the scheduler downgrade quality? */
   get shouldDowngrade(): boolean {
-    return this._overBudgetSince >= 10;
+    return false;
   }
 
   /** Should the scheduler upgrade quality? */
   get shouldUpgrade(): boolean {
-    return this._frameCount > 30 && this._renderTimeMs < this._frameBudgetMs * 0.5;
+    return true;
   }
 
   reset(): void {
+    this._renderTimeMs = 0;
+    this._droppedFrames = 0;
     this._frameCount = 0;
     this._overBudgetSince = 0;
   }
 
   dispose(): void {
-    this._adaptiveRes = undefined;
+    this._onRequestRender = null;
   }
 }

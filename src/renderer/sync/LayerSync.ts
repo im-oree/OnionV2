@@ -5,6 +5,7 @@ import { LayerFactory } from '../layers/LayerFactory';
 import type { BaseLayerRenderer } from '../layers/BaseLayerRenderer';
 import type { RuntimeOverrides } from '../../animation/PropertyBinder';
 import { useCompositionStore } from '../../state/compositionStore';
+import { isFrameInLayer } from '../../types/layer';
 import { applyBlendModeToMaterial } from '../blending/ApplyBlendMode';
 import { useMaskStore } from '../../state/maskStore';
 import { MaskCompositor } from '../compositing/MaskCompositor';
@@ -168,7 +169,7 @@ export class LayerSync {
     for (const layer of layers) {
       const r = this.renderers.get(layer.id); if (!r) continue;
       if (layer.type === 'adjustment' || layer.type === 'camera' || layer.type === 'light' || layer.type === 'null') { r.setVisible(false); continue; }
-      const inFrame = currentFrame >= layer.startFrame && currentFrame <= layer.endFrame;
+      const inFrame = isFrameInLayer(layer, currentFrame);
       const visible = layer.visible && inFrame && (hasSolo ? !!layer.soloed : true);
       r.setVisible(visible);
       if (r.setWireframe) r.setWireframe(wireframe);

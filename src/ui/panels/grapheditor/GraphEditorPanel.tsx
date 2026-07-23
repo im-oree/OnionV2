@@ -70,24 +70,18 @@ export const GraphEditorPanel: React.FC = () => {
   const { width, height } = useContainerSize(containerRef);
   void revision;
 
-  if (!comp) {
-    return <div className="flex h-full items-center justify-center"
-      style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-disabled)' }}>
-      No composition
-    </div>;
-  }
-
-  const totalFrames = Math.floor(comp.duration * comp.fps);
-  const layers = comp.layers.filter((l) =>
-    selectedLayerIds.includes(l.id) || selectedLayerIds.length === 0);
+  // ── Derived values (safe for null comp — all hooks must be unconditional) ──
+  const fps = comp?.fps ?? 30;
+  const totalFrames = comp ? Math.floor(comp.duration * fps) : 0;
+  const layers = comp ? comp.layers.filter((l) =>
+    selectedLayerIds.includes(l.id) || selectedLayerIds.length === 0) : [];
   const animatedLayers = layers.filter((l) => engine.getAllAnimatedProperties(l.id).length > 0);
-
-  // Also include camera keyframes when camera has animated properties
   const cameraProps = engine.getAllAnimatedProperties('__camera__');
   const hasCameraKeyframes = cameraProps.length > 0;
   const hasPropertySelection = selectedPropertyKeys.size > 0;
 
   const curves = useMemo<FlatCurve[]>(() => {
+    if (!comp) return [];
     const result: FlatCurve[] = [];
 
     // Helper to build curves from a layer ID + name
@@ -111,7 +105,7 @@ export const GraphEditorPanel: React.FC = () => {
           // For multi-dim properties, compute total speed magnitude
           const firstTime = kfs[0].time;
           const lastTime = kfs[kfs.length - 1].time;
-          const sampleInterval = Math.max(1, Math.round(comp.fps / 30));
+          const sampleInterval = Math.max(1, Math.round(fps / 30));
           const speedSamples: { time: number; value: number }[] = [];
           const isMultiDim = dims > 1;
           let prevVals: (number | null)[] = Array.from({ length: dims }, () => null);
@@ -124,7 +118,7 @@ export const GraphEditorPanel: React.FC = () => {
               currentVals = [evalResult.value as number];
             }
             if (prevVals[0] !== null) {
-              const dt = sampleInterval / comp.fps;
+              const dt = sampleInterval / fps;
               let velocity: number;
               if (isMultiDim) {
                 // Compute total speed magnitude: sqrt(Σ(Δv/Δt)²)
@@ -179,9 +173,10 @@ export const GraphEditorPanel: React.FC = () => {
     }
 
     return result;
-  }, [animatedLayers, engine, propFilter, selectedPropertyKeys, hasPropertySelection, revision, graphMode, comp.fps]);
+  }, [animatedLayers, engine, propFilter, selectedPropertyKeys, hasPropertySelection, revision, graphMode, fps]);
 
   const propOptions = useMemo(() => {
+    if (!comp) return [];
     const opts: { key: string; label: string }[] = [];
     for (const layer of animatedLayers)
       for (const prop of engine.getAllAnimatedProperties(layer.id))
@@ -307,6 +302,14 @@ export const GraphEditorPanel: React.FC = () => {
   }, [frameAll]);
 
   useGraphModalTransform({ svgRef, viewBox, snapToFrame, totalFrames });
+
+  // ── Early return when no comp (AFTER all hooks — hook count stays stable) ──
+  if (!comp) {
+    return <div className="flex h-full items-center justify-center"
+      style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-disabled)' }}>
+      No composition
+    </div>;
+  }
 
   const applyPreset = (name: EasingPresetName) =>
     useKeyframeStore.getState().applyEasingPreset(name);

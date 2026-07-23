@@ -37,6 +37,14 @@ export interface SelectionState {
   clearPropertySelection: () => void;
   isPropertySelected: (key: string) => boolean;
   hasAnyPropertySelection: () => boolean;
+  /** Segment selection — Set of `${layerId}::${segmentId}` keys */
+  selectedSegmentKeys: Set<string>;
+  selectSegment: (layerId: string, segmentId: string, addToSelection?: boolean) => void;
+  deselectSegment: (layerId: string, segmentId: string) => void;
+  toggleSegmentSelection: (layerId: string, segmentId: string) => void;
+  clearSegmentSelection: () => void;
+  isSegmentSelected: (layerId: string, segmentId: string) => boolean;
+  getSelectedSegments: () => Array<{ layerId: string; segmentId: string }>;
 }
 
 export const useSelectionStore = create<SelectionState>((set, get) => ({
@@ -161,4 +169,46 @@ export const useSelectionStore = create<SelectionState>((set, get) => ({
   isPropertySelected: (key) => get().selectedPropertyKeys.has(key),
 
   hasAnyPropertySelection: () => get().selectedPropertyKeys.size > 0,
+
+  // ── Segment selection ──────────────────────────────────────
+  selectedSegmentKeys: new Set<string>(),
+
+  selectSegment: (layerId, segmentId, addToSelection = false) =>
+    set((s) => {
+      const key = `${layerId}::${segmentId}`;
+      return {
+        selectedSegmentKeys: addToSelection
+          ? new Set([...s.selectedSegmentKeys, key])
+          : new Set([key]),
+      };
+    }),
+
+  deselectSegment: (layerId, segmentId) =>
+    set((s) => {
+      const key = `${layerId}::${segmentId}`;
+      const next = new Set(s.selectedSegmentKeys);
+      next.delete(key);
+      return { selectedSegmentKeys: next };
+    }),
+
+  toggleSegmentSelection: (layerId, segmentId) => {
+    const s = get();
+    if (s.isSegmentSelected(layerId, segmentId)) {
+      s.deselectSegment(layerId, segmentId);
+    } else {
+      s.selectSegment(layerId, segmentId, true);
+    }
+  },
+
+  clearSegmentSelection: () => set({ selectedSegmentKeys: new Set() }),
+
+  isSegmentSelected: (layerId, segmentId) =>
+    get().selectedSegmentKeys.has(`${layerId}::${segmentId}`),
+
+  getSelectedSegments: () => {
+    return Array.from(get().selectedSegmentKeys).map(key => {
+      const [layerId, segmentId] = key.split('::');
+      return { layerId, segmentId };
+    });
+  },
 }));

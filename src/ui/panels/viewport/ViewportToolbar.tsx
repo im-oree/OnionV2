@@ -228,7 +228,9 @@ const PreviewScaleMenu: React.FC = () => {
 };
 
 export const ViewportToolbar: React.FC<Props> = ({ renderer }) => {
-  const [isFreeView, setIsFreeView] = useState(false);
+  const [isFreeView, setIsFreeView] = useState(
+    () => !!(window as any).__freeViewMode,
+  );
   const activeTool = useToolStore((s) => s.activeTool);
   const setActiveTool = useToolStore((s) => s.setActiveTool);
   const showGrid = useViewportStore((s) => s.settings.showGrid);
@@ -245,31 +247,35 @@ export const ViewportToolbar: React.FC<Props> = ({ renderer }) => {
   const is3D = comp?.perspective3D ?? false;
 
   useEffect(() => {
-    const update = () => {
-      setIsFreeView(
-        !!(renderer?.cameraManager as any)?.isFreeView ??
-          !!(window as any).__freeViewMode,
-      );
+    const update = (e?: Event) => {
+      // Read from the event detail (source of truth for this change)
+      // Fall back to window global (persistent state)
+      const detail = (e as CustomEvent | undefined)?.detail;
+      if (detail && typeof detail.free === 'boolean') {
+        setIsFreeView(detail.free);
+      } else {
+        setIsFreeView(!!(window as any).__freeViewMode);
+      }
     };
     document.addEventListener('viewport:viewmode', update);
     update();
     return () => document.removeEventListener('viewport:viewmode', update);
-  }, [renderer]);
+  }, []); // ← no renderer dep — event drives it
 
   const requestRender = useCallback(() => {
     renderer?.renderLoop?.requestRender?.();
   }, [renderer]);
 
   const toggleView = useCallback(() => {
-    const next = !isFreeView;
+    const current = !!(window as any).__freeViewMode;
+    const next = !current;
     (window as any).__freeViewMode = next;
-    if (renderer?.cameraManager?.setFreeView) {
-      renderer.cameraManager.setFreeView(next);
-    }
     setIsFreeView(next);
-    document.dispatchEvent(new CustomEvent('viewport:viewmode', { detail: { free: next } }));
+    document.dispatchEvent(
+      new CustomEvent('viewport:viewmode', { detail: { free: next } }),
+    );
     requestRender();
-  }, [isFreeView, renderer, requestRender]);
+  }, [requestRender]);
 
   const zoomIn = useCallback(() => {
     if (is3D && !isFreeView) {
@@ -319,17 +325,36 @@ export const ViewportToolbar: React.FC<Props> = ({ renderer }) => {
       </RailBtn>
 
       {is3D && (
-        <RailBtn
-          title={isFreeView ? 'Switch to Camera View' : 'Switch to Free View'}
-          active={isFreeView}
+        <button
           onClick={toggleView}
+          title={
+            isFreeView
+              ? 'Free View — orbit scene. Click for Camera View'
+              : 'Camera View — through comp camera. Click for Free View'
+          }
+          className="viewport-rail-btn"
+          style={{
+            background: isFreeView
+              ? 'rgba(74,222,128,0.22)'
+              : 'rgba(74,144,226,0.22)',
+            border: `1px solid ${
+              isFreeView ? 'rgba(74,222,128,0.7)' : 'rgba(74,144,226,0.7)'
+            }`,
+            color: isFreeView ? '#4ade80' : '#4A90E2',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: isFreeView
+              ? '0 0 8px rgba(74,222,128,0.3)'
+              : '0 0 8px rgba(74,144,226,0.3)',
+          }}
         >
           {isFreeView ? (
-            <Orbit size={14} strokeWidth={1.8} />
+            <Orbit size={14} strokeWidth={2.2} />
           ) : (
-            <Camera size={14} strokeWidth={1.8} />
+            <Camera size={14} strokeWidth={2.2} />
           )}
-        </RailBtn>
+        </button>
       )}
 
       {is3D && (

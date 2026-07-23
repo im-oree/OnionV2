@@ -9,6 +9,7 @@ import { TextSection } from './TextSection';
 import { CompSection } from './CompSection';
 import { EffectsSection } from './EffectsSection';
 import { VideoSection } from './VideoSection';
+import { AudioSection } from './AudioSection';
 import { ChartSection } from './ChartSection';
 import { MaskSection } from './MaskSection';
 import { SplineSection } from './SplineSection';
@@ -275,6 +276,7 @@ export const PropertiesPanel: React.FC = () => {
                 <TextAnimatorSection key={anim.id} anim={anim} compId={comp.id} layerId={single.id} />
               ))}
               {single.type === 'video' && <VideoSection layer={single} compId={comp.id} />}
+              {single.type === 'audio' && <AudioSection layer={single} compId={comp.id} />}
               {single.type === 'chart' && <ChartSection layer={single} compId={comp.id} />}
               {single.type === 'spline' && <SplineSection layer={single} compId={comp.id} />}
               {single.type === 'model3d' && <ModelSection layer={single} compId={comp.id} />}

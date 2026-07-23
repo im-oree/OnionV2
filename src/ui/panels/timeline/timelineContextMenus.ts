@@ -17,12 +17,39 @@ export function buildTimelineContextMenu(
     },
     { id: 'tl.d1', divider: true },
     {
+      id: 'tl.workToggle',
+      label: (() => {
+        const cs = useCompositionStore.getState();
+        const comp = cs.compositions.find(c => c.id === compId);
+        return comp?.workAreaEnabled ? '✓ Work Area Enabled' : 'Enable Work Area';
+      })(),
+      onClick: () => {
+        const state = useCompositionStore.getState();
+        const c = state.compositions.find(cc => cc.id === compId);
+        if (!c) return;
+        state.updateComposition(compId, {
+          workAreaEnabled: !c.workAreaEnabled,
+          // If enabling for the first time and markers are unset, set sensible defaults
+          ...(!c.workAreaEnabled && (c.workAreaStart == null || c.workAreaEnd == null) ? {
+            workAreaStart: 0,
+            workAreaEnd: c.duration,
+          } : {}),
+        });
+      },
+    },
+    {
       id: 'tl.workIn', label: 'Set Work Area In', shortcut: 'B',
-      onClick: () => useCompositionStore.getState().updateComposition(compId, { workAreaStart: frame / fps }),
+      onClick: () => useCompositionStore.getState().updateComposition(compId, {
+        workAreaStart: frame / fps,
+        workAreaEnabled: true,
+      }),
     },
     {
       id: 'tl.workOut', label: 'Set Work Area Out', shortcut: 'N',
-      onClick: () => useCompositionStore.getState().updateComposition(compId, { workAreaEnd: frame / fps }),
+      onClick: () => useCompositionStore.getState().updateComposition(compId, {
+        workAreaEnd: frame / fps,
+        workAreaEnabled: true,
+      }),
     },
     { id: 'tl.d2', divider: true },
     {

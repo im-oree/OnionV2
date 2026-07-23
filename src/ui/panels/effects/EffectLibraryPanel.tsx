@@ -276,16 +276,38 @@ const EffectCard: React.FC<{
   const isAnimated = useMemo(() => frameCount > 1, [frameCount]);
 
   // Load thumbnail as an HTMLImageElement so we know its natural size and
-  // can draw it precisely into the canvas.
+  // can draw it precisely into the canvas. Retries every 500ms while the
+  // generator returns null (e.g. WebGL renderer not attached yet at mount).
   useEffect(() => {
     let cancelled = false;
-    effectThumbnailGenerator.getThumbnail(def.type).then((url) => {
-      if (cancelled || !url) return;
+    let timer: number | null = null;
+
+    const tryLoad = async () => {
+      if (cancelled) return;
+      let url: string | null = null;
+      try {
+        url = await effectThumbnailGenerator.getThumbnail(def.type);
+      } catch (err) {
+        console.warn('[EffectCard] getThumbnail threw', def.type, err);
+      }
+      if (cancelled) return;
+      if (!url) {
+        timer = window.setTimeout(tryLoad, 500);
+        return;
+      }
       const img = new Image();
       img.onload = () => { if (!cancelled) setThumbImg(img); };
+      img.onerror = () => {
+        if (!cancelled) timer = window.setTimeout(tryLoad, 800);
+      };
       img.src = url;
-    });
-    return () => { cancelled = true; };
+    };
+
+    tryLoad();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
   }, [def.type]);
 
   // Draw current frame into the canvas. For animated thumbs, cycle frames.
@@ -304,8 +326,14 @@ const EffectCard: React.FC<{
       : img.naturalWidth;
 
     // Canvas physical size — use DPR for crispness
+    // If layout hasn't happened yet, bail out. The ResizeObserver below will
+    // bump `resizeKey` once the canvas has a real CSS width, re-running this
+    // effect with a valid size. Without this guard we'd size the backing
+    // store to 1x1 and the image would render as a dot in the top-left.
+    const cssSize = canvas.clientWidth;
+    if (cssSize < 2) return;
+
     const dpr = window.devicePixelRatio || 1;
-    const cssSize = canvas.clientWidth;   // container-driven CSS size
     const pxSize = Math.max(1, Math.round(cssSize * dpr));
     if (canvas.width !== pxSize || canvas.height !== pxSize) {
       canvas.width = pxSize;
@@ -354,10 +382,10 @@ const EffectCard: React.FC<{
   useEffect(() => {
     if (!canvasRef.current) return;
     const canvas = canvasRef.current;
-    let lastW = canvas.clientWidth;
+    let lastW = 0; // start at 0 so the first real measurement always triggers
     const observer = new ResizeObserver(() => {
       const w = canvas.clientWidth;
-      if (Math.abs(w - lastW) > 2) {
+      if (w > 0 && w !== lastW) {
         lastW = w;
         setResizeKey(k => k + 1);
       }

@@ -1,31 +1,84 @@
-import React,{useCallback,useRef} from 'react';
+import React, { useCallback, useState } from 'react';
+import { useLayoutStore } from '../../state/layoutStore';
 
-type Dir = 'horizontal'|'vertical';
-interface Props{direction:Dir;onDrag:(d:number)=>void;onDragStart?:()=>void;onDragEnd?:()=>void}
+interface Props {
+  splitId: string;
+  direction: 'h' | 'v';
+  containerSize: number;
+  ratio: number;
+}
 
-export const Splitter:React.FC<Props> = ({direction,onDrag,onDragStart,onDragEnd})=>{
-  const dragging=useRef(false);
-  const lastPos=useRef(0);
+export const Splitter: React.FC<Props> = ({
+  splitId, direction, containerSize, ratio,
+}) => {
+  const resizeSplit = useLayoutStore((s) => s.resizeSplit);
+  const [hover, setHover] = useState(false);
+  const [active, setActive] = useState(false);
 
-  const handleMouseDown=useCallback((e:React.MouseEvent)=>{
-    e.preventDefault();
-    dragging.current=true;
-    lastPos.current=direction==='horizontal'?e.clientY:e.clientX;
-    onDragStart?.();
-    const mm=(e:MouseEvent)=>{if(!dragging.current)return;const cp=direction==='horizontal'?e.clientY:e.clientX;const d=cp-lastPos.current;lastPos.current=cp;onDrag(d)};
-    const mu=()=>{dragging.current=false;onDragEnd?.();document.removeEventListener('mousemove',mm);document.removeEventListener('mouseup',mu);document.body.style.cursor=''};
-    document.body.style.cursor=direction==='horizontal'?'row-resize':'col-resize';
-    document.addEventListener('mousemove',mm);document.addEventListener('mouseup',mu);
-  },[direction,onDrag,onDragStart,onDragEnd]);
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setActive(true);
+      const startPos = direction === 'h' ? e.clientX : e.clientY;
+      const startRatio = ratio;
 
-  return(
+      const onMove = (ev: MouseEvent) => {
+        const currentPos = direction === 'h' ? ev.clientX : ev.clientY;
+        const delta = currentPos - startPos;
+        const newRatio = startRatio + delta / containerSize;
+        resizeSplit(splitId, newRatio);
+      };
+      const onUp = () => {
+        setActive(false);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+      };
+      document.body.style.cursor = direction === 'h' ? 'col-resize' : 'row-resize';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    },
+    [direction, ratio, containerSize, splitId, resizeSplit],
+  );
+
+  const isH = direction === 'h';
+  const showColor = active
+    ? 'var(--color-accent, #5865ff)'
+    : hover
+    ? 'rgba(120,140,220,0.6)'
+    : 'transparent';
+
+  return (
     <div
-      className={[
-        'splitter shrink-0 bg-surface relative z-panel',
-        'transition-colors duration-fast hover:bg-accent active:bg-accent',
-        direction==='horizontal' ? 'w-full h-splitter cursor-row-resize' : 'w-splitter h-full cursor-col-resize',
-      ].join(' ')}
       onMouseDown={handleMouseDown}
-    />
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        flexShrink: 0,
+        cursor: isH ? 'col-resize' : 'row-resize',
+        width: isH ? 4 : '100%',
+        height: isH ? '100%' : 4,
+        position: 'relative',
+        zIndex: 5,
+      }}
+    >
+      {/* Visible splitter line — thinner than hit area for cleaner look */}
+      <div style={{
+        position: 'absolute',
+        inset: 0,
+        margin: isH ? '0 1px' : '1px 0',
+        background: showColor,
+        borderRadius: 1,
+        transition:
+          'background 180ms cubic-bezier(0.4, 0, 0.2, 1), ' +
+          'transform 180ms cubic-bezier(0.4, 0, 0.2, 1)',
+        transform: active ? (isH ? 'scaleX(1.5)' : 'scaleY(1.5)') : 'scale(1)',
+        transformOrigin: 'center',
+        boxShadow: active
+          ? '0 0 8px rgba(88,101,255,0.4)'
+          : 'none',
+      }} />
+    </div>
   );
 };

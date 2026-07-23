@@ -1,13 +1,25 @@
 /**
- * AudioLayerRenderer — manages HTMLAudioElement playback for audio layers.
- * Audio layers have no visual representation in the viewport; they only play sound.
+ * AudioLayerRenderer — manages audio playback with Web Audio API pipeline
+ * for volume, pan, and fade envelope control.
+ *
+ * Pipeline: HTMLAudioElement → MediaElementSource → GainNode → StereoPannerNode → destination
  */
-import type { Layer } from '../../types/layer';
-import type { AudioData } from '../../types/layer';
+import type { Layer, AudioData, FadeCurve } from '../../types/layer';
+import { getActiveSegment } from '../../types/layer';
 import { assetManager } from '../../storage/AssetManager';
 import { useProjectStore } from '../../state/projectStore';
+import { computeFadeEnvelope } from '../audio/audioEnvelope';
 
-/** Global set of audio elements that need to be unlocked on next user gesture. */
+/** Shared AudioContext across all audio layers */
+let _sharedCtx: AudioContext | null = null;
+function getAudioContext(): AudioContext {
+  if (!_sharedCtx) {
+    _sharedCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  }
+  return _sharedCtx;
+}
+
+/** Global unlock handler for autoplay policy */
 const pendingUnlock = new Set<HTMLAudioElement>();
 let unlockHandlerInstalled = false;
 
@@ -15,18 +27,15 @@ function installUnlockHandler(): void {
   if (unlockHandlerInstalled) return;
   unlockHandlerInstalled = true;
   const unlock = () => {
-    // "Prime" every pending audio element by calling play()+pause() inside
-    // this real user-gesture callback. Subsequent programmatic play() calls
-    // will then be allowed by the browser.
+    const ctx = getAudioContext();
+    if (ctx.state === 'suspended') ctx.resume();
     for (const a of pendingUnlock) {
       const wasMuted = a.muted;
       a.muted = true;
       a.play().then(() => {
         a.pause();
         a.muted = wasMuted;
-      }).catch(() => {
-        a.muted = wasMuted;
-      });
+      }).catch(() => { a.muted = wasMuted; });
     }
     pendingUnlock.clear();
   };
@@ -38,13 +47,15 @@ function installUnlockHandler(): void {
 export class AudioLayerRenderer {
   readonly id: string;
   private _audio: HTMLAudioElement | null = null;
+  private _source: MediaElementAudioSourceNode | null = null;
+  private _gainNode: GainNode | null = null;
+  private _panNode: StereoPannerNode | null = null;
   private _assetId: string = '';
   private _disposed = false;
   private _ready = false;
   private _wasPlayingWhenLoaded = false;
   private _lastKnownLocalTime = 0;
   private _loggedLoad = false;
-  private _unlocked = false;
 
   constructor(id: string) {
     this.id = id;
@@ -57,10 +68,24 @@ export class AudioLayerRenderer {
     const data = layer.data as AudioData | undefined;
     if (!data || !data.assetId) return;
 
-    const layerStartSec = layer.startFrame / compFps;
-    const layerEndSec = layer.endFrame / compFps;
-    const inRange = currentTime >= layerStartSec && currentTime <= layerEndSec;
-    const localTime = Math.max(0, currentTime - layerStartSec);
+    // Segment-aware audio
+    const currentFrame = Math.floor(currentTime * compFps);
+    const activeSeg = getActiveSegment(layer, currentFrame);
+
+    if (!activeSeg) {
+      // Outside all segments — pause and skip
+      this._wasPlayingWhenLoaded = false;
+      if (this._audio && !this._audio.paused) this._audio.pause();
+      if (data.assetId !== this._assetId) this._loadAudio(data.assetId, layer);
+      return;
+    }
+
+    const segStartSec = activeSeg.startFrame / compFps;
+    const segEndSec = activeSeg.endFrame / compFps;
+    const inRange = currentTime >= segStartSec && currentTime <= segEndSec;
+    const localTime = Math.max(0,
+      (currentTime - segStartSec) + (activeSeg.sourceOffset / compFps),
+    );
     this._lastKnownLocalTime = localTime;
 
     if (data.assetId !== this._assetId) {
@@ -70,17 +95,43 @@ export class AudioLayerRenderer {
     const audio = this._audio;
     if (!audio) return;
 
-    // Support keyframed volume (0-100 scale from keyframes, 0-1 for audio element)
-    const rawVol = data.volume;
-    let volume = (typeof rawVol === 'number' && isFinite(rawVol)) ? rawVol : 1;
-    // If volume is > 1, assume it's in 0-100 percentage scale and normalize
-    if (volume > 1) volume = volume / 100;
-    audio.volume = Math.max(0, Math.min(1, volume));
+    // ── Compute effective volume: base * fade envelope ──
+    let baseVolume = (typeof data.volume === 'number' && isFinite(data.volume)) ? data.volume : 1;
+    if (baseVolume > 1) baseVolume /= 100;
+    baseVolume = Math.max(0, Math.min(1, baseVolume));
+
+    const envelope = computeFadeEnvelope(
+      currentTime,
+      segStartSec,
+      segEndSec,
+      data.fadeIn ?? 0,
+      data.fadeOut ?? 0,
+      data.fadeInCurve ?? 'linear',
+      data.fadeOutCurve ?? 'linear',
+      data.fadeInBezier,
+      data.fadeOutBezier,
+    );
+    const effectiveVolume = baseVolume * envelope;
+
+    // Apply via Web Audio gain node if available, else fall back to element volume
+    if (this._gainNode) {
+      this._gainNode.gain.value = effectiveVolume;
+    } else {
+      audio.volume = effectiveVolume;
+    }
+
+    // ── Apply pan (-1..+1) ──
+    const pan = Math.max(-1, Math.min(1, data.pan ?? 0));
+    if (this._panNode) {
+      this._panNode.pan.value = pan;
+    }
+
     audio.muted = !!data.muted;
     const rate = data.playbackRate;
     const safeRate = (typeof rate === 'number' && isFinite(rate) && rate > 0) ? rate : 1;
     if (audio.playbackRate !== safeRate) audio.playbackRate = safeRate;
 
+    // Play / pause / seek
     if (isPlaying && inRange) {
       if (this._ready) {
         if (audio.paused) {
@@ -91,8 +142,6 @@ export class AudioLayerRenderer {
           if (p && typeof p.catch === 'function') {
             p.catch((err) => {
               if (err?.name === 'NotAllowedError') {
-                // Autoplay blocked. Queue for unlock on next gesture,
-                // and remember we WANT to be playing so we resume then.
                 this._wasPlayingWhenLoaded = true;
                 pendingUnlock.add(audio);
                 console.warn('[AudioLayer] Autoplay blocked — will start after next user gesture');
@@ -106,16 +155,13 @@ export class AudioLayerRenderer {
           if (drift > 0.15) audio.currentTime = localTime;
         }
       } else {
-        // Not loaded yet — remember to play when canplay fires.
         this._wasPlayingWhenLoaded = true;
       }
     } else {
-      // Not playing, or scrubbed outside layer range → pause.
       this._wasPlayingWhenLoaded = false;
       if (!audio.paused) audio.pause();
       if (inRange && Math.abs(audio.currentTime - localTime) > 0.01) {
-        // Only re-seek when inside range; otherwise leave the element alone.
-        try { audio.currentTime = localTime; } catch { /* seek errors when not ready */ }
+        try { audio.currentTime = localTime; } catch {}
       }
     }
   }
@@ -128,6 +174,7 @@ export class AudioLayerRenderer {
   dispose(): void {
     this._disposed = true;
     this._wasPlayingWhenLoaded = false;
+    this._teardownAudioGraph();
     if (this._audio) {
       pendingUnlock.delete(this._audio);
       this._audio.pause();
@@ -137,13 +184,20 @@ export class AudioLayerRenderer {
     }
   }
 
+  private _teardownAudioGraph(): void {
+    try { this._panNode?.disconnect(); } catch {}
+    try { this._gainNode?.disconnect(); } catch {}
+    try { this._source?.disconnect(); } catch {}
+    this._panNode = null;
+    this._gainNode = null;
+    this._source = null;
+  }
+
   private _loadAudio(assetId: string, layer: Layer): void {
     this._assetId = assetId;
     this._ready = false;
-    // NOTE: do NOT reset _wasPlayingWhenLoaded here — the sync() call that
-    // triggered this load may set it right after we return.
     this._loggedLoad = false;
-    this._unlocked = false;
+    this._teardownAudioGraph();
 
     if (this._audio) {
       pendingUnlock.delete(this._audio);
@@ -153,7 +207,6 @@ export class AudioLayerRenderer {
       this._audio = null;
     }
 
-    // Resolve asset URL directly from both stores
     let url: string | null = null;
     const fromManager = assetManager.getAsset(assetId);
     if (fromManager?.url) url = fromManager.url;
@@ -177,17 +230,30 @@ export class AudioLayerRenderer {
     const onReady = () => {
       if (this._ready || this._disposed) return;
       this._ready = true;
-      console.log(`[AudioLayer] Audio loaded and ready: ${layer.name} (${assetId}) dur=${audio.duration}`);
+
+      // Set up Web Audio graph now that audio is ready
+      try {
+        const ctx = getAudioContext();
+        // MediaElementSource can only be created once per element — if it
+        // fails we fall back to plain HTMLAudioElement.volume
+        this._source = ctx.createMediaElementSource(audio);
+        this._gainNode = ctx.createGain();
+        this._panNode = ctx.createStereoPanner();
+        this._source.connect(this._gainNode);
+        this._gainNode.connect(this._panNode);
+        this._panNode.connect(ctx.destination);
+      } catch (err) {
+        console.warn('[AudioLayer] Web Audio setup failed, using element volume:', err);
+        this._teardownAudioGraph();
+      }
+
       if (this._wasPlayingWhenLoaded) {
-        try { audio.currentTime = this._lastKnownLocalTime; } catch { /* ignore */ }
+        try { audio.currentTime = this._lastKnownLocalTime; } catch {}
         const p = audio.play();
         if (p && typeof p.catch === 'function') {
           p.catch((err) => {
             if (err?.name === 'NotAllowedError') {
               pendingUnlock.add(audio);
-              console.warn('[AudioLayer] Deferred play blocked by autoplay policy — will start on next user gesture');
-            } else {
-              console.warn('[AudioLayer] Deferred play failed:', err?.message ?? err);
             }
           });
         }
@@ -208,8 +274,6 @@ export class AudioLayerRenderer {
 
     audio.src = url;
     audio.load();
-    // Pre-register for unlock so the FIRST user gesture (usually the Play
-    // click that got us here) primes this element too.
     pendingUnlock.add(audio);
     this._audio = audio;
   }

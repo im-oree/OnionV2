@@ -6,6 +6,7 @@ import { useSelectionStore } from '../../../state/selectionStore';
 import { useNotificationStore } from '../../../state/notificationStore';
 import { PlaybackControls, animationClock } from './PlaybackControls';
 import { TimelineHeader } from './TimelineHeader';
+import { EditToolbar } from './EditToolbar';
 import { TimelineRuler } from './TimelineRuler';
 import { KeyframeArea } from './KeyframeArea';
 import { OutlinerTracks } from './OutlinerTracks';
@@ -15,10 +16,8 @@ import { buildTimelineContextMenu } from './timelineContextMenus';
 import { useKeyframeModal } from './useKeyframeModal';
 import { useKeyframeShortcuts } from './useKeyframeShortcuts';
 import { useSplitLayer, useTrimToPlayhead, useRippleDelete } from './useSplitLayer';
-import { CacheIndicator } from './CacheIndicator';
-import { assetManager } from '../../../storage/AssetManager';
+
 import { createLayerInstance } from '../../../utils/createLayerInstance';
-import { useProjectStore } from '../../../state/projectStore';
 
 export const TimelinePanel: React.FC = () => {
   const comp = useCompositionStore(s =>
@@ -43,22 +42,7 @@ export const TimelinePanel: React.FC = () => {
   const currentFrame = comp ? Math.floor(comp.currentTime * comp.fps) : 0;
   const fps = comp?.fps ?? 30;
 
-  const [buildProgress, setBuildProgress] = useState<{ currentFrame: number; totalFrames: number } | null>(null);
-  const [isBuilding, setIsBuilding] = useState(false);
   const [timelineDrop, setTimelineDrop] = useState(false);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const builder = (window as any).__ramPreviewBuilder;
-      if (!builder) { setIsBuilding(false); setBuildProgress(null); return; }
-      if (builder.isBuilding) {
-        setIsBuilding(true);
-        const p = builder.progress;
-        if (p && p.totalFrames > 0) setBuildProgress({ currentFrame: p.currentFrame, totalFrames: p.totalFrames });
-      } else { setIsBuilding(false); setBuildProgress(null); }
-    }, 200);
-    return () => clearInterval(interval);
-  }, []);
 
   useKeyframeModal(zoom, totalFrames);
   useKeyframeShortcuts();
@@ -74,25 +58,28 @@ export const TimelinePanel: React.FC = () => {
       const isCtrl = e.ctrlKey || e.metaKey;
       const isShift = e.shiftKey;
 
-      // Ctrl+Shift+D: Split at playhead
+      // Split at playhead — Ctrl+Shift+D
       if (isCtrl && isShift && (e.key === 'd' || e.key === 'D')) {
         e.preventDefault(); splitLayer(); return;
       }
-      // Ctrl+[: Trim in (set layer start to playhead)
+      // Trim in / delete before — Ctrl+[
       if (isCtrl && e.key === '[') {
         e.preventDefault(); trimToPlayhead('in'); return;
       }
-      // Ctrl+]: Trim out (set layer end to playhead)
+      // Trim out / delete after — Ctrl+]
       if (isCtrl && e.key === ']') {
         e.preventDefault(); trimToPlayhead('out'); return;
       }
-      // Alt+[: Ripple trim in (shift all layers left)
+      // Ripple trim — Alt+[ / Alt+]
       if (e.altKey && e.key === '[') {
         e.preventDefault(); trimToPlayhead('in'); return;
       }
-      // Alt+]: Ripple trim out (shift all layers right)
       if (e.altKey && e.key === ']') {
         e.preventDefault(); trimToPlayhead('out'); return;
+      }
+      // Ripple delete — Shift+Del (exclusive: no Ctrl/Alt)
+      if (isShift && !isCtrl && !e.altKey && (e.key === 'Delete' || e.key === 'Backspace')) {
+        e.preventDefault(); rippleDelete(); return;
       }
     };
     document.addEventListener('keydown', handler);
@@ -150,16 +137,30 @@ export const TimelinePanel: React.FC = () => {
   }, [setScrollX]);
 
   useEffect(() => {
-    const el = rightSideRef.current; if (!el) return;
+    const el = rootRef.current; // ← attach to WHOLE timeline panel, not just tracks
+    if (!el) return;
+
     const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey || e.shiftKey)) return;
+
+      // Only handle if the mouse is over the tracks area (right side of panel)
+      const rightSide = rightSideRef.current;
+      if (!rightSide) return;
+      const rect = rightSide.getBoundingClientRect();
+      if (
+        e.clientX < rect.left || e.clientX > rect.right ||
+        e.clientY < rect.top || e.clientY > rect.bottom
+      ) return;
+
       if (e.ctrlKey || e.metaKey) {
-        e.preventDefault(); e.stopPropagation();
-        const rect = el.getBoundingClientRect();
+        e.preventDefault();
+        e.stopPropagation();
         const mouseX = e.clientX - rect.left;
         const st = useTimelineStore.getState();
         const oldZ = st.zoom;
         const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-        const newZ = Math.max(0.5, Math.min(200, oldZ * factor));
+        const newZ = Math.max(0.01, Math.min(500, oldZ * factor));
+        if (newZ === oldZ) return; // hit clamp — nothing to do
         const frameUnder = (mouseX + st.scrollX) / oldZ;
         setZoom(newZ);
         const newSx = Math.max(0, frameUnder * newZ - mouseX);
@@ -167,11 +168,37 @@ export const TimelinePanel: React.FC = () => {
         if (tracksScrollRef.current) tracksScrollRef.current.scrollLeft = newSx;
         return;
       }
-      if (e.shiftKey && tracksScrollRef.current) { e.preventDefault(); tracksScrollRef.current.scrollLeft += e.deltaY; }
+
+      if (e.shiftKey && tracksScrollRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        tracksScrollRef.current.scrollLeft += e.deltaY;
+      }
     };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+
+    // ⚠ Register in CAPTURE phase so we run BEFORE the global App handler
+    // that calls preventDefault on all Ctrl+wheel events
+    el.addEventListener('wheel', onWheel, { passive: false, capture: true });
+    return () => el.removeEventListener('wheel', onWheel, { capture: true } as EventListenerOptions);
   }, [setZoom, setScrollX]);
+
+  // Handle zoom-to-fit event
+  useEffect(() => {
+    const handler = () => {
+      if (!comp) return;
+      const el = rightSideRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const availableWidth = Math.max(200, rect.width - 40);
+      const idealZoom = availableWidth / Math.max(1, totalFrames);
+      const clamped = Math.max(0.01, Math.min(500, idealZoom));
+      setZoom(clamped);
+      setScrollX(0);
+      if (tracksScrollRef.current) tracksScrollRef.current.scrollLeft = 0;
+    };
+    document.addEventListener('timeline:zoomToFit', handler);
+    return () => document.removeEventListener('timeline:zoomToFit', handler);
+  }, [comp, totalFrames, setZoom, setScrollX]);
 
   useEffect(() => {
     const el = rightSideRef.current; if (!el) return;
@@ -215,7 +242,7 @@ export const TimelinePanel: React.FC = () => {
   }, [comp, scrollX, zoom, fps, ctxMenu]);
 
   // Handle asset or effect drop from project panel onto timeline
-  const handleTimelineDrop = useCallback((e: React.DragEvent) => {
+  const handleTimelineDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     setTimelineDrop(false);
     if (!comp) return;
@@ -265,34 +292,23 @@ export const TimelinePanel: React.FC = () => {
       return;
     }
 
-    // 2. Asset dropped — create image/video/audio layer
+    // 2. Asset dropped — use unified add-to-timeline (handles 3D, video, audio, image correctly)
     const assetId = e.dataTransfer.getData('application/onion-asset');
-    if (!assetId) return;
-    // Try assetManager first, fall back to projectStore
-    let asset = assetManager.getAsset(assetId);
-    if (!asset) {
-      const pa = useProjectStore.getState().project.assets.find(a => a.id === assetId);
-      if (pa) {
-        asset = { id: pa.id, name: pa.name, type: pa.type as any, url: pa.path, size: pa.size, mimeType: pa.mimeType, importedAt: pa.importedAt, missing: false, naturalWidth: pa.naturalWidth ?? 100, naturalHeight: pa.naturalHeight ?? 100, duration: pa.duration } as any;
-      }
-    }
-    if (!asset) {
-      useNotificationStore.getState().addNotification({ type: 'warning', message: 'Asset not found — try re-importing.', autoDismiss: 3000 });
+    if (assetId) {
+      const { addAssetIdToTimeline } = await import('../../../utils/unifiedImport');
+      addAssetIdToTimeline(assetId, { compId: comp.id });
       return;
     }
-    const type = asset.type === 'video' ? 'video' : asset.type === 'audio' ? 'audio' : 'image';
-    const layer = createLayerInstance(type, comp, {
-      name: asset.name,
-      zIndex: comp.layers.length + 1,
-      data: type === 'video'
-        ? { assetId: asset.id, naturalWidth: asset.naturalWidth ?? 100, naturalHeight: asset.naturalHeight ?? 100, duration: asset.duration ?? 10, muted: false, volume: 1, playbackRate: 1 }
-        : type === 'audio'
-          ? { assetId: asset.id, duration: asset.duration ?? 10, volume: 1, muted: false, playbackRate: 1 }
-          : { assetId: asset.id, naturalWidth: asset.naturalWidth ?? 100, naturalHeight: asset.naturalHeight ?? 100 },
-    });
-    useCompositionStore.getState().addLayer(comp.id, layer);
-    useSelectionStore.getState().select({ type: 'layer', id: layer.id, compositionId: comp.id });
-    try { (window as any).__renderer?.renderLoop?.requestRender?.(); } catch { /* ok */ }
+
+    // 3. OS files dropped directly onto timeline — import + add to timeline
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      const { importFiles } = await import('../../../utils/unifiedImport');
+      await importFiles(files, {
+        compIdForSvg: comp.id,
+        addToTimeline: true,
+      });
+    }
   }, [comp]);
 
   if (!comp) {
@@ -324,6 +340,7 @@ export const TimelinePanel: React.FC = () => {
     >
       <PlaybackControls comp={comp} totalFrames={totalFrames} currentFrame={currentFrame} />
       <TimelineHeader comp={comp} currentFrame={currentFrame} totalFrames={totalFrames} />
+      <EditToolbar />
 
       <div className="flex flex-1 overflow-hidden">
         <div
@@ -357,15 +374,15 @@ export const TimelinePanel: React.FC = () => {
             scrollX={scrollX} compId={comp.id} fps={fps}
             workAreaStart={comp.workAreaStart != null ? Math.floor(comp.workAreaStart * fps) : undefined}
             workAreaEnd={comp.workAreaEnd != null ? Math.floor(comp.workAreaEnd * fps) : undefined}
+            workAreaEnabled={!!comp.workAreaEnabled}
           />
           <div ref={tracksScrollRef} className="flex-1 overflow-auto relative" onScroll={onTracksScroll}
                style={{ background: 'var(--timeline-track-bg)' }}>
-            <div style={{ width: totalFrames * zoom + 100, minHeight: '100%', position: 'relative' }}>
-              <CacheIndicator
-                compId={comp.id} totalFrames={totalFrames}
-                zoom={zoom} scrollX={scrollX}
-                isBuilding={isBuilding} buildProgress={buildProgress}
-              />
+            <div style={{
+              width: totalFrames * zoom + 800, // extra space past comp end for out-of-comp visualization
+              minHeight: '100%',
+              position: 'relative',
+            }}>
               <KeyframeArea
                 layers={layers} currentFrame={currentFrame}
                 zoom={zoom} totalFrames={totalFrames} compId={comp.id}

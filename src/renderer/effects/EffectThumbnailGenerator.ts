@@ -226,7 +226,7 @@ class EffectThumbnailGeneratorClass {
     const def = effectRegistry.get(type);
     if (!def) return null;
     if (def.passes === 0) return null;
-    if (!this.renderer) return null;
+    if (!this.renderer) { console.warn('[EffectThumb] no renderer yet for animated', type); return null; }
 
     const sample = this._getSampleTexture();
     if (!sample) return null;
@@ -300,7 +300,7 @@ class EffectThumbnailGeneratorClass {
     const def = effectRegistry.get(type);
     if (!def) return null;
     if (def.passes === 0) return null;
-    if (!this.renderer) return null;
+    if (!this.renderer) { console.warn('[EffectThumb] no renderer yet for', type); return null; }
 
     const sample = this._getSampleTexture();
     if (!sample) return null;

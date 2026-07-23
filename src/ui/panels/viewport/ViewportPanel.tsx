@@ -383,7 +383,9 @@ export const ViewportPanel: React.FC = () => {
   const isHovering = useRef(false);
   const lastMouse = useRef({ x: 0, y: 0 });
   const [dropHighlight, setDropHighlight] = useState(false);
-  const [isFreeView, setIsFreeView] = useState(false);
+  const [isFreeView, setIsFreeView] = useState(
+    () => !!(window as any).__freeViewMode,
+  );
 
   const viewportSize = useViewportSize(
     containerRef as React.RefObject<HTMLElement | null>,
@@ -426,19 +428,18 @@ export const ViewportPanel: React.FC = () => {
 
   // Track free view mode changes
   useEffect(() => {
-    const handler = () => {
-      setIsFreeView(
-        !!(renderer?.cameraManager as any)?.isFreeView,
-      );
+    const handler = (e?: Event) => {
+      const detail = (e as CustomEvent | undefined)?.detail;
+      if (detail && typeof detail.free === 'boolean') {
+        setIsFreeView(detail.free);
+      } else {
+        setIsFreeView(!!(window as any).__freeViewMode);
+      }
     };
-
     document.addEventListener('viewport:viewmode', handler);
     handler();
-
-    return () => {
-      document.removeEventListener('viewport:viewmode', handler);
-    };
-  }, [renderer]);
+    return () => document.removeEventListener('viewport:viewmode', handler);
+  }, []);
 
   // Mouse tracking for context menu positioning
   useEffect(() => {

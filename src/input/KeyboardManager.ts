@@ -140,7 +140,7 @@ export function registerAllShortcuts(): void {
       const id = cs.useCompositionStore.getState().activeCompositionId;
       if (id) {
         const comp = cs.useCompositionStore.getState().compositions.find(x => x.id === id);
-        cs.useCompositionStore.getState().updateComposition(id, { workAreaStart: c.currentFrame / (comp?.fps ?? 30) });
+        cs.useCompositionStore.getState().updateComposition(id, { workAreaStart: c.currentFrame / (comp?.fps ?? 30), workAreaEnabled: true });
       }
     });
   }, remappable: true });
@@ -151,7 +151,7 @@ export function registerAllShortcuts(): void {
       const id = cs.useCompositionStore.getState().activeCompositionId;
       if (id) {
         const comp = cs.useCompositionStore.getState().compositions.find(x => x.id === id);
-        cs.useCompositionStore.getState().updateComposition(id, { workAreaEnd: c.currentFrame / (comp?.fps ?? 30) });
+        cs.useCompositionStore.getState().updateComposition(id, { workAreaEnd: c.currentFrame / (comp?.fps ?? 30), workAreaEnabled: true });
       }
     });
   }, remappable: true });
