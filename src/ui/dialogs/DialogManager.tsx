@@ -6,6 +6,7 @@ import { WorkspacePicker } from './WorkspacePicker';
 import { ProjectSettingsDialog } from './ProjectSettingsDialog';
 import { ExportSettingsDialog } from './ExportSettingsDialog';
 import { ExportProgressDialog } from './ExportProgressDialog';
+import { ExtractAudioDialog } from './ExtractAudioDialog';
 
 interface DialogState {
   newComposition: boolean;
@@ -14,9 +15,10 @@ interface DialogState {
   preferencesSection?: string;
   workspacePicker: boolean;
   projectSettings: boolean;
+  extractAudioLayerId: string | null;
 }
 
-let dialogState: DialogState = { newComposition: false, newProject: false, preferences: false, workspacePicker: false, projectSettings: false };
+let dialogState: DialogState = { newComposition: false, newProject: false, preferences: false, workspacePicker: false, projectSettings: false, extractAudioLayerId: null };
 const listeners: Array<() => void> = [];
 
 function notifyListeners(): void {
@@ -33,8 +35,18 @@ export function openNewProjectDialog(): void {
   notifyListeners();
 }
 
+export function openExtractAudioDialog(layerId: string): void {
+  dialogState = { ...dialogState, extractAudioLayerId: layerId };
+  notifyListeners();
+}
+
+export function closeExtractAudioDialog(): void {
+  dialogState = { ...dialogState, extractAudioLayerId: null };
+  notifyListeners();
+}
+
 export function closeAllDialogs(): void {
-  dialogState = { newComposition: false, newProject: false, preferences: false, workspacePicker: false, projectSettings: false };
+  dialogState = { newComposition: false, newProject: false, preferences: false, workspacePicker: false, projectSettings: false, extractAudioLayerId: null };
   notifyListeners();
 }
 
@@ -68,6 +80,19 @@ function useDialogState(): DialogState {
 
 export const DialogManager: React.FC = () => {
   const state = useDialogState();
+
+  // Look up the layer for extract-audio dialog
+  const extractLayer = React.useMemo(() => {
+    if (!state.extractAudioLayerId) return null;
+    const cs = (window as any).__compositionStore?.getState?.();
+    if (!cs) return null;
+    for (const comp of cs.compositions) {
+      const l = comp.layers.find((x: any) => x.id === state.extractAudioLayerId);
+      if (l) return l;
+    }
+    return null;
+  }, [state.extractAudioLayerId]);
+
   return (
     <>
       {state.newComposition && <NewCompositionDialog open onClose={closeAllDialogs} />}
@@ -75,6 +100,9 @@ export const DialogManager: React.FC = () => {
       {state.preferences && <PreferencesDialog onClose={closeAllDialogs} initialSection={state.preferencesSection} />}
       {state.workspacePicker && <WorkspacePicker onClose={closeAllDialogs} />}
       {state.projectSettings && <ProjectSettingsDialog onClose={closeAllDialogs} />}
+      {extractLayer && (
+        <ExtractAudioDialog layer={extractLayer} onClose={closeExtractAudioDialog} />
+      )}
       {/* Export dialogs are self-managed via useExportStore */}
       <ExportSettingsDialog />
       <ExportProgressDialog />

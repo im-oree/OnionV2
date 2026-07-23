@@ -373,4 +373,25 @@ export const addMenu: MenuItemDefinition[] = [
     shortcut: 'F2',
     onClick: () => document.dispatchEvent(new CustomEvent('layer:rename')),
   },
+  {
+    id: 'add.extractAudio',
+    label: 'Extract Audio from Selection',
+    onClick: () => {
+      import('../../../state/selectionStore').then((m) => {
+        const sel = m.useSelectionStore.getState().selected.filter(x => x.type === 'layer');
+        if (sel.length !== 1) {
+          import('../../../state/notificationStore').then(n => {
+            n.useNotificationStore.getState().addNotification({
+              type: 'warning', message: 'Select exactly one layer to extract audio from.',
+              autoDismiss: 3000,
+            });
+          });
+          return;
+        }
+        import('../../dialogs/DialogManager').then((d) => {
+          d.openExtractAudioDialog(sel[0].id);
+        });
+      });
+    },
+  },
 ];

@@ -41,6 +41,25 @@ function findKf(engine: any, id: string): Keyframe | null {
   return null;
 }
 
+/**
+ * Strip dimension qualifier from a compound key, returning the original KF ID.
+ * E.g. "kf_123::d0" → "kf_123". If no qualifier, returns the key as-is.
+ */
+function stripDim(key: string): string {
+  const i = key.indexOf('::d');
+  return i >= 0 ? key.slice(0, i) : key;
+}
+
+/**
+ * Build the set of original KF IDs for the store's selection from a set of
+ * compound graph-selection keys.
+ */
+function storeSelectionFromGraph(graphKeys: Set<string>): Set<string> {
+  const result = new Set<string>();
+  for (const k of graphKeys) result.add(stripDim(k));
+  return result;
+}
+
 export function useGraphInteraction({
   svgRef, viewBox, setViewBox, engine, curves, totalFrames, snapToFrame,
   svgWidth, svgHeight,
@@ -49,6 +68,7 @@ export function useGraphInteraction({
   const dragRef = useRef<DragState | null>(null);
   const [dragType, setDragType] = useState<DragType>(null);
   const [boxSelectRect, setBoxSelectRect] = useState<BoxRect | null>(null);
+  const [graphSelectedKeys, setGraphSelectedKeys] = useState<Set<string>>(new Set());
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -98,12 +118,41 @@ export function useGraphInteraction({
 
     if (kfId) {
       e.stopPropagation();
+      // kfId might be a compound key like "kf_123::d0" from multi-dim curves.
+      // Extract the original keyframe ID for store operations.
+      const origId = stripDim(kfId);
       const store = useKeyframeStore.getState();
-      if (e.shiftKey || e.ctrlKey || e.metaKey) store.toggleKeyframeSelection(kfId);
-      else if (!store.selectedKeyframeIds.has(kfId)) store.selectKeyframe(kfId, false);
-      const kf = findKf(engine, kfId); if (!kf) return;
+
+      if (e.shiftKey || e.ctrlKey || e.metaKey) {
+        // Toggle: update graph selection (compound key) and sync store.
+        setGraphSelectedKeys(prev => {
+          const next = new Set(prev);
+          if (next.has(kfId)) next.delete(kfId); else next.add(kfId);
+          // Sync store's selectedKeyframeIds to include all original KF IDs
+          // that have at least one dimension selected.
+          useKeyframeStore.setState({
+            selectedKeyframeIds: storeSelectionFromGraph(next),
+          });
+          return next;
+        });
+      } else {
+        // Replace selection with just this compound key.
+        // Use functional updater so we always have the latest graphSelectedKeys
+        // even if this callback is stale (e.g., another dim of same KF is selected).
+        setGraphSelectedKeys(prev => {
+          if (prev.has(kfId)) return prev; // Already selected — no change
+          const next = new Set<string>([kfId]);
+          useKeyframeStore.setState({
+            selectedKeyframeIds: storeSelectionFromGraph(next),
+          });
+          return next;
+        });
+      }
+
+      const kf = findKf(engine, origId); if (!kf) return;
       debouncedCapture('Move Keyframes');
       const snap = new Map<string, { time: number; value: number | number[] }>();
+      // Use store's selectedKeyframeIds for drag (operates on whole keyframes).
       const sel = useKeyframeStore.getState().selectedKeyframeIds;
       const data: Map<string, Map<string, Keyframe[]>> = engine._data;
       for (const [, propMap] of data)
@@ -115,7 +164,7 @@ export function useGraphInteraction({
         type: 'keyframe',
         startMouse: { x: e.clientX, y: e.clientY },
         startView: { ...viewBox },
-        kfId, origTime: kf.time,
+        kfId: origId, origTime: kf.time,
         origValue: Array.isArray(kf.value) ? [...kf.value] : kf.value,
         multiSnapshot: snap,
       };
@@ -131,8 +180,10 @@ export function useGraphInteraction({
     }
 
     if (e.button === 0) {
-      if (!e.ctrlKey && !e.metaKey && !e.shiftKey)
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
         useKeyframeStore.getState().clearKeyframeSelection();
+        setGraphSelectedKeys(new Set());
+      }
       const px = e.clientX - rect.left;
       const py = e.clientY - rect.top;
       dragRef.current = {
@@ -231,14 +282,20 @@ export function useGraphInteraction({
         const maxV = viewBox.y + viewBox.h - (box.y / svgHeight) * viewBox.h;
         const minV = viewBox.y + viewBox.h - ((box.y + box.h) / svgHeight) * viewBox.h;
         const store = useKeyframeStore.getState();
-        const newSel = new Set(d.boxAdd ? store.selectedKeyframeIds : []);
+        const baseSel = d.boxAdd ? Array.from(graphSelectedKeys) : [];
+        const newGraphSel = new Set(baseSel);
         for (const curve of curves)
           for (const kf of curve.keyframes) {
             const v = Array.isArray(kf.value) ? (kf.value[curve.dimension] ?? 0) : kf.value;
             if (typeof v !== 'number') continue;
-            if (kf.time >= minF && kf.time <= maxF && v >= minV && v <= maxV) newSel.add(kf.id);
+            if (kf.time >= minF && kf.time <= maxF && v >= minV && v <= maxV) {
+              newGraphSel.add(`${kf.id}::d${curve.dimension}`);
+            }
           }
-        useKeyframeStore.setState({ selectedKeyframeIds: newSel });
+        setGraphSelectedKeys(newGraphSel);
+        useKeyframeStore.setState({
+          selectedKeyframeIds: storeSelectionFromGraph(newGraphSel),
+        });
       }
       dragRef.current = null;
       setDragType(null);
@@ -251,7 +308,7 @@ export function useGraphInteraction({
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     };
-  }, [totalFrames, snapToFrame, viewBox, curves, boxSelectRect, svgRef, setViewBox, svgWidth, svgHeight]);
+  }, [totalFrames, snapToFrame, viewBox, curves, boxSelectRect, svgRef, setViewBox, svgWidth, svgHeight, graphSelectedKeys, setGraphSelectedKeys]);
 
-  return { handleMouseDown, handleWheel, dragType, boxSelectRect };
+  return { handleMouseDown, handleWheel, dragType, boxSelectRect, graphSelectedKeys };
 }

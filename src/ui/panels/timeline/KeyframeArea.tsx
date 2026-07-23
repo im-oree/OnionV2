@@ -215,7 +215,7 @@ const LayerTrackBar: React.FC<{
           style={{ cursor: 'ew-resize' }} onMouseDown={handleTrimStart} />
         <div className="absolute right-0 top-0 bottom-0 w-[8px] rounded-r-full"
           style={{ cursor: 'ew-resize' }} onMouseDown={handleTrimEnd} />
-        {layer.type === 'audio' && (layer.data as any)?.assetId && (
+        {(layer.type === 'audio' || layer.type === 'video') && (layer.data as any)?.assetId && (
           <AudioWaveform
             assetId={(layer.data as any).assetId}
             width={width}

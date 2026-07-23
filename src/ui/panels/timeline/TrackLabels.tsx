@@ -3,7 +3,9 @@ import { Zap } from 'lucide-react';
 import type { Layer } from '../../../types/layer';
 import { useSelectionStore } from '../../../state/selectionStore';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { useKeyframeStore } from '../../../state/keyframeStore';
 import { Icon } from '../../common/Icon';
+import { insertKeyframeAtPlayhead } from './propertyRowActions';
 
 interface TrackLabelsProps {
   layers: Layer[];
@@ -169,11 +171,24 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
               {isExpanded && propertyPaths.map((prop) => {
                 const propKey = `${layer.id}::${prop.path}`;
                 const propSelected = selectedPropKeys.has(propKey);
+                const engine = useKeyframeStore.getState().engine;
+                const kfs = engine.getKeyframesForProperty(layer.id, prop.path);
+                const _globalFrame = comp ? Math.round(comp.currentTime * comp.fps) : 0;
+                const _localFrame = Math.max(0, _globalFrame - layer.startFrame);
+                const atKeyframe = kfs.some(k => k.time === _localFrame);
+
                 return (
                   <div
                     key={prop.path}
                     className="flex items-center cursor-pointer transition-colors"
                     onClick={(e) => handlePropertySelect(layer.id, prop.path, e)}
+                    onContextMenu={(e) => {
+                      e.preventDefault(); e.stopPropagation();
+                      const ev = new CustomEvent('timeline:propertyRowContext', {
+                        detail: { layerId: layer.id, propertyPath: prop.path, x: e.clientX, y: e.clientY },
+                      });
+                      document.dispatchEvent(ev);
+                    }}
                     title={prop.path}
                     style={{
                       height: 22, paddingLeft: 34, paddingRight: 8,
@@ -187,13 +202,25 @@ export const TrackLabels: React.FC<TrackLabelsProps> = ({
                   >
                     <span className="truncate flex-1">{prop.label}</span>
                     <button
-                      className="w-[14px] h-[14px] flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
-                      style={{ color: 'var(--color-text-disabled)' }}
-                      title="Add/remove keyframe"
+                      className="w-[16px] h-[16px] flex items-center justify-center border-0 bg-transparent cursor-pointer shrink-0"
+                      style={{
+                        color: atKeyframe ? 'var(--color-accent)' : 'var(--color-text-disabled)',
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        insertKeyframeAtPlayhead(layer.id, prop.path);
+                      }}
+                      title={atKeyframe ? 'On keyframe — click to update value' : 'Insert keyframe at playhead (I)'}
                     >
-                      <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1">
-                        <polygon points="4,0 8,4 4,8 0,4" />
-                      </svg>
+                      {atKeyframe ? (
+                        <svg width="9" height="9" viewBox="0 0 9 9">
+                          <polygon points="4.5,0.5 8.5,4.5 4.5,8.5 0.5,4.5" fill="currentColor" />
+                        </svg>
+                      ) : (
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+                          <path d="M5 1v8M1 5h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                        </svg>
+                      )}
                     </button>
                   </div>
                 );

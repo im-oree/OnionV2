@@ -20,8 +20,12 @@ import { ImageSequenceEncoder, type SequenceDelivery } from './ImageSequenceEnco
 import { MediaRecorderEncoder } from './MediaRecorderEncoder';
 import { WebCodecsEncoder, type WebCodecsCodec, checkCodecConfig } from './WebCodecsEncoder';
 import { GifExportEncoder } from './GifEncoder';
+import { mixCompositionAudio } from './AudioMixer';
+import { encodeWav, encodeWithWebCodecs, type WebCodecsAudioCodec } from './AudioEncoders';
+import { encodeMp3 } from './Mp3Encoder';
 import {
   formatCategory,
+  formatSupportsAudio,
   FORMAT_EXTENSIONS,
   type ExportSettings,
   type ExportStatus,
@@ -112,8 +116,7 @@ export class ExportEngine {
       } else if (category === 'video') {
         await this._exportVideo(comp, settings);
       } else if (category === 'audio') {
-        this.setStatus('error');
-        this.emit('error', { message: 'Audio export arrives in Stage F.' });
+        await this._exportAudioOnly(comp, settings);
         return;
       }
     } catch (err: any) {
@@ -421,6 +424,41 @@ export class ExportEngine {
     container: 'mp4' | 'webm',
     codec: WebCodecsCodec,
   ): Promise<void> {
+    // Pre-mix audio if requested (fast — OfflineAudioContext)
+    let audioBuffer: AudioBuffer | null = null;
+    let audioChunks: Array<{ chunk: EncodedAudioChunk; meta?: EncodedAudioChunkMetadata }> = [];
+    let audioCodecString: string | null = null;
+    const includeAudio = settings.includeAudio && formatSupportsAudio(settings.format);
+
+    if (includeAudio) {
+      this.setStatus('preparing');
+      const mix = await mixCompositionAudio(comp, {
+        sampleRate: settings.audioSampleRate,
+        channels: settings.audioChannels,
+        startFrame,
+        endFrame,
+      });
+      if (mix) {
+        audioBuffer = mix.buffer;
+        // Pre-encode audio to raw chunks now (we'll add them into the muxer)
+        const wcCodec: WebCodecsAudioCodec =
+          container === 'mp4' ? 'aac' : 'opus';
+        try {
+          const result = await encodeWithWebCodecs(audioBuffer, wcCodec, {
+            sampleRate: settings.audioSampleRate,
+            channels: settings.audioChannels,
+            bitrate: settings.audioBitrate,
+          });
+          audioChunks = result.chunks;
+          audioCodecString = wcCodec === 'aac' ? 'aac' : 'A_OPUS';
+        } catch (err: any) {
+          // Audio encoding failed — continue with video-only rather than aborting
+          console.warn('[ExportEngine] Audio encode failed; exporting video-only:', err?.message);
+          audioBuffer = null;
+        }
+      }
+    }
+
     const encoder = new WebCodecsEncoder({
       width: settings.width,
       height: settings.height,
@@ -431,23 +469,30 @@ export class ExportEngine {
       keyframeIntervalSec: 2,
     });
 
-    this.frameRenderer.beginExport(settings.width, settings.height);
+    // Inject audio into muxer if we have it
+    (encoder as any)._audioTrack = audioBuffer
+      ? {
+          chunks: audioChunks,
+          codec: audioCodecString,
+          sampleRate: settings.audioSampleRate,
+          channels: settings.audioChannels,
+        }
+      : null;
+
     this.setStatus('preparing');
     await encoder.start();
     this.setStatus('rendering');
 
     try {
+      this.frameRenderer.beginExport(settings.width, settings.height);
+
       for (let f = startFrame; f <= endFrame; f++) {
         await this._throttleIfPaused();
-        if (this._cancelled) {
-          encoder.cancel();
-          throw new Error('cancelled');
-        }
+        if (this._cancelled) { encoder.cancel(); throw new Error('cancelled'); }
 
         const frameStart = performance.now();
         const rendered = await this.frameRenderer.renderFrame(
-          comp.id, f, settings.fps,
-          settings.width, settings.height,
+          comp.id, f, settings.fps, settings.width, settings.height,
         );
 
         this.emit('preview', { bitmap: rendered.bitmap, frameNumber: f });
@@ -456,13 +501,9 @@ export class ExportEngine {
 
         const totalFrameMs = performance.now() - frameStart;
         this._frameTimes.push(totalFrameMs);
-
         const currentCount = f - startFrame + 1;
         this._emitProgress(currentCount, totalFrames, totalFrameMs);
-
-        if (currentCount % 4 === 0) {
-          await new Promise(r => setTimeout(r, 0));
-        }
+        if (currentCount % 4 === 0) await new Promise(r => setTimeout(r, 0));
       }
 
       this.setStatus('encoding');
@@ -480,9 +521,7 @@ export class ExportEngine {
         this.emit('cancelled');
         return;
       }
-      if (!saveRes.saved) {
-        throw new Error(saveRes.error ?? 'Failed to save video');
-      }
+      if (!saveRes.saved) throw new Error(saveRes.error ?? 'Failed to save video');
 
       this.setStatus('done');
       this.emit('done', {
@@ -686,6 +725,157 @@ export class ExportEngine {
       encoder.cancel();
       throw err;
     }
+  }
+
+  // ── Audio-only export ────────────────────────────────────────────
+  private async _exportAudioOnly(
+    comp: Composition,
+    settings: ExportSettings,
+  ): Promise<void> {
+    this.setStatus('preparing');
+    this.emit('progress', {
+      currentFrame: 0, totalFrames: 1, elapsedMs: 0, etaMs: 0,
+      avgFrameMs: 0, lastFrameMs: 0,
+    });
+
+    const startFrame = Math.max(0, settings.range.startFrame);
+    const endFrame = Math.min(
+      Math.floor(comp.duration * comp.fps) - 1,
+      settings.range.endFrame,
+    );
+
+    // 1. Mix
+    const mix = await mixCompositionAudio(comp, {
+      sampleRate: settings.audioSampleRate,
+      channels: settings.audioChannels,
+      startFrame,
+      endFrame,
+      onProgress: (pct, _msg) => {
+        this.emit('progress', {
+          currentFrame: Math.round(pct * 100),
+          totalFrames: 100,
+          elapsedMs: performance.now() - this._startTime,
+          etaMs: 0, avgFrameMs: 0, lastFrameMs: 0,
+        });
+        // status stays "preparing" during mix
+      },
+    });
+
+    if (!mix) {
+      // Silent output — produce a silent buffer of the requested duration
+      const totalSamples = Math.ceil(
+        ((endFrame - startFrame + 1) / comp.fps) * settings.audioSampleRate,
+      );
+      const silentCtx = new OfflineAudioContext(
+        settings.audioChannels, totalSamples, settings.audioSampleRate,
+      );
+      const silentBuf = await silentCtx.startRendering();
+      await this._encodeAndSaveAudio(silentBuf, settings);
+      return;
+    }
+
+    if (this._cancelled) throw new Error('cancelled');
+
+    // 2. Encode + save
+    await this._encodeAndSaveAudio(mix.buffer, settings);
+  }
+
+  private async _encodeAndSaveAudio(
+    buffer: AudioBuffer,
+    settings: ExportSettings,
+  ): Promise<void> {
+    this.setStatus('encoding');
+    let blob: Blob;
+    let ext: string;
+    let mime: string;
+
+    try {
+      switch (settings.format) {
+        case 'audio-wav': {
+          blob = encodeWav(buffer);
+          ext = 'wav'; mime = 'audio/wav';
+          break;
+        }
+        case 'audio-mp3': {
+          blob = encodeMp3(buffer, {
+            bitrate: settings.audioBitrate,
+            channels: settings.audioChannels,
+            sampleRate: settings.audioSampleRate,
+          });
+          ext = 'mp3'; mime = 'audio/mpeg';
+          break;
+        }
+        case 'audio-aac':
+        case 'audio-opus': {
+          const codec: WebCodecsAudioCodec = settings.format === 'audio-aac' ? 'aac' : 'opus';
+          const result = await encodeWithWebCodecs(buffer, codec, {
+            sampleRate: settings.audioSampleRate,
+            channels: settings.audioChannels,
+            bitrate: settings.audioBitrate,
+          });
+          // Wrap raw chunks in a container.
+          if (codec === 'aac') {
+            const mp4Muxer = await import('mp4-muxer');
+            const target = new mp4Muxer.ArrayBufferTarget();
+            const muxer = new mp4Muxer.Muxer({
+              target,
+              audio: {
+                codec: 'aac',
+                sampleRate: settings.audioSampleRate,
+                numberOfChannels: settings.audioChannels,
+              },
+              fastStart: 'in-memory',
+              firstTimestampBehavior: 'offset',
+            });
+            for (const { chunk, meta } of result.chunks) muxer.addAudioChunk(chunk, meta);
+            muxer.finalize();
+            blob = new Blob([target.buffer], { type: 'audio/mp4' });
+            ext = 'm4a'; mime = 'audio/mp4';
+          } else {
+            const webmMuxer = await import('webm-muxer');
+            const target = new webmMuxer.ArrayBufferTarget();
+            const muxer = new webmMuxer.Muxer({
+              target,
+              audio: {
+                codec: 'A_OPUS',
+                sampleRate: settings.audioSampleRate,
+                numberOfChannels: settings.audioChannels,
+              },
+              firstTimestampBehavior: 'offset',
+            });
+            for (const { chunk, meta } of result.chunks) muxer.addAudioChunk(chunk, meta);
+            muxer.finalize();
+            blob = new Blob([target.buffer], { type: 'audio/webm' });
+            ext = 'webm'; mime = 'audio/webm';
+          }
+          break;
+        }
+        default:
+          throw new Error(`Unsupported audio format: ${settings.format}`);
+      }
+    } catch (err: any) {
+      throw new Error(`Audio encoding failed: ${err?.message ?? err}`);
+    }
+
+    if (this._cancelled) throw new Error('cancelled');
+
+    const saveRes = await saveFile(blob, settings.fileName, ext, settings.useSaveDialog, mime);
+
+    if (saveRes.cancelled) {
+      this.setStatus('cancelled');
+      this.emit('cancelled');
+      return;
+    }
+    if (!saveRes.saved) {
+      throw new Error(saveRes.error ?? 'Failed to save audio');
+    }
+
+    this.setStatus('done');
+    this.emit('done', {
+      blob, size: blob.size,
+      name: saveRes.path ?? settings.fileName,
+      method: saveRes.method,
+    } satisfies ExportDonePayload);
   }
 
   dispose(): void {

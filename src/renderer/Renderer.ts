@@ -1303,20 +1303,28 @@ private _syncModel3DLayer(layer: any): void {
    * vdata.timeRemapKeyframes for backward compatibility.
    */
   private _getTimeRemapSourceFrame(layerId: string, vdata: VideoData, timeS: number, fps: number): number {
-    const frame = Math.floor(timeS * fps);
+    const globalFrame = Math.floor(timeS * fps);
+    // Locate the layer to convert global → local frame (keyframes are stored in local frames)
+    const cs = useCompositionStore.getState();
+    const comp = cs.activeCompositionId
+      ? cs.compositions.find(c => c.id === cs.activeCompositionId)
+      : null;
+    const layer = comp?.layers.find(l => l.id === layerId);
+    const localFrame = layer ? Math.max(0, globalFrame - layer.startFrame) : globalFrame;
+
     // Try KeyframeEngine first (new system — timeline visible)
     const engine = useKeyframeStore.getState().engine;
     const engineKfs = engine.getKeyframesForProperty(layerId, 'timeRemap');
     if (engineKfs.length >= 2) {
-      const result = engine.evaluate(layerId, 'timeRemap', frame);
-      const val = typeof result.value === 'number' ? result.value : frame;
+      const result = engine.evaluate(layerId, 'timeRemap', localFrame);
+      const val = typeof result.value === 'number' ? result.value : localFrame;
       return Math.max(0, Math.round(val));
     }
-    // Fallback to legacy layer data keyframes
+    // Fallback to legacy layer data keyframes (also treated as local frames)
     if (vdata?.timeRemapKeyframes?.length) {
-      return this._interpolateRemap(vdata.timeRemapKeyframes, frame);
+      return this._interpolateRemap(vdata.timeRemapKeyframes, localFrame);
     }
-    return frame;
+    return localFrame;
   }
 
   /** Interpolate time remap keyframes to compute source frame from timeline frame */

@@ -54,16 +54,20 @@ export class GifExportEncoder {
     (this._ctx as any).drawImage(bitmap, 0, 0, this.opts.width, this.opts.height);
     const imageData = this._ctx.getImageData(0, 0, this.opts.width, this.opts.height);
     const data = new Uint8ClampedArray(imageData.data.buffer);
+    const rawData = data as unknown as Uint8Array;
 
     // Quantize palette (per-frame for accurate colors)
-    const palette = quantize(data, this._paletteSize, { format: 'rgb565' });
-    const indexed = applyPalette(data, palette, 'rgb565');
+    const palette = quantize(rawData, this._paletteSize, { format: 'rgb565' });
+    const indexed = applyPalette(rawData, palette, 'rgb565');
 
-    this.encoder.writeFrame(indexed, this.opts.width, this.opts.height, {
+    const frameOpts: Record<string, any> = {
       palette,
       delay: this._delayMs,
-      repeat: this._frameCount === 0 ? this.opts.loopCount : undefined,
-    });
+    };
+    if (this._frameCount === 0) {
+      frameOpts['repeat'] = this.opts.loopCount;
+    }
+    this.encoder.writeFrame(indexed, this.opts.width, this.opts.height, frameOpts as any);
 
     this._frameCount++;
   }
@@ -71,7 +75,7 @@ export class GifExportEncoder {
   async finish(): Promise<Blob> {
     this.encoder.finish();
     const bytes = this.encoder.bytes();
-    return new Blob([bytes], { type: 'image/gif' });
+    return new Blob([bytes as BlobPart], { type: 'image/gif' });
   }
 
   cancel(): void {

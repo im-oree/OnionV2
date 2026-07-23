@@ -243,6 +243,99 @@ class AssetManagerClass {
     return this.getAllAssets().filter((a) => (this.referenceCount.get(a.id) ?? 0) === 0);
   }
 
+  /**
+   * Replace an asset with a new file while keeping the same asset ID.
+   * All layers referencing this asset will automatically pick up the new
+   * URL and metadata on the next render cycle.
+   *
+   * - Revokes the old blob URL
+   * - Creates a new blob URL from the file
+   * - Updates thumbnail, dimensions, duration, size, mimeType, name
+   * - Emits 'assets:changed' so the Project panel and renderer update
+   * - Also syncs the updated metadata into the project store
+   */
+  async replaceAsset(id: string, file: File): Promise<Asset> {
+    const old = this.assets.get(id);
+    if (!old) {
+      throw new Error(`Asset "${id}" not found — cannot replace.`);
+    }
+
+    // Revoke old blob URL
+    if (old.url) URL.revokeObjectURL(old.url);
+
+    // Create new blob and compute metadata
+    const url = URL.createObjectURL(file);
+    const dimensions = await this.getMediaDimensions(file, url);
+    const thumbnail = await this.generateThumbnail(file, url);
+
+    const updated: Asset = {
+      ...old,
+      name: file.name,
+      url,
+      thumbnail: thumbnail ?? old.thumbnail,
+      naturalWidth: dimensions.width || old.naturalWidth,
+      naturalHeight: dimensions.height || old.naturalHeight,
+      duration: dimensions.duration ?? old.duration,
+      size: file.size,
+      mimeType: file.type || old.mimeType,
+      missing: false,
+      importedAt: Date.now(),
+    };
+
+    // Persist new file to storage
+    try {
+      const sm = StorageManager.getInstance();
+      const category = this._categorizeAsset(updated);
+      const ref = await sm.importAsset(file, file.name, category);
+      if (ref) updated.storageRef = ref;
+    } catch {
+      // Best effort — asset still works in memory
+    }
+
+    this.assets.set(id, updated);
+    this.events.emit('assets:changed', undefined);
+
+    // Sync updated metadata into projectStore
+    try {
+      import('../state/projectStore').then(({ useProjectStore }) => {
+        const ps = useProjectStore.getState();
+        // Build partial update — skip undefined duration to avoid
+        // exactOptionalPropertyTypes issues with the store type.
+        const updates: any = {
+          name: file.name,
+          size: file.size,
+          mimeType: file.type || old.mimeType,
+          naturalWidth: dimensions.width || old.naturalWidth,
+          naturalHeight: dimensions.height || old.naturalHeight,
+        };
+        if (dimensions.duration != null) updates.duration = dimensions.duration;
+        ps.updateAsset(id, updates);
+      }).catch(() => {});
+    } catch {
+      // Best effort
+    }
+
+    // Dispatch a custom event so the renderer knows to refresh
+    try {
+      document.dispatchEvent(new CustomEvent('asset:replaced', {
+        detail: { assetId: id },
+      }));
+    } catch {}
+
+    return updated;
+  }
+
+  /** Infer asset category from the asset's type for storage folder placement. */
+  private _categorizeAsset(asset: Asset): AssetCategory {
+    switch (asset.type) {
+      case 'image': return 'images';
+      case 'video': return 'video';
+      case 'audio': return 'audio';
+      case 'model3d': return '3d-models';
+      default: return 'images';
+    }
+  }
+
   /** Remove all orphan assets, syncing with projectStore */
   cleanOrphans(): number {
     const orphans = this.getOrphanAssets();

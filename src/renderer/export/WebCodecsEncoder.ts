@@ -167,7 +167,7 @@ export class WebCodecsEncoder {
       this.muxer = new mp4Muxer.Muxer({
         target: this.target,
         video: {
-          codec: this._muxerVideoCodecName(codec),
+          codec: this._muxerVideoCodecName(codec) as any,
           width,
           height,
         },
@@ -180,12 +180,56 @@ export class WebCodecsEncoder {
       this.muxer = new webmMuxer.Muxer({
         target: this.target,
         video: {
-          codec: this._muxerVideoCodecName(codec),
+          codec: this._muxerVideoCodecName(codec) as any,
           width,
           height,
         },
         firstTimestampBehavior: 'offset',
       });
+    }
+
+    // Audio track (populated by ExportEngine before start() was called)
+    if ((this as any)._audioTrack) {
+      const at = (this as any)._audioTrack;
+      if (container === 'mp4') {
+        const mp4Muxer: Mp4MuxerModule = await import('mp4-muxer');
+        this.target = new mp4Muxer.ArrayBufferTarget();
+        this.muxer = new mp4Muxer.Muxer({
+          target: this.target,
+          video: {
+            codec: this._muxerVideoCodecName(codec) as any,
+            width, height,
+          },
+          audio: {
+            codec: 'aac',
+            sampleRate: at.sampleRate,
+            numberOfChannels: at.channels,
+          },
+          fastStart: 'in-memory',
+          firstTimestampBehavior: 'offset',
+        });
+      } else {
+        const webmMuxer: WebmMuxerModule = await import('webm-muxer');
+        this.target = new webmMuxer.ArrayBufferTarget();
+        this.muxer = new webmMuxer.Muxer({
+          target: this.target,
+          video: {
+            codec: this._muxerVideoCodecName(codec) as any,
+            width, height,
+          },
+          audio: {
+            codec: 'A_OPUS',
+            sampleRate: at.sampleRate,
+            numberOfChannels: at.channels,
+          },
+          firstTimestampBehavior: 'offset',
+        });
+      }
+      // Add all pre-encoded audio chunks now — they'll be interleaved properly
+      // by the muxer based on their timestamps.
+      for (const { chunk, meta } of at.chunks) {
+        this.muxer.addAudioChunk(chunk, meta);
+      }
     }
 
     // Create the VideoEncoder with the working config

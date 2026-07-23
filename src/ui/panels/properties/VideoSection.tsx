@@ -156,7 +156,8 @@ export const VideoSection: React.FC<Props> = ({ layer, compId }) => {
             onChange={v => {
               const ks = useKeyframeStore.getState();
               if (v) {
-                const totalFrames = Math.floor(data.duration * 30);
+                const fps = comp?.fps ?? 30;
+                const totalFrames = Math.floor(data.duration * fps);
                 const kf1 = { id: `kf_tr_${Date.now()}_0`, property: 'timeRemap', layerId: layer.id, time: 0, value: 0, interpolation: 'linear' as const };
                 const kf2 = { id: `kf_tr_${Date.now()}_1`, property: 'timeRemap', layerId: layer.id, time: totalFrames, value: totalFrames, interpolation: 'linear' as const };
                 ks.engine.removeAllForProperty(layer.id, 'timeRemap');

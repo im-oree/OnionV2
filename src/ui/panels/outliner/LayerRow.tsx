@@ -4,6 +4,8 @@ import type { Layer } from '../../../types/layer';
 import { defaultTransform3D } from '../../../types/layer';
 import { Icon } from '../../common/Icon';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { layerHasAudio } from '../../../renderer/export/AudioMixer';
+import { openExtractAudioDialog } from '../../dialogs/DialogManager';
 
 const LAYER_ICONS: Record<string, string> = {
   solid: 'rectangle', shape: 'polygon', text: 'text',
@@ -251,7 +253,8 @@ export const LayerRow: React.FC<LayerRowProps> = ({
               import('../../../state/maskStore').then(m =>
                 m.useMaskStore.getState().addRectMask(layer.id, 200, 150));
             }},
-          ].map((it, i) => (
+            ...(layerHasAudio(layer) ? [{ label: 'Extract Audio…', onClick: () => openExtractAudioDialog(layer.id) }] : []),
+          ].map((it: any, i: number) => (
             <button key={i} onClick={() => contextAction(it.onClick)}
               className="w-full text-left border-0 bg-transparent cursor-pointer transition-colors"
               style={{ height: 30, padding: '0 14px', fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}

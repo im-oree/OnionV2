@@ -11,7 +11,7 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Search, X, Sparkles, Save, Layers, Square } from 'lucide-react';
 import { effectRegistry } from '../../../renderer/effects/EffectRegistry';
-import { effectThumbnailGenerator, THUMB_SIZE } from '../../../renderer/effects/EffectThumbnailGenerator';
+import { effectThumbnailGenerator } from '../../../renderer/effects/EffectThumbnailGenerator';
 import { useEffectsStore } from '../../../state/effectsStore';
 import { useSelectionStore } from '../../../state/selectionStore';
 import { useCompositionStore } from '../../../state/compositionStore';
@@ -224,7 +224,7 @@ export const EffectLibraryPanel: React.FC = () => {
       {/* Presets section */}
       <div style={{ borderTop: '1px solid var(--color-border)', marginTop: 4 }}>
         {(() => {
-          const layerId = selectedLayers.length === 1 ? selectedLayers[0].id : null;
+          const layerId = selectedLayers.length === 1 ? selectedLayers[0]!.id : null;
           if (!layerId) {
             return (
               <div className="flex items-center gap-2 px-3 py-3" style={{ fontSize: 10, color: 'var(--color-text-disabled)' }}>
@@ -257,36 +257,114 @@ const CategoryButton: React.FC<{ active: boolean; onClick: () => void; label: st
   </button>
 );
 
-const EffectCard: React.FC<{ def: EffectDefinition; onDoubleClick: () => void; onContext: (e: React.MouseEvent) => void; onHover: () => void }> = ({ def, onDoubleClick, onContext, onHover }) => {
-  const [thumb, setThumb] = useState<string | null>(null);
+const EffectCard: React.FC<{
+  def: EffectDefinition;
+  onDoubleClick: () => void;
+  onContext: (e: React.MouseEvent) => void;
+  onHover: () => void;
+}> = ({ def, onDoubleClick, onContext, onHover }) => {
+  const [thumbImg, setThumbImg] = useState<HTMLImageElement | null>(null);
   const [hover, setHover] = useState(false);
+  const [resizeKey, setResizeKey] = useState(0);
+  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const rafRef = React.useRef<number>(0);
 
-  const frameCount = useMemo(() => effectThumbnailGenerator.getFrameCount(def.type), [def.type]);
+  const frameCount = useMemo(
+    () => effectThumbnailGenerator.getFrameCount(def.type),
+    [def.type],
+  );
   const isAnimated = useMemo(() => frameCount > 1, [frameCount]);
 
+  // Load thumbnail as an HTMLImageElement so we know its natural size and
+  // can draw it precisely into the canvas.
   useEffect(() => {
     let cancelled = false;
     effectThumbnailGenerator.getThumbnail(def.type).then((url) => {
-      if (!cancelled) setThumb(url);
+      if (cancelled || !url) return;
+      const img = new Image();
+      img.onload = () => { if (!cancelled) setThumbImg(img); };
+      img.src = url;
     });
     return () => { cancelled = true; };
   }, [def.type]);
 
-  // Inject unique @keyframes for this effect's animated spritesheet
-  const animName = `thumbCycle-${def.type}`;
-  const styleId = `anim-${def.type}`;
+  // Draw current frame into the canvas. For animated thumbs, cycle frames.
   useEffect(() => {
-    if (!isAnimated || !thumb) return;
-    if (document.getElementById(styleId)) return;
-    const style = document.createElement('style');
-    style.id = styleId;
-    // Move by 100% per frame — matches the % background-size above
-    style.textContent = `@keyframes ${animName} {
-      to { background-position: -${100 * (frameCount - 1)}% 0; }
-    }`;
-    document.head.appendChild(style);
-    return () => { document.getElementById(styleId)?.remove(); };
-  }, [isAnimated, thumb, def.type, animName, frameCount, styleId]);
+    const img = thumbImg;
+    if (!img || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Determine the source frame size. Spritesheet layout: frames laid out
+    // horizontally, each frame is (imgHeight × imgHeight) square.
+    const srcFrameH = img.naturalHeight;
+    const srcFrameW = isAnimated
+      ? Math.floor(img.naturalWidth / frameCount)
+      : img.naturalWidth;
+
+    // Canvas physical size — use DPR for crispness
+    const dpr = window.devicePixelRatio || 1;
+    const cssSize = canvas.clientWidth;   // container-driven CSS size
+    const pxSize = Math.max(1, Math.round(cssSize * dpr));
+    if (canvas.width !== pxSize || canvas.height !== pxSize) {
+      canvas.width = pxSize;
+      canvas.height = pxSize;
+    }
+
+    ctx.imageSmoothingEnabled = true;
+    (ctx as any).imageSmoothingQuality = 'high';
+
+    const drawFrame = (frameIdx: number) => {
+      ctx.clearRect(0, 0, pxSize, pxSize);
+      // Fit frame into square canvas preserving aspect (should already be square)
+      ctx.drawImage(
+        img,
+        frameIdx * srcFrameW, 0, srcFrameW, srcFrameH,   // source
+        0, 0, pxSize, pxSize,                             // dest
+      );
+    };
+
+    if (!isAnimated) {
+      drawFrame(0);
+      return;
+    }
+
+    // Animate — 12 fps loop (~83ms/frame)
+    let last = performance.now();
+    let idx = 0;
+    const frameIntervalMs = 720 / frameCount;
+    const loop = (now: number) => {
+      if (now - last >= frameIntervalMs) {
+        last = now;
+        idx = (idx + 1) % frameCount;
+        drawFrame(idx);
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    drawFrame(0);
+    rafRef.current = requestAnimationFrame(loop);
+
+    return () => {
+      cancelAnimationFrame(rafRef.current);
+    };
+  }, [thumbImg, isAnimated, frameCount, resizeKey]);
+
+  // Re-draw on resize (container width changes when panel resizes)
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    const canvas = canvasRef.current;
+    let lastW = canvas.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const w = canvas.clientWidth;
+      if (Math.abs(w - lastW) > 2) {
+        lastW = w;
+        setResizeKey(k => k + 1);
+      }
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
 
   const onDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData('application/onion-effect', def.type);
@@ -311,29 +389,48 @@ const EffectCard: React.FC<{ def: EffectDefinition; onDoubleClick: () => void; o
         transition: 'background 120ms ease-out',
         border: `1px solid ${hover ? 'var(--color-border)' : 'transparent'}`,
       }}
-    >          <div
-            style={{
-              width: '100%',
-              aspectRatio: '1/1',
-              background: thumb
-                ? isAnimated
-                  ? `url(${thumb}) 0 0 / ${100 * frameCount}% 100% no-repeat`
-                  : `url(${thumb}) center / cover no-repeat`
-                : '#1a1c22',
+    >
+      <div
+        style={{
+          width: '100%',
+          aspectRatio: '1 / 1',
           borderRadius: 'var(--radius-sm)',
           border: '1px solid var(--color-border)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
           overflow: 'hidden',
-          animation: isAnimated && thumb ? `${animName} 0.72s steps(${frameCount}) infinite` : undefined,
+          background: '#1a1c22',
+          position: 'relative',
+          display: 'block',
         }}
       >
-        {!thumb && (
+        {thumbImg ? (
+          <canvas
+            ref={canvasRef}
+            style={{
+              width: '100%',
+              height: '100%',
+              display: 'block',
+            }}
+          />
+        ) : (
           <div
             className="animate-pulse"
-            style={{ width: 20, height: 20, borderRadius: '50%', background: 'var(--color-panel-hover)' }}
-          />
+            style={{
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <div
+              style={{
+                width: 18,
+                height: 18,
+                borderRadius: '50%',
+                background: 'var(--color-panel-hover)',
+              }}
+            />
+          </div>
         )}
       </div>
       <div

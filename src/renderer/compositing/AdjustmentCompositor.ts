@@ -123,8 +123,22 @@ export class AdjustmentCompositor {
   ): void {
     if (this.activeAdjustmentIds.size === 0) return;
 
-    const w = Math.max(1, Math.ceil(compWidth));
-    const h = Math.max(1, Math.ceil(compHeight));
+    // Use the WebGL drawing-buffer size as the FBO/viewport dimensions.
+    // If we use comp size (e.g. 1920x1080) while the canvas is at a
+    // preview-scale size (e.g. 960x540 from adaptive resolution), Three.js
+    // clamps our setViewport(1920,1080) to the actual buffer size, and the
+    // snapshot ends up written into only the bottom-left corner of a
+    // larger FBO — producing the tiny-thumbnail bug.
+    const canvasSize = new THREE.Vector2();
+    this.renderer.getSize(canvasSize);
+    const pr = this.renderer.getPixelRatio();
+    const fbW = Math.max(1, Math.round(canvasSize.x * pr));
+    const fbH = Math.max(1, Math.round(canvasSize.y * pr));
+    const w = fbW;
+    const h = fbH;
+    // Note: we keep the snapshot CAMERA sized to comp dimensions so world-
+    // space layer positions project correctly. The FBO/viewport dimensions
+    // just determine pixel resolution of the snapshot texture.
 
     // Fix #1 — save state using reused objects
     const oldTarget = this.renderer.getRenderTarget();
@@ -140,7 +154,11 @@ export class AdjustmentCompositor {
       if (r) savedVisibility.set(l.id, r.group.visible);
     }
 
-    const cam = this._getSnapshotCamera(w, h);
+    // Camera frustum matches composition world-space bounds (unchanged by canvas scale)
+    const cam = this._getSnapshotCamera(
+      Math.max(1, Math.ceil(compWidth)),
+      Math.max(1, Math.ceil(compHeight)),
+    );
 
     const adjustmentsOrdered = layers
       .filter((l) => this.activeAdjustmentIds.has(l.id))
@@ -153,7 +171,8 @@ export class AdjustmentCompositor {
         const entry = this.entries.get(adj.id);
         if (!entry) continue;
 
-        this._resizeEntry(entry, w, h);
+        // FBO gets canvas-buffer dimensions; quad geometry gets comp-world dimensions
+        this._resizeEntry(entry, w, h, Math.ceil(compWidth), Math.ceil(compHeight));
 
         // Determine snapshot visibility
         for (const l of layers) {
@@ -299,19 +318,18 @@ export class AdjustmentCompositor {
 
   private _ensureEntry(
     adjId: string,
-    w: number,
-    h: number,
+    compW: number,
+    compH: number,
   ): void {
     if (this.entries.has(adjId)) return;
 
     const chain = new EffectChain(this.renderer);
-    const targetA = this._createTarget(w, h);
-    const targetB = this._createTarget(w, h);
+    // FBO starts at comp size — will be resized to canvas-buffer size on first execute()
+    const targetA = this._createTarget(compW, compH);
+    const targetB = this._createTarget(compW, compH);
 
-    // Fix #5 — PlaneGeometry sized to (w, h) pixels but the snapshot
-    // camera spans [-w/2, w/2] x [-h/2, h/2]. The quad must be sized
-    // to match the camera frustum exactly so it covers the full comp.
-    const geo = new THREE.PlaneGeometry(w, h);
+    // Quad geometry always in composition world-space dimensions
+    const geo = new THREE.PlaneGeometry(compW, compH);
     const mat = new THREE.MeshBasicMaterial({
       map: targetA.texture,
       transparent: true,
@@ -329,8 +347,8 @@ export class AdjustmentCompositor {
       quad,
       targetA,
       targetB,
-      currentW: w,
-      currentH: h,
+      currentW: compW,
+      currentH: compH,
     });
   }
 
@@ -354,29 +372,42 @@ export class AdjustmentCompositor {
     this.entries.delete(adjId);
   }
 
+  /**
+   * Resize entry's FBOs (fbW x fbH — matches WebGL drawing buffer for
+   * correct viewport behavior) AND the quad geometry (compW x compH —
+   * world-space size so it covers the composition when projected).
+   */
   private _resizeEntry(
     entry: CompositorEntry,
-    w: number,
-    h: number,
+    fbW: number,
+    fbH: number,
+    compW: number,
+    compH: number,
   ): void {
-    if (entry.currentW === w && entry.currentH === h) return;
+    // Resize FBOs when the framebuffer dimensions changed
+    if (entry.currentW !== fbW || entry.currentH !== fbH) {
+      entry.targetA.dispose();
+      entry.targetB.dispose();
+      entry.targetA = this._createTarget(fbW, fbH);
+      entry.targetB = this._createTarget(fbW, fbH);
 
-    entry.targetA.dispose();
-    entry.targetB.dispose();
-    entry.targetA = this._createTarget(w, h);
-    entry.targetB = this._createTarget(w, h);
+      const mat = entry.quad.material as THREE.MeshBasicMaterial;
+      mat.map = entry.targetA.texture;
+      mat.needsUpdate = true;
 
-    entry.quad.geometry.dispose();
-    entry.quad.geometry = new THREE.PlaneGeometry(w, h);
+      entry.currentW = fbW;
+      entry.currentH = fbH;
+    }
 
-    // Fix #6 — after resize the material's map still points to the old
-    // (now disposed) texture. Update it to the new target.
-    const mat = entry.quad.material as THREE.MeshBasicMaterial;
-    mat.map = entry.targetA.texture;
-    mat.needsUpdate = true;
-
-    entry.currentW = w;
-    entry.currentH = h;
+    // Resize quad geometry when composition dimensions changed.
+    // We stash comp dims on the geometry userData so we don't recreate needlessly.
+    const geoUD = (entry.quad.geometry as any).userData ?? {};
+    if (geoUD.compW !== compW || geoUD.compH !== compH) {
+      entry.quad.geometry.dispose();
+      const geo = new THREE.PlaneGeometry(compW, compH);
+      (geo as any).userData = { compW, compH };
+      entry.quad.geometry = geo;
+    }
   }
 
   private _createTarget(

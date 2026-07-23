@@ -16,6 +16,12 @@ interface Props {
   curves: FlatCurve[];
   toPx: (frame: number, value: number) => { px: number; py: number };
   selectedKfIds: Set<string>;
+  /**
+   * Dimension-aware graph selection keys (format: "kfId::d{dim}").
+   * When provided, used instead of selectedKfIds for rendering so
+   * each dimension's keyframes can be selected independently.
+   */
+  graphSelectedKeys?: Set<string>;
 }
 
 function getVal(kf: Keyframe, dim: number): number {
@@ -63,7 +69,12 @@ function buildPath(curve: FlatCurve, toPx: (f: number, v: number) => { px: numbe
 const HANDLE_COLOR = '#6ba4ff';
 const HANDLE_LINE_COLOR = 'rgba(107,164,255,0.7)';
 
-export const GraphCurves: React.FC<Props> = ({ curves, toPx, selectedKfIds }) => {
+/** Build a compound selection key: "kfId::d{dim}" for dimension-aware graph selection. */
+function selKey(kfId: string, dim: number): string {
+  return `${kfId}::d${dim}`;
+}
+
+export const GraphCurves: React.FC<Props> = ({ curves, toPx, selectedKfIds, graphSelectedKeys }) => {
   return (
     <>
       {curves.map(curve => {
@@ -90,11 +101,16 @@ export const GraphCurves: React.FC<Props> = ({ curves, toPx, selectedKfIds }) =>
             {curve.keyframes.map(kf => {
               const v = getVal(kf, curve.dimension);
               const p = toPx(kf.time, v);
-              const sel = selectedKfIds.has(kf.id);
+              // Use dimension-aware selection check when graphSelectedKeys is provided
+              // so X and Y keyframes on the same frame can be selected independently.
+              const sel = graphSelectedKeys
+                ? graphSelectedKeys.has(selKey(kf.id, curve.dimension))
+                : selectedKfIds.has(kf.id);
               const hasSamples = !!(curve.speedSamples && curve.speedSamples.length > 0);
-              return <KfPoint key={kf.id} kf={kf} p={p}
+              return <KfPoint key={`${kf.id}::d${curve.dimension}`} kf={kf} p={p}
                 color={curve.color} selected={sel}
-                hideHandles={hasSamples} />;
+                hideHandles={hasSamples}
+                dataDim={curve.dimension} />;
             })}
           </g>
         );
@@ -108,7 +124,9 @@ const KfPoint: React.FC<{
   color: string; selected: boolean;
   /** Speed graph keyframes don't show tangent handles */
   hideHandles?: boolean;
-}> = ({ kf, p, color, selected, hideHandles }) => {
+  /** Dimension index for multi-dim properties — used to build a compound data-kf-id */
+  dataDim?: number;
+}> = ({ kf, p, color, selected, hideHandles, dataDim }) => {
   const r = selected ? 7 : 5.5;
   const showHandles = !hideHandles && selected && kf.interpolation === 'bezier';
 
@@ -160,8 +178,12 @@ const KfPoint: React.FC<{
           pointerEvents="none" />
       )}
 
-      {/* Keyframe point */}
-      <g transform={`translate(${p.px}, ${p.py})`} data-kf-id={kf.id} style={{ cursor: 'pointer', pointerEvents: 'all' }}>
+      {/* Keyframe point — use compound kf-id when dimension-specific so multi-dim
+          properties (e.g. Position X/Y) can be selected independently. */}
+      <g transform={`translate(${p.px}, ${p.py})`}
+        data-kf-id={dataDim != null ? `${kf.id}::d${dataDim}` : kf.id}
+        data-dim={dataDim}
+        style={{ cursor: 'pointer', pointerEvents: 'all' }}>
         {kf.interpolation === 'hold' ? (
           <>
             <rect x={-r} y={-r} width={r * 2} height={r * 2} rx={2}

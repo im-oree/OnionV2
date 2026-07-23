@@ -1,5 +1,6 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { ChevronRight, ChevronUp, ChevronDown, X, GripVertical, Eye, EyeOff, Lock, Unlock, Headphones } from 'lucide-react';
+import React, { useCallback, useMemo, useRef, useState, useEffect } from 'react';
+import { ChevronRight, ChevronUp, ChevronDown, X, Plus, GripVertical, Eye, EyeOff, Lock, Unlock, Headphones } from 'lucide-react';
+import { insertKeyframeAtPlayhead, deleteKeyframeAtPlayhead } from './propertyRowActions';
 import type { Layer } from '../../../types/layer';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { useCompositionStore } from '../../../state/compositionStore';
@@ -352,6 +353,27 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
   const selectRange = useSelectionStore(s => s.selectRange);
   const ctx = useContextMenu();
   const sortedLayers = [...layers].sort((a, b) => b.zIndex - a.zIndex);
+  const comp = useCompositionStore(s => s.compositions.find(c => c.id === compId));
+
+  // Hotkey I / Alt+I for insert/delete keyframe on hovered property row
+  const hoveredPropRef = React.useRef<{ layerId: string; propertyPath: string } | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.ctrlKey || e.metaKey) return;
+      const hp = hoveredPropRef.current;
+      if (!hp) return;
+      if (e.key === 'i' && !e.altKey) {
+        e.preventDefault();
+        insertKeyframeAtPlayhead(hp.layerId, hp.propertyPath);
+      } else if (e.key === 'i' && e.altKey) {
+        e.preventDefault();
+        deleteKeyframeAtPlayhead(hp.layerId, hp.propertyPath);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
 
   // Build depth map once per render (avoids O(n²) recursion per layer)
   const depthMap = useMemo(() => {
@@ -730,38 +752,113 @@ export const OutlinerTracks: React.FC<Props> = ({ layers, compId }) => {
             {reorderDragId && reorderTargetIdx === li && reorderDragId !== layer.id && (
               <div style={{ position: 'absolute', top: -1, left: 8, right: 8, height: 2, background: 'var(--color-accent)', borderRadius: 1, zIndex: 10 }} />
             )}
-            {expanded && displayProps.map(propPath => (
-              <div key={propPath} data-tracks-row="1"
-                className="flex items-center gap-2 transition-colors"
-                style={{
-                  height: PROP_ROW_H, padding: '0 8px 0 38px',
-                  borderBottom: '1px solid var(--color-divider)',
-                  background: 'rgba(0,0,0,0.06)',
-                  fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)',
-                }}
-                onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)'}
-                onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.background = 'rgba(0,0,0,0.06)'}
-              >
-                <svg width="7" height="7" viewBox="0 0 8 8" className="shrink-0" style={{ color: palette.accent }}>
-                  <polygon points="4,0 8,4 4,8 0,4" fill="currentColor" />
-                </svg>
-                <span className="truncate flex-1">{formatPropertyLabel(propPath)}</span>
-                <button
-                  onClick={() => {
-                    const store = useKeyframeStore.getState();
-                    if (store.isPropertyAnimated(layer.id, propPath)) store.toggleAnimatedProperty(layer.id, propPath);
-                    else { store.engine.removeAllForProperty(layer.id, propPath); useKeyframeStore.setState(s => ({ revision: s.revision + 1 })); }
+            {expanded && displayProps.map(propPath => {
+              const propKfs = engine.getKeyframesForProperty(layer.id, propPath);
+              const _globalFrame = comp ? Math.round(comp.currentTime * comp.fps) : 0;
+              const _localFrame = Math.max(0, _globalFrame - layer.startFrame);
+              const atKeyframe = propKfs.some(k => k.time === _localFrame);
+
+              const openPropRowCtx = (e: React.MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                ctx.open(e, [
+                  { id: 'p.hdr', label: formatPropertyLabel(propPath), disabled: true },
+                  { id: 'p.d1', divider: true },
+                  {
+                    id: 'p.insert',
+                    label: atKeyframe ? 'Update Keyframe at Playhead' : 'Insert Keyframe at Playhead',
+                    shortcut: 'I',
+                    onClick: () => insertKeyframeAtPlayhead(layer.id, propPath),
+                  },
+                  {
+                    id: 'p.delete',
+                    label: 'Delete Keyframe at Playhead',
+                    shortcut: 'Alt+I',
+                    disabled: !atKeyframe,
+                    onClick: () => deleteKeyframeAtPlayhead(layer.id, propPath),
+                  },
+                  { id: 'p.d2', divider: true },
+                  {
+                    id: 'p.removeAll',
+                    label: 'Remove All Keyframes on This Property',
+                    onClick: () => {
+                      const store = useKeyframeStore.getState();
+                      if (store.isPropertyAnimated(layer.id, propPath)) {
+                        store.toggleAnimatedProperty(layer.id, propPath);
+                      } else {
+                        store.engine.removeAllForProperty(layer.id, propPath);
+                        useKeyframeStore.setState(s => ({ revision: s.revision + 1 }));
+                      }
+                    },
+                  },
+                ]);
+              };
+
+              return (
+                <div key={propPath} data-tracks-row="1"
+                  className="flex items-center gap-2 transition-colors"
+                  style={{
+                    height: PROP_ROW_H, padding: '0 8px 0 38px',
+                    borderBottom: '1px solid var(--color-divider)',
+                    background: 'rgba(0,0,0,0.06)',
+                    fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)',
                   }}
-                  className="border-0 bg-transparent cursor-pointer transition-colors"
-                  style={{ color: 'var(--color-text-disabled)' }}
-                  onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.color = 'var(--color-danger)'}
-                  onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.color = 'var(--color-text-disabled)'}
-                  title="Remove animation"
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)';
+                    hoveredPropRef.current = { layerId: layer.id, propertyPath: propPath };
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLElement).style.background = 'rgba(0,0,0,0.06)';
+                    hoveredPropRef.current = null;
+                  }}
+                  onContextMenu={openPropRowCtx}
                 >
-                  <X size={11} strokeWidth={2} />
-                </button>
-              </div>
-            ))}
+                  <svg width="7" height="7" viewBox="0 0 8 8" className="shrink-0" style={{ color: palette.accent }}>
+                    <polygon points="4,0 8,4 4,8 0,4" fill="currentColor" />
+                  </svg>
+                  <span className="truncate flex-1">{formatPropertyLabel(propPath)}</span>
+
+                  {/* Insert/Update keyframe at playhead */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); insertKeyframeAtPlayhead(layer.id, propPath); }}
+                    className="border-0 bg-transparent cursor-pointer transition-all"
+                    style={{
+                      width: 16, height: 16,
+                      color: atKeyframe ? palette.accent : 'var(--color-text-disabled)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.color = palette.accent}
+                    onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.color = atKeyframe ? palette.accent : 'var(--color-text-disabled)'}
+                    title={atKeyframe ? 'Playhead on keyframe — click to update' : 'Insert keyframe at playhead (I)'}
+                  >
+                    {atKeyframe ? (
+                      <svg width="9" height="9" viewBox="0 0 9 9">
+                        <polygon points="4.5,0.5 8.5,4.5 4.5,8.5 0.5,4.5" fill="currentColor" />
+                      </svg>
+                    ) : (
+                      <Plus size={11} strokeWidth={2.5} />
+                    )}
+                  </button>
+
+                  {/* Remove all animation for this property */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const store = useKeyframeStore.getState();
+                      if (store.isPropertyAnimated(layer.id, propPath)) store.toggleAnimatedProperty(layer.id, propPath);
+                      else { store.engine.removeAllForProperty(layer.id, propPath); useKeyframeStore.setState(s => ({ revision: s.revision + 1 })); }
+                    }}
+                    className="border-0 bg-transparent cursor-pointer transition-colors"
+                    style={{ color: 'var(--color-text-disabled)' }}
+                    onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.color = 'var(--color-danger)'}
+                    onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.color = 'var(--color-text-disabled)'}
+                    title="Remove animation"
+                  >
+                    <X size={11} strokeWidth={2} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         );
       })}

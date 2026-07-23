@@ -1250,6 +1250,32 @@ export const ProjectBrowserPanel: React.FC = () => {
       { id: 'ac.rename', label: 'Rename', shortcut: 'F2', onClick: () => renameAssetById(assetId) },
       { id: 'ac.copyId', label: 'Copy Asset ID', onClick: () => copyToClipboard(assetId) },
       { id: 'ac.copyPath', label: 'Copy Name', onClick: () => copyToClipboard(asset.name) },
+      { id: 'ac.dReplace', divider: true },
+      { id: 'ac.replace', label: 'Replace Asset…', onClick: () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.multiple = false;
+        // Accept broad types so any file can replace any asset type
+        input.accept = 'image/*,video/*,audio/*,.glb,.gltf,.obj,.ply,.stl';
+        input.onchange = async () => {
+          const file = input.files?.[0];
+          if (!file) return;
+          try {
+            const result = await assetManager.replaceAsset(assetId, file);
+            addNotif({
+              type: 'success',
+              message: `Replaced "${asset.name}" with "${result.name}"`,
+              autoDismiss: 3000,
+            });
+          } catch (err: any) {
+            addNotif({
+              type: 'error',
+              message: `Replace failed: ${err?.message ?? 'Unknown error'}`,
+            });
+          }
+        };
+        input.click();
+      }},
       { id: 'ac.moveToFolder', label: 'Move to Folder', children: [
         { id: 'ac.mtf.root', label: '(Root)', onClick: () => moveAssetToFolder(assetId, null) },
         ...folders.map((f) => ({

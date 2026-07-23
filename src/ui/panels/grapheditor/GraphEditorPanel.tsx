@@ -59,7 +59,7 @@ export const GraphEditorPanel: React.FC = () => {
   const [propFilter, setPropFilter] = useState<Set<string>>(new Set());
   const [snapToFrame, setSnapToFrame] = useState(true);
   const [graphMode, setGraphMode] = useState<'value' | 'speed'>('value');
-  const [autoTangent, setAutoTangent] = useState(true);
+  const [autoTangent, setAutoTangent] = useState(false);
   const [easingPreview, setEasingPreview] = useState<{
     outTangent: { x: number; y: number };
     inTangent: { x: number; y: number };
@@ -199,7 +199,7 @@ export const GraphEditorPanel: React.FC = () => {
     py: height - ((value - viewBox.y) / viewBox.h) * height,
   }), [viewBox, width, height]);
 
-  const { handleMouseDown, handleWheel, dragType, boxSelectRect } = useGraphInteraction({
+  const { handleMouseDown, handleWheel, dragType, boxSelectRect, graphSelectedKeys } = useGraphInteraction({
     svgRef, viewBox, setViewBox, engine, curves, totalFrames, snapToFrame,
     svgWidth: width, svgHeight: height,
     autoTangent,
@@ -376,7 +376,8 @@ export const GraphEditorPanel: React.FC = () => {
                   stroke="rgba(255,255,255,0.1)" strokeWidth={0.8} strokeDasharray="4 4" />
               ) : null;
             })()}
-            <GraphCurves curves={curves} toPx={toPx} selectedKfIds={selectedKfIds} />
+            <GraphCurves curves={curves} toPx={toPx} selectedKfIds={selectedKfIds}
+              graphSelectedKeys={graphSelectedKeys} />
             {boxSelectRect && (
               <rect x={boxSelectRect.x} y={boxSelectRect.y}
                 width={boxSelectRect.w} height={boxSelectRect.h}

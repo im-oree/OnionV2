@@ -15,6 +15,7 @@ export interface ProjectState {
   setFileHandle: (h: FileSystemFileHandle | null) => void;
   addAsset: (a: ProjectAsset) => void;
   removeAsset: (id: string) => void;
+  updateAsset: (id: string, data: Partial<ProjectAsset>) => void;
   renameAsset: (id: string, name: string) => void;
   moveAssetToFolder: (assetId: string, folderId: string | null) => void;
   updateSettings: (s: Partial<Project['settings']>) => void;
@@ -45,6 +46,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   removeAsset: (assetId) => set((s) => ({
     project: { ...s.project, assets: s.project.assets.filter(a => a.id !== assetId), modified: Date.now() },
+    dirty: true,
+  })),
+
+  updateAsset: (assetId, data) => set((s) => ({
+    project: {
+      ...s.project,
+      assets: s.project.assets.map(a => a.id === assetId ? { ...a, ...data, modified: Date.now() } : a),
+      modified: Date.now(),
+    },
     dirty: true,
   })),
 
