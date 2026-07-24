@@ -7,6 +7,8 @@ import { ProjectSettingsDialog } from './ProjectSettingsDialog';
 import { ExportSettingsDialog } from './ExportSettingsDialog';
 import { ExportProgressDialog } from './ExportProgressDialog';
 import { ExtractAudioDialog } from './ExtractAudioDialog';
+import { SaveProjectDialog } from './SaveProjectDialog';
+import { RenameProjectDialog } from './RenameProjectDialog';
 
 interface DialogState {
   newComposition: boolean;
@@ -16,9 +18,16 @@ interface DialogState {
   workspacePicker: boolean;
   projectSettings: boolean;
   extractAudioLayerId: string | null;
+  saveProject: { open: boolean; mode: 'first-save' | 'save-as' };
+  renameProject: boolean;
 }
 
-let dialogState: DialogState = { newComposition: false, newProject: false, preferences: false, workspacePicker: false, projectSettings: false, extractAudioLayerId: null };
+let dialogState: DialogState = {
+  newComposition: false, newProject: false, preferences: false,
+  workspacePicker: false, projectSettings: false, extractAudioLayerId: null,
+  saveProject: { open: false, mode: 'first-save' },
+  renameProject: false,
+};
 const listeners: Array<() => void> = [];
 
 function notifyListeners(): void {
@@ -45,8 +54,33 @@ export function closeExtractAudioDialog(): void {
   notifyListeners();
 }
 
+export function openSaveProjectDialog(mode: 'first-save' | 'save-as' = 'first-save'): void {
+  dialogState = { ...dialogState, saveProject: { open: true, mode } };
+  notifyListeners();
+}
+
+export function closeSaveProjectDialog(): void {
+  dialogState = { ...dialogState, saveProject: { open: false, mode: 'first-save' } };
+  notifyListeners();
+}
+
+export function openRenameProjectDialog(): void {
+  dialogState = { ...dialogState, renameProject: true };
+  notifyListeners();
+}
+
+export function closeRenameProjectDialog(): void {
+  dialogState = { ...dialogState, renameProject: false };
+  notifyListeners();
+}
+
 export function closeAllDialogs(): void {
-  dialogState = { newComposition: false, newProject: false, preferences: false, workspacePicker: false, projectSettings: false, extractAudioLayerId: null };
+  dialogState = {
+    newComposition: false, newProject: false, preferences: false,
+    workspacePicker: false, projectSettings: false, extractAudioLayerId: null,
+    saveProject: { open: false, mode: 'first-save' },
+    renameProject: false,
+  };
   notifyListeners();
 }
 
@@ -102,6 +136,16 @@ export const DialogManager: React.FC = () => {
       {state.projectSettings && <ProjectSettingsDialog onClose={closeAllDialogs} />}
       {extractLayer && (
         <ExtractAudioDialog layer={extractLayer} onClose={closeExtractAudioDialog} />
+      )}
+      {state.saveProject.open && (
+        <SaveProjectDialog
+          open
+          mode={state.saveProject.mode}
+          onClose={closeSaveProjectDialog}
+        />
+      )}
+      {state.renameProject && (
+        <RenameProjectDialog open onClose={closeRenameProjectDialog} />
       )}
       {/* Export dialogs are self-managed via useExportStore */}
       <ExportSettingsDialog />

@@ -193,6 +193,16 @@ export class TonemapPass {
     this.renderer.outputColorSpace = prevColorSpace;
   }
 
+  /** Swap in a new renderer after a backend hot-swap. */
+  updateRenderer(renderer: THREE.WebGLRenderer): void {
+    (this as any).renderer = renderer;
+    // Dispose the old HDR FBO — it belongs to the previous GL context
+    if (this._hdrFBO) {
+      try { this._hdrFBO.dispose(); } catch {}
+      this._hdrFBO = null;
+    }
+  }
+
   dispose(): void {
     this._hdrFBO?.dispose();
     this._hdrFBO = null;

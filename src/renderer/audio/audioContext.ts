@@ -7,6 +7,13 @@ let _sharedCtx: AudioContext | null = null;
 export function getAudioContext(): AudioContext {
   if (!_sharedCtx) {
     _sharedCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    // Initialize the 3D audio listener at the composition center (0,0,0)
+    // facing +Z. All spatial audio sources are positioned relative to this.
+    try {
+      import('./spatialAudio').then(m => m.initListener());
+    } catch {
+      // Silent — spatial audio just won't work if init fails
+    }
   }
   return _sharedCtx;
 }

@@ -1,5 +1,6 @@
 import React from 'react';
 import { useCompositionStore } from '../../../state/compositionStore';
+import { useViewportStore } from '../../../state/viewportStore';
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { NumberInput } from '../properties/inputs/NumberInput';
 import { CheckboxInput } from '../properties/inputs/CheckboxInput';
@@ -226,11 +227,36 @@ export const CameraPanel: React.FC = () => {
           }} />
         </PropRow>
 
-        {/* ── Move with View Toggle ── */}
-        <PropRow label="Move with View">
-          <CheckboxInput value={comp.cameraMoveWithView ?? false}
-            onChange={v => upd({ cameraMoveWithView: v })} />
-        </PropRow>
+        {/* ── Move with View Toggle — highlighted ── */}
+        <div style={{
+          padding: '6px 8px',
+          margin: '4px 0',
+          background: (comp.cameraMoveWithView ?? false)
+            ? 'rgba(74,222,128,0.10)'
+            : 'rgba(255,255,255,0.03)',
+          border: `1px solid ${(comp.cameraMoveWithView ?? false)
+            ? 'rgba(74,222,128,0.35)'
+            : 'rgba(255,255,255,0.06)'}`,
+          borderRadius: 4,
+          fontSize: 11,
+        }}>
+          <PropRow label="Move with View">
+            <CheckboxInput value={comp.cameraMoveWithView ?? false}
+              onChange={v => upd({ cameraMoveWithView: v })} />
+          </PropRow>
+          <div style={{
+            fontSize: 9,
+            color: 'var(--color-text-tertiary)',
+            marginTop: 2,
+            lineHeight: 1.4,
+          }}>
+            When on, MMB/RMB/WASD move the comp camera in Active Camera view.
+            Auto-keying supported.
+          </div>
+        </div>
+
+        {/* ── Fly Speed ── */}
+        <FlySpeedRow />
 
         {/* ── Invert Controls ── */}
         <div style={{ marginTop: 6, marginBottom: 2, fontSize: 'var(--font-size-xs)',
@@ -299,5 +325,20 @@ export const CameraPanel: React.FC = () => {
         </div>
       </Section>
     </div>
+  );
+};
+
+/** Fly speed slider — separate component so the hook is clean. */
+const FlySpeedRow: React.FC = () => {
+  const flySpeed = useViewportStore((s) => s.settings.flySpeed);
+  const setFlySpeed = useViewportStore((s) => s.setFlySpeed);
+  return (
+    <PropRow label="Fly Speed">
+      <NumberInput
+        value={flySpeed}
+        onChange={setFlySpeed}
+        min={10} max={10000} step={10} precision={0}
+      />
+    </PropRow>
   );
 };

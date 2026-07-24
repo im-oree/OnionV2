@@ -527,6 +527,182 @@ export function createStereoWiden(ctx: AudioContext, params: {
   };
 }
 
+// ── Reduce Noise (RNNoise or spectral gate fallback) ──────────
+export function createReduceNoise(ctx: AudioContext, params: {
+  strength?: number;   // 0..1
+} = {}): EffectNode {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  const wet = ctx.createGain();
+
+  // Start in bypass — swap in the AudioWorklet asynchronously
+  input.connect(dry);
+  input.connect(wet);
+  dry.connect(output);
+  wet.connect(output);
+
+  let workletNode: AudioWorkletNode | null = null;
+  let disposed = false;
+
+  (async () => {
+    const { ensureRNNoiseProcessor, loadRNNoiseWasm } = await import('./rnnoiseLoader');
+    const procName = await ensureRNNoiseProcessor(ctx);
+    if (!procName || disposed) return;
+    try {
+      workletNode = new AudioWorkletNode(ctx, procName, {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        channelCount: 2,
+      });
+      workletNode.port.postMessage({
+        type: 'setEnabled', enabled: true,
+      });
+      workletNode.port.postMessage({
+        type: 'setStrength', strength: params.strength ?? 0.8,
+      });
+      const wasm = await loadRNNoiseWasm();
+      if (wasm) {
+        workletNode.port.postMessage({
+          type: 'init', wasmBinary: wasm,
+        });
+      }
+      // Re-wire: input → workletNode → wet
+      try { input.disconnect(wet); } catch {}
+      input.connect(workletNode);
+      workletNode.connect(wet);
+    } catch (err) {
+      console.warn('[ReduceNoise] AudioWorklet creation failed:', err);
+    }
+  })();
+
+  return {
+    input, output,
+    setParam(name, value) {
+      if (name === 'strength' && workletNode) {
+        workletNode.port.postMessage({
+          type: 'setStrength', strength: Math.max(0, Math.min(1, value)),
+        });
+      }
+    },
+    setMix(mix) {
+      wet.gain.value = mix;
+      dry.gain.value = 1 - mix;
+    },
+    dispose() {
+      disposed = true;
+      try {
+        if (workletNode) {
+          workletNode.port.postMessage({ type: 'setEnabled', enabled: false });
+          workletNode.disconnect();
+        }
+        input.disconnect(); dry.disconnect(); wet.disconnect(); output.disconnect();
+      } catch {}
+    },
+  };
+}
+
+// ── Isolate Voice (aggressive vocal-band EQ + gate + mid/side) ─
+export function createIsolateVoice(ctx: AudioContext, params: {
+  strength?: number;        // 0..1
+  centerBias?: number;      // 0..1
+} = {}): EffectNode {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  const wet = ctx.createGain();
+
+  // Vocal-band filtering
+  const highpass = ctx.createBiquadFilter();
+  highpass.type = 'highpass';
+  highpass.frequency.value = 200;
+  highpass.Q.value = 0.7;
+
+  const lowpass = ctx.createBiquadFilter();
+  lowpass.type = 'lowpass';
+  lowpass.frequency.value = 8000;
+  lowpass.Q.value = 0.7;
+
+  // Presence boost around 2-4kHz
+  const presenceBoost = ctx.createBiquadFilter();
+  presenceBoost.type = 'peaking';
+  presenceBoost.frequency.value = 3000;
+  presenceBoost.Q.value = 1.5;
+  presenceBoost.gain.value = 4;
+
+  // Compressor for vocal dynamics
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -30;
+  comp.ratio.value = 4;
+  comp.attack.value = 0.003;
+  comp.release.value = 0.15;
+
+  // Mid-side centre extraction
+  const splitter = ctx.createChannelSplitter(2);
+  const merger = ctx.createChannelMerger(2);
+  const leftGain = ctx.createGain();
+  const rightGain = ctx.createGain();
+
+  // Use a mutable state object so setParam closures always read the
+  // latest values — closures capture by reference on the object, not
+  // by value on the primitives.
+  const _state = {
+    strength: params.strength ?? 0.7,
+    centerBias: params.centerBias ?? 0.5,
+  };
+
+  leftGain.gain.value = 1 + _state.centerBias;
+  rightGain.gain.value = 1 - _state.centerBias * _state.strength;
+
+  input.connect(dry);
+  input.connect(highpass);
+  highpass.connect(lowpass);
+  lowpass.connect(presenceBoost);
+  presenceBoost.connect(comp);
+  comp.connect(splitter);
+  splitter.connect(leftGain, 0);
+  splitter.connect(rightGain, 1);
+  leftGain.connect(merger, 0, 0);
+  rightGain.connect(merger, 0, 1);
+  merger.connect(wet);
+
+  dry.connect(output);
+  wet.connect(output);
+
+  return {
+    input, output,
+    setParam(name, value) {
+      if (name === 'strength') {
+        _state.strength = Math.max(0, Math.min(1, value));
+        leftGain.gain.value = 1 + _state.centerBias;
+        rightGain.gain.value = 1 - _state.centerBias * _state.strength;
+      } else if (name === 'centerBias') {
+        _state.centerBias = Math.max(0, Math.min(1, value));
+        leftGain.gain.value = 1 + _state.centerBias;
+        rightGain.gain.value = 1 - _state.centerBias * _state.strength;
+      } else if (name === 'lowCutoff') {
+        highpass.frequency.value = Math.max(50, Math.min(1000, value));
+      } else if (name === 'highCutoff') {
+        lowpass.frequency.value = Math.max(2000, Math.min(20000, value));
+      } else if (name === 'presenceBoost') {
+        presenceBoost.gain.value = Math.max(0, Math.min(12, value));
+      }
+    },
+    setMix(mix) {
+      wet.gain.value = mix;
+      dry.gain.value = 1 - mix;
+    },
+    dispose() {
+      try {
+        input.disconnect(); dry.disconnect(); wet.disconnect();
+        highpass.disconnect(); lowpass.disconnect(); presenceBoost.disconnect();
+        comp.disconnect(); splitter.disconnect(); merger.disconnect();
+        leftGain.disconnect(); rightGain.disconnect(); output.disconnect();
+      } catch {}
+    },
+  };
+}
+
 // ── Factory dispatcher ──────────────────────────────────────
 export function createAudioEffect(
   ctx: AudioContext,
@@ -547,8 +723,10 @@ export function createAudioEffect(
     case 'phaser':      return createPhaser(ctx, params);
     case 'tremolo':     return createTremolo(ctx, params);
     case 'bitcrusher':  return createBitcrusher(ctx, params);
-    case 'stereoWiden': return createStereoWiden(ctx, params);
-    default:            return createReverb(ctx, {});
+    case 'stereoWiden':   return createStereoWiden(ctx, params);
+    case 'reduceNoise':   return createReduceNoise(ctx, params);
+    case 'isolateVoice':  return createIsolateVoice(ctx, params);
+    default:              return createReverb(ctx, {});
   }
 }
 
@@ -668,6 +846,28 @@ export const EFFECT_METADATA: Record<AudioEffectType, EffectMeta> = {
     type: 'stereoWiden', displayName: 'Stereo Widener', hasMix: false,
     params: [
       { key: 'width', label: 'Width', min: 0, max: 2, step: 0.01, default: 1, format: v => `${(v * 100).toFixed(0)}%` },
+    ],
+  },
+  reduceNoise: {
+    type: 'reduceNoise', displayName: 'Reduce Noise', hasMix: true,
+    params: [
+      { key: 'strength', label: 'Strength', min: 0, max: 1, step: 0.01, default: 0.8,
+        format: v => `${Math.round(v * 100)}%` },
+    ],
+  },
+  isolateVoice: {
+    type: 'isolateVoice', displayName: 'Isolate Voice', hasMix: true,
+    params: [
+      { key: 'strength', label: 'Strength', min: 0, max: 1, step: 0.01, default: 0.7,
+        format: v => `${Math.round(v * 100)}%` },
+      { key: 'centerBias', label: 'Center Bias', min: 0, max: 1, step: 0.01, default: 0.5,
+        format: v => `${Math.round(v * 100)}%` },
+      { key: 'lowCutoff', label: 'Low Cutoff', min: 50, max: 1000, step: 10, default: 200,
+        format: v => `${Math.round(v)}Hz` },
+      { key: 'highCutoff', label: 'High Cutoff', min: 2000, max: 20000, step: 100, default: 8000,
+        format: v => `${(v / 1000).toFixed(1)}kHz` },
+      { key: 'presenceBoost', label: 'Presence Boost', min: 0, max: 12, step: 0.5, default: 4,
+        format: v => `+${v.toFixed(1)}dB` },
     ],
   },
 };

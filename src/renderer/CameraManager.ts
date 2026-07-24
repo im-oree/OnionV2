@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { VIEWPORT_CONFIG } from '../config/viewportConfig';
 import { emitCameraChange } from './utils/CameraEvents';
+import { cameraController } from './CameraController';
 
 export interface ViewportTransform {
   panX: number;
@@ -31,15 +32,26 @@ export class CameraManager {
     this._3DMode = camera !== null;
     if (viewportW !== undefined) this.viewportWidth = viewportW;
     if (viewportH !== undefined) this.viewportHeight = viewportH;
+    if (camera && viewportW !== undefined && viewportH !== undefined) {
+      cameraController.setViewportSize(viewportW, viewportH);
+    }
     this.onChanged?.();
     emitCameraChange();
   }
 
   get is3DMode(): boolean { return this._3DMode; }
 
-  /** Return the active rendering camera — perspective if in 3D mode, orthographic otherwise. */
+  /**
+   * Return the active rendering camera. In 3D mode this is either the
+   * composition's own perspective camera (Active Camera view) or the
+   * Free View orbit camera, depending on CameraController.mode.
+   */
   getActiveCamera(): THREE.Camera {
-    return this._perspectiveCamera ?? this.camera;
+    if (this._3DMode) {
+      if (cameraController.isFreeView) return cameraController.freeCamera;
+      return this._perspectiveCamera ?? this.camera;
+    }
+    return this.camera;
   }
 
   constructor() {
@@ -62,6 +74,8 @@ export class CameraManager {
     this.viewportWidth = w;
     this.viewportHeight = h;
     this.updateProjection();
+    // Keep Free View camera in sync with viewport aspect (3D mode only)
+    if (this._3DMode) cameraController.setViewportSize(w, h);
   }
 
   private updateProjection(): void {

@@ -68,6 +68,22 @@ export const useEffectsStore = create<EffectsState>((set, get) => ({
     const def = effectRegistry.get(effectType);
     if (!def) return;
     const snapshot = captureSnapshot();
+
+    // Check if the current backend supports this effect
+    import('./rendererBackendStore').then(({ useRendererBackendStore }) => {
+      const backendStore = useRendererBackendStore.getState();
+      const caps = backendStore.getCapabilities();
+      if (!caps.rawGLSLShaders) {
+        backendStore.markEffectUnsupported(effectType);
+        import('./notificationStore').then(({ useNotificationStore }) => {
+          useNotificationStore.getState().addNotification({
+            type: 'warning',
+            message: `"${def!.displayName}" requires WebGL — will render via sidecar or skip. Switch backend in Preferences for full support.`,
+            autoDismiss: 4500,
+          });
+        });
+      }
+    });
     const existing = get().effectsByLayer[layerId] ?? [];
     const newEffect: EffectInstance = {
       id: genId(),

@@ -141,10 +141,11 @@ export function applyLinkedLayerPosition(
   const layer = comp.layers.find((l: any) => l.id === linkedLayerId);
   if (!layer) return config;
   const t3d = layer.transform3D;
+  const t2d = layer.transform;
   return {
     ...config,
-    x: t3d ? t3d.position.x : layer.transform.position.x,
-    y: t3d ? t3d.position.y : layer.transform.position.y,
+    x: t3d ? t3d.position.x : (t2d ? t2d.position.x : 0),
+    y: t3d ? t3d.position.y : (t2d ? t2d.position.y : 0),
     z: t3d ? t3d.position.z : 0,
   };
 }

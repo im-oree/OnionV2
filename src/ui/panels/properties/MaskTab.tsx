@@ -4,12 +4,12 @@
  * Mask2, ... + button), shape library, and all shape-specific settings.
  */
 import React, { useCallback } from 'react';
-import { useMaskStore } from '../../../../state/maskStore';
-import type { VectorMask, MaskShapeType } from '../../../../types/mask';
+import { useMaskStore } from '../../../state/maskStore';
+import type { VectorMask, MaskShapeType } from '../../../types/mask';
 import { MaskShapeLibrary } from './MaskShapeLibrary';
 import { MaskPropRow } from './MaskPropRow';
-import { SelectInput } from '../inputs/SelectInput';
-import { CheckboxInput } from '../inputs/CheckboxInput';
+import { SelectInput } from './inputs/SelectInput';
+import { CheckboxInput } from './inputs/CheckboxInput';
 import { Plus, Link, Unlink, Trash2, Copy, Eraser, Paintbrush, X } from 'lucide-react';
 
 interface Props { layerId: string; }
@@ -150,8 +150,8 @@ export const MaskTab: React.FC<Props> = ({ layerId }) => {
     }
     // Pen shape triggers pen tool for freeform drawing
     if (shape === 'pen') {
-      import('../../../../state/toolStore').then(({ useToolStore }) => {
-        import('../../../../state/penToolStore').then(({ usePenToolStore }) => {
+      import('../../../state/toolStore').then(({ useToolStore }) => {
+        import('../../../state/penToolStore').then(({ usePenToolStore }) => {
           useToolStore.getState().setActiveTool('pen' as any);
           (window as any).__maskTargetLayerId = layerId;
           (window as any).__maskTargetMaskId = active.id;
@@ -165,7 +165,7 @@ export const MaskTab: React.FC<Props> = ({ layerId }) => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto' }}>
-      {/* Mask master enable */}
+      {/* Mask master enable + invert */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8,
         padding: '10px 12px', borderBottom: '1px solid var(--color-border)',
@@ -180,6 +180,29 @@ export const MaskTab: React.FC<Props> = ({ layerId }) => {
           Mask
         </span>
         <div style={{ flex: 1 }} />
+        {active && isEnabled && (
+          <button
+            onClick={() => store.updateMask(layerId, active.id, { inverted: !active.inverted })}
+            title={active.inverted ? 'Uninvert mask' : 'Invert mask'}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              padding: '3px 10px', fontSize: 10, fontWeight: 500,
+              background: active.inverted ? 'var(--color-accent-muted)' : 'var(--color-input-bg)',
+              border: `1px solid ${active.inverted ? 'var(--color-accent)' : 'var(--color-border)'}`,
+              borderRadius: 3, cursor: 'pointer',
+              color: active.inverted ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+              transition: 'all 120ms',
+            }}
+          >
+            {/* Yin-yang-ish invert icon */}
+            <svg width={11} height={11} viewBox="0 0 12 12" fill="none">
+              <circle cx="6" cy="6" r="5" fill="currentColor" fillOpacity="0.25"
+                stroke="currentColor" strokeWidth="1"/>
+              <path d="M6 1 A5 5 0 0 1 6 11 Z" fill="currentColor"/>
+            </svg>
+            Invert
+          </button>
+        )}
       </div>
 
       {isEnabled && (

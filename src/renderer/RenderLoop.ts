@@ -18,7 +18,7 @@ export interface FrameStats {
 export type PlaybackMode = 'normal' | 'blit-only';
 
 export class RenderLoop {
-  private renderer: THREE.WebGLRenderer;
+  public renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private camera: THREE.Camera;
   private animFrameId: number | null = null;
@@ -56,6 +56,12 @@ export class RenderLoop {
     this.renderer = renderer;
     this.scene = scene;
     this.camera = camera;
+  }
+
+  /** Swap in a new renderer instance after a backend hot-swap. */
+  updateRenderer(renderer: THREE.WebGLRenderer): void {
+    this.renderer = renderer;
+    this.requestRender();
   }
 
   public beforeRender: (() => void) | null = null;

@@ -231,7 +231,7 @@ function buildLayerCtx(compId: string, layer: Layer, idx: number, total: number)
       });
     } },
     { id: 'l.addMask', label: 'Add Rect Mask', onClick: () => {
-      import('../../../state/maskStore').then(m => m.useMaskStore.getState().addRectMask(layer.id));
+      import('../../../state/maskStore').then(m => m.useMaskStore.getState().addMask(layer.id, 'rectangle'));
     } },
     { id: 'l.d3', divider: true },
     // Time Remapping (video/comp/image layers)

@@ -1,5 +1,6 @@
 import React, { useRef, useCallback, useState, useEffect } from 'react';
 import { debouncedCapture, flushDebouncedSnapshot } from '../../../../state/historyStore';
+import { userEditGuard } from '../../../../animation/UserEditGuard';
 
 interface NumberInputProps {
   value: number;
@@ -13,6 +14,11 @@ interface NumberInputProps {
   hardClamp?: boolean;
   onKeyframe?: () => void;
   locked?: boolean;
+  /** Optional user-edit guard identifiers. When provided, dragging/typing
+   *  marks this property as user-edited so PropertyBinder won't overwrite
+   *  the value on the next RAF tick. */
+  guardLayerId?: string;
+  guardPropertyPath?: string;
 }
 
 const softClamp = (v: number, min?: number, max?: number): number => {
@@ -29,6 +35,7 @@ const roundTo = (v: number, p: number): number => {
 export const NumberInput: React.FC<NumberInputProps> = ({
   value, onChange, min, max, step = 1, precision = 2, label,
   disabled = false, hardClamp = false, onKeyframe, locked = false,
+  guardLayerId, guardPropertyPath,
 }) => {
   const [localValue, setLocalValue] = useState(String(value));
   const [editing, setEditing] = useState(false);
@@ -48,6 +55,26 @@ export const NumberInput: React.FC<NumberInputProps> = ({
     }
     setLocalValue(String(roundTo(value, precision)));
   }, [value, precision, editing, focused]);
+
+  const beginGuard = useCallback(() => {
+    if (guardLayerId && guardPropertyPath) {
+      userEditGuard.begin(guardLayerId, guardPropertyPath);
+    }
+  }, [guardLayerId, guardPropertyPath]);
+  const endGuard = useCallback(() => {
+    if (guardLayerId && guardPropertyPath) {
+      userEditGuard.end(guardLayerId, guardPropertyPath);
+    }
+  }, [guardLayerId, guardPropertyPath]);
+
+  // Cleanup guard on unmount
+  useEffect(() => {
+    return () => {
+      if (guardLayerId && guardPropertyPath) {
+        userEditGuard.end(guardLayerId, guardPropertyPath);
+      }
+    };
+  }, [guardLayerId, guardPropertyPath]);
 
   const commitInteractive = useCallback((v: number) => {
     const clamped = softClamp(v, min, max);
@@ -71,6 +98,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
       document.body.style.cursor = 'ew-resize';
       isScrubbing.current = true;
       scrubStart.current = { x: e.clientX, val: value };
+      beginGuard();
       debouncedCapture('Change Value');
       const onMove = (ev: MouseEvent) => {
         const delta = ev.clientX - scrubStart.current.x;
@@ -82,6 +110,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
         document.body.style.cursor = '';
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
+        endGuard();
         flushDebouncedSnapshot();
       };
       window.addEventListener('mousemove', onMove);
@@ -101,6 +130,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
         document.body.style.cursor = 'ew-resize';
         isScrubbing.current = true;
         scrubStart.current = { x: startX, val: startVal };
+        beginGuard();
         debouncedCapture('Change Value');
       }
       if (!dragging) return;
@@ -113,6 +143,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
       if (dragging) {
         isScrubbing.current = false;
         document.body.style.cursor = '';
+        endGuard();
         flushDebouncedSnapshot();
       } else {
         inputRef.current?.focus();
@@ -126,16 +157,24 @@ export const NumberInput: React.FC<NumberInputProps> = ({
   useEffect(() => {
     const el = inputRef.current;
     if (!el || disabled || locked) return;
+    let wheelGuardTimeout: ReturnType<typeof setTimeout> | null = null;
     const onWheel = (e: WheelEvent) => {
       if (document.activeElement !== el) return;
       e.preventDefault();
+      beginGuard();
       const delta = e.deltaY < 0 ? step : -step;
       const multiplier = e.shiftKey ? 10 : 1;
       commitInteractive(valueRef.current + delta * multiplier);
+      // Release guard after wheel idle
+      if (wheelGuardTimeout) clearTimeout(wheelGuardTimeout);
+      wheelGuardTimeout = setTimeout(() => { endGuard(); wheelGuardTimeout = null; }, 250);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [step, commitInteractive, disabled, locked]);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      if (wheelGuardTimeout) clearTimeout(wheelGuardTimeout);
+    };
+  }, [step, commitInteractive, disabled, locked, beginGuard, endGuard]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') { inputRef.current?.blur(); return; }
@@ -176,12 +215,14 @@ export const NumberInput: React.FC<NumberInputProps> = ({
         }}
         onFocus={() => {
           setEditing(true); setFocused(true);
+          beginGuard();
         }}
         onBlur={() => {
           setEditing(false); setFocused(false);
           const parsed = parseFloat(localValue);
           if (!isNaN(parsed)) commitTyped(parsed);
           else setLocalValue(String(roundTo(value, precision)));
+          endGuard();
         }}
         onKeyDown={handleKeyDown}
         onMouseDown={handleMouseDown}

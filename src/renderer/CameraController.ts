@@ -140,7 +140,7 @@ export class CameraController {
       freeFocalY:     this._free.focal.y,
       freeFocalZ:     this._free.focal.z,
       freeOrthographic: this._free.orthographic,
-    }, true /* silent — no history noise */);
+    });
   }
 
   // ── Viewport size ────────────────────────────────────────

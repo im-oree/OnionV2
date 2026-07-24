@@ -11,6 +11,7 @@ import { useCompositionStore } from '../../../state/compositionStore';
 import { animationClock } from '../timeline/PlaybackControls';
 import { debouncedCapture, flushDebouncedSnapshot } from '../../../state/historyStore';
 import { insertKeyframeAtPlayhead, deleteKeyframeAtPlayhead } from '../timeline/propertyRowActions';
+import { userEditGuard } from '../../../animation/UserEditGuard';
 
 interface Props {
   label: string;
@@ -115,14 +116,16 @@ export const PropRowWithKF: React.FC<Props> = ({
   const sliderDragging = React.useRef(false);
   const handleSliderMouseDown = useCallback(() => {
     sliderDragging.current = true;
+    if (layerId && propertyPath) userEditGuard.begin(layerId, propertyPath);
     debouncedCapture('Change Value');
-  }, []);
+  }, [layerId, propertyPath]);
   const handleSliderMouseUp = useCallback(() => {
     if (sliderDragging.current) {
       sliderDragging.current = false;
+      if (layerId && propertyPath) userEditGuard.end(layerId, propertyPath);
       flushDebouncedSnapshot();
     }
-  }, []);
+  }, [layerId, propertyPath]);
   React.useEffect(() => {
     // Global mouseup guard in case the slider drag ends outside the element
     const onUp = () => handleSliderMouseUp();
@@ -179,6 +182,20 @@ export const PropRowWithKF: React.FC<Props> = ({
     if (atKeyframe) deleteKeyframeAtPlayhead(layerId, propertyPath);
     else insertKeyframeAtPlayhead(layerId, propertyPath);
   }, [layerId, propertyPath, atKeyframe]);
+
+  const inputFocus = useCallback(() => {
+    if (layerId && propertyPath) userEditGuard.begin(layerId, propertyPath);
+  }, [layerId, propertyPath]);
+  const inputBlur = useCallback(() => {
+    if (layerId && propertyPath) userEditGuard.end(layerId, propertyPath);
+  }, [layerId, propertyPath]);
+
+  // Cleanup guard on unmount — release any active guard
+  React.useEffect(() => {
+    return () => {
+      if (layerId && propertyPath) userEditGuard.end(layerId, propertyPath);
+    };
+  }, [layerId, propertyPath]);
 
   const commitInput = useCallback(() => {
     const raw = inputValue.trim();
@@ -254,10 +271,11 @@ export const PropRowWithKF: React.FC<Props> = ({
               value={inputValue}
               autoFocus
               onChange={(e) => setInputValue(e.target.value)}
-              onBlur={commitInput}
+              onFocus={inputFocus}
+              onBlur={() => { commitInput(); inputBlur(); }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') commitInput();
-                else if (e.key === 'Escape') setEditing(false);
+                if (e.key === 'Enter') { commitInput(); inputBlur(); }
+                else if (e.key === 'Escape') { inputBlur(); setEditing(false); }
               }}
               style={{
                 width: 44,

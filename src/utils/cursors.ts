@@ -33,7 +33,6 @@ const toolCursors: Partial<Record<string, CursorState>> = {
   [TOOLS.TEXT]:          'text',
   [TOOLS.NULL]:          'default',
   [TOOLS.GRADIENT]:      'crosshair',
-  [TOOLS.MASK]:          'crosshair',
   [TOOLS.PERSPECTIVE]:   'crosshair',
 };
 

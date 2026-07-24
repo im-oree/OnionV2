@@ -4,6 +4,7 @@ import { useCompositionStore } from '../state/compositionStore';
 import { useExpressionStore } from '../state/expressionStore';
 import { useTimelineStore } from '../state/timelineStore';
 import { expressionEngine } from './ExpressionEngine';
+import { userEditGuard } from './UserEditGuard';
 
 export interface RuntimeTransformOverride {
   position?: { x: number; y: number };
@@ -141,6 +142,10 @@ export class PropertyBinder {
       const localFrame = Math.max(0, frame - layer.startFrame);
 
       for (const path of paths) {
+        // Skip properties the user is actively editing — don't overwrite
+        // their in-progress drag/type with an interpolated keyframe value.
+        if (userEditGuard.isGuarded(layer.id, path)) continue;
+
         const result = this.engine.evaluate(layer.id, path, localFrame);
         let val = result.value;
 
@@ -193,6 +198,75 @@ export class PropertyBinder {
           else if (field === 'anchorPoint.x') transform3DPatch.anchorPoint = { ...transform3DPatch.anchorPoint, x: val as number };
           else if (field === 'anchorPoint.y') transform3DPatch.anchorPoint = { ...transform3DPatch.anchorPoint, y: val as number };
           else if (field === 'anchorPoint.z') transform3DPatch.anchorPoint = { ...transform3DPatch.anchorPoint, z: val as number };
+          continue;
+        }
+
+        // â”€â”€ audioEffect.* â”€â”€
+        if (path.startsWith('audioEffect.')) {
+          const parts = path.split('.');
+          if (parts.length >= 3) {
+            const instanceId = parts[1];
+            const paramKey = parts.slice(2).join('.');
+            const layerData = (layer as any).data ?? {};
+            const currentEffects = (layerData.audioEffects ?? []) as any[];
+            if (currentEffects.length > 0) {
+              const nextEffects = currentEffects.map(e => {
+                if (e.id !== instanceId) return e;
+                if (paramKey === 'mix') return { ...e, mix: val as number };
+                return { ...e, params: { ...(e.params ?? {}), [paramKey]: val as number } };
+              });
+              const baseData = dataPatch ?? layerData;
+              dataPatch = { ...baseData, audioEffects: nextEffects };
+              touched = true;
+            }
+          }
+          continue;
+        }
+
+        // â”€â”€ eq.* â”€â”€
+        // ── cutout.<field> and cutout.stroke.<field> ──
+        if (path.startsWith('cutout.')) {
+          const field = path.slice('cutout.'.length);
+          const layerData = (layer as any).data ?? {};
+          const currentCutout = layerData.cutout ?? {};
+          let nextCutout: any;
+          if (field.startsWith('chroma.')) {
+            const cf = field.slice('chroma.'.length);
+            nextCutout = {
+              ...currentCutout,
+              chroma: { ...(currentCutout.chroma ?? {}), [cf]: val },
+            };
+          } else if (field.startsWith('stroke.')) {
+            const sf = field.slice('stroke.'.length);
+            nextCutout = {
+              ...currentCutout,
+              stroke: { ...(currentCutout.stroke ?? {}), [sf]: val },
+            };
+          } else {
+            nextCutout = { ...currentCutout, [field]: val };
+          }
+          const baseData = dataPatch ?? layerData;
+          dataPatch = { ...baseData, cutout: nextCutout };
+          touched = true;
+          continue;
+        }
+
+        if (path.startsWith('eq.')) {
+          const parts = path.split('.');
+          if (parts.length >= 3) {
+            const bandIdx = parseInt(parts[1], 10);
+            const field = parts.slice(2).join('.');
+            const layerData = (layer as any).data ?? {};
+            const currentEq = layerData.eq;
+            if (currentEq?.bands && !isNaN(bandIdx)) {
+              const nextBands = currentEq.bands.map((b: any, i: number) =>
+                i === bandIdx ? { ...b, [field]: val as number } : b,
+              );
+              const baseData = dataPatch ?? layerData;
+              dataPatch = { ...baseData, eq: { ...currentEq, bands: nextBands } };
+              touched = true;
+            }
+          }
           continue;
         }
 
@@ -267,6 +341,12 @@ export class PropertyBinder {
       // "runtime effect override map" too, but for now this at least keeps
       // static effects untouched.
       for (const eu of effectUpdates) {
+        // Second guard for effect params — the path guard above should
+        // catch these, but double-check the specific effect param path
+        // in case the property list was already collected before the
+        // guard was set.
+        const effectPath = `effect.${eu.effectId}.${eu.paramId}`;
+        if (userEditGuard.isGuarded(layer.id, effectPath)) continue;
         useEffectsStore.getState().setParameterValue(layer.id, eu.effectId, eu.paramId, eu.value);
         updated++;
       }
@@ -318,6 +398,7 @@ export class PropertyBinder {
 
     if (cameraPaths.length > 0) {
       for (const path of cameraPaths) {
+        if (userEditGuard.isGuarded(CAMERA_PROP_ID, path)) continue;
         const result = this.engine.evaluate(CAMERA_PROP_ID, path, frame);
         let val = result.value;
 
@@ -344,8 +425,32 @@ export class PropertyBinder {
 
       // If not playing (scrub / seek / cache build), flush camera overrides to the store
       // so all camera-panel UIs update. Skip during playback.
+      // On scrub/seek/paused, flush camera overrides to the store so the
+      // Camera panel UI reflects the current frame's values. BUT skip any
+      // camera field the user is currently editing — otherwise we clobber
+      // their live drag.
       if (!isPlaying && Object.keys(this._cameraOverride).length > 0) {
-        useCompositionStore.getState().updateComposition(compId, this._cameraOverride as any);
+        const filtered: any = {};
+        const fieldToPath: Record<string, string> = {
+          cameraPositionX: 'camera.positionX',
+          cameraPositionY: 'camera.positionY',
+          cameraPositionZ: 'camera.positionZ',
+          cameraRotationX: 'camera.rotationX',
+          cameraRotationY: 'camera.rotationY',
+          cameraRotationZ: 'camera.rotationZ',
+          cameraFOV: 'camera.fov',
+          cameraZoom: 'camera.zoom',
+          cameraFocusDistance: 'camera.focusDistance',
+          cameraAperture: 'camera.aperture',
+        };
+        for (const [k, v] of Object.entries(this._cameraOverride)) {
+          const path = fieldToPath[k];
+          if (path && userEditGuard.isCameraPropGuarded(path)) continue;
+          filtered[k] = v;
+        }
+        if (Object.keys(filtered).length > 0) {
+          useCompositionStore.getState().updateComposition(compId, filtered as any);
+        }
       }
     }
 

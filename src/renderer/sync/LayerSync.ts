@@ -335,33 +335,52 @@ export class LayerSync {
     });
   }
 
-  private _applyMasks(layers: Layer[]): void {
+  /**
+   * Apply masks to a single layer's canvas/texture.
+   * Shared helper for both sync-time and per-frame mask application.
+   */
+  private _applyMasksToLayer(layerId: string): void {
     const store = useMaskStore.getState();
+    const masks = store.getMasksForLayer(layerId);
+    if (masks.length === 0) return;
 
-    for (const layer of layers) {
-      const masks = store.getMasksForLayer(layer.id);
-      if (masks.length === 0) continue;
+    const r = this.renderers.get(layerId);
+    if (!r) return;
 
-      const r = this.renderers.get(layer.id);
-      if (!r) continue;
+    // Support both canvas-based renderers (_canvas/_ctx) and video renderers (_blitCanvas/_blitCtx)
+    const canvas: HTMLCanvasElement | undefined = (r as any)._canvas ?? (r as any)._blitCanvas;
+    const ctx: CanvasRenderingContext2D | undefined = (r as any)._ctx ?? (r as any)._blitCtx;
+    if (!canvas || !ctx) return;
 
-      const canvas: HTMLCanvasElement | undefined = (r as any)._canvas;
-      const ctx: CanvasRenderingContext2D | undefined = (r as any)._ctx;
-      if (!canvas || !ctx) continue;
+    const gw: number = (r as any).geometryWidth?.() ?? 0;
+    const gh: number = (r as any).geometryHeight?.() ?? 0;
+    if (gw <= 0 || gh <= 0) return;
 
-      const gw: number = (r as any).geometryWidth?.() ?? 0;
-      const gh: number = (r as any).geometryHeight?.() ?? 0;
-      if (gw <= 0 || gh <= 0) continue;
-
-      try {
-        const DPI = 2;
-        MaskCompositor.applyMasks(canvas, ctx, masks, gw, gh, DPI);
-
-        const tex = (r as any)._tex;
-        if (tex) tex.needsUpdate = true;
-      } catch (err) {
-        console.warn(`[LayerSync] Mask application failed for layer ${layer.id}:`, err);
-      }
+    try {
+      const DPI = 2;
+      MaskCompositor.applyMasks(canvas, ctx, masks, gw, gh, DPI);
+      const tex = (r as any)._tex ?? (r as any).texture;
+      if (tex) tex.needsUpdate = true;
+    } catch (err) {
+      console.warn(`[LayerSync] Mask application failed for layer ${layerId}:`, err);
     }
+  }
+
+  private _applyMasks(layers: Layer[]): void {
+    for (const layer of layers) {
+      // Video layers are handled per-frame after pumpVideoFrame in Renderer.ts
+      // — skip them here to avoid wasted work (pump overwrites the canvas).
+      if (layer.type === 'video') continue;
+      this._applyMasksToLayer(layer.id);
+    }
+  }
+
+  /**
+   * Apply masks to a specific layer AFTER video frame pump.
+   * Must be called every frame for video layers since pumpVideoFrame
+   * overwrites the blit canvas each tick.
+   */
+  applyMasksForLayer(layerId: string): void {
+    this._applyMasksToLayer(layerId);
   }
 }

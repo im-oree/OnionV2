@@ -6,7 +6,7 @@ import React from 'react';
 import {
   MonitorPlay, Folder as FolderIcon, Clock, Activity, Sliders,
   Wand2, Camera, AlignCenterHorizontal, Info, FileVideo, Type,
-  Gauge, Wrench,
+  Gauge, Wrench, Radio,
 } from 'lucide-react';
 
 export interface PanelDefinition {
@@ -50,6 +50,9 @@ const CharacterPanel    = React.lazy(() =>
 );
 const PerformancePanel  = React.lazy(() =>
   import('../panels/performance/PerformancePanel').then((m) => ({ default: m.default })),
+);
+const AudioSceneMap     = React.lazy(() =>
+  import('../panels/properties/audio/AudioSceneMap').then((m) => ({ default: m.default })),
 );
 const ToolbarPanel      = React.lazy(() =>
   import('../toolbar/Toolbar').then((m) => ({ default: m.Toolbar })),
@@ -103,6 +106,10 @@ export const PANEL_REGISTRY: Record<string, PanelDefinition> = {
   character: {
     type: 'character', label: 'Character', icon: Type,
     component: CharacterPanel,
+  },
+  audioScene: {
+    type: 'audioScene', label: 'Audio Scene', icon: Radio,
+    component: AudioSceneMap,
   },
   performance: {
     type: 'performance', label: 'Performance', icon: Gauge,

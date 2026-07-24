@@ -24,8 +24,7 @@ export const TOOL_GROUPS: ToolDefinition[][] = [
    { id:TOOLS.TEXT as ToolId, icon:'text', label:'Text', shortcut:'T' }],
 
   // ── Adjust ──
-  [{ id:TOOLS.MASK as ToolId, icon:'mask', label:'Mask', shortcut:'M' },
-   { id:TOOLS.GRADIENT as ToolId, icon:'gradient', label:'Gradient', shortcut:'Shift+G' },
+  [{ id:TOOLS.GRADIENT as ToolId, icon:'gradient', label:'Gradient', shortcut:'Shift+G' },
    { id:TOOLS.PERSPECTIVE as ToolId, icon:'perspective', label:'Perspective', shortcut:'Shift+M' }],
 
   // ── Navigate & Util ──

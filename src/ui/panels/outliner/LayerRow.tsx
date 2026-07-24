@@ -251,7 +251,7 @@ export const LayerRow: React.FC<LayerRowProps> = ({
               const activeCompId = cs.activeCompositionId;
               if (!activeCompId) return;
               import('../../../state/maskStore').then(m =>
-                m.useMaskStore.getState().addRectMask(layer.id, 200, 150));
+                m.useMaskStore.getState().addMask(layer.id, 'rectangle', 200, 150));
             }},
             ...(layerHasAudio(layer) ? [{ label: 'Extract Audio…', onClick: () => openExtractAudioDialog(layer.id) }] : []),
           ].map((it: any, i: number) => (

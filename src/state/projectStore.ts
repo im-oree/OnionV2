@@ -1,9 +1,17 @@
 import { create } from 'zustand';
 import type { Project, ProjectAsset, ProjectFolder } from '../types/project';
 import { DEFAULT_PROJECT } from '../config/defaults';
+import { captureSnapshot, useHistoryStore } from './historyStore';
 
 function genId(prefix = 'proj'): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+/** Push undo entry — safely no-op if history isn't ready yet. */
+function pushHistory(name: string, snapshot: string): void {
+  try {
+    useHistoryStore.getState().pushEntry(name, snapshot);
+  } catch { /* history unavailable — silent */ }
 }
 
 export interface ProjectState {
@@ -39,56 +47,86 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   setDirty: (dirty) => set({ dirty }),
   setFileHandle: (handle) => set({ fileHandle: handle }),
 
-  addAsset: (asset) => set((s) => ({
-    project: { ...s.project, assets: [...s.project.assets, asset], modified: Date.now() },
-    dirty: true,
-  })),
+  addAsset: (asset) => {
+    const snapshot = captureSnapshot();
+    set((s) => ({
+      project: { ...s.project, assets: [...s.project.assets, asset], modified: Date.now() },
+      dirty: true,
+    }));
+    pushHistory('Add Asset', snapshot);
+  },
 
-  removeAsset: (assetId) => set((s) => ({
-    project: { ...s.project, assets: s.project.assets.filter(a => a.id !== assetId), modified: Date.now() },
-    dirty: true,
-  })),
+  removeAsset: (assetId) => {
+    const snapshot = captureSnapshot();
+    set((s) => ({
+      project: { ...s.project, assets: s.project.assets.filter(a => a.id !== assetId), modified: Date.now() },
+      dirty: true,
+    }));
+    pushHistory('Remove Asset', snapshot);
+  },
 
-  updateAsset: (assetId, data) => set((s) => ({
-    project: {
-      ...s.project,
-      assets: s.project.assets.map(a => a.id === assetId ? { ...a, ...data, modified: Date.now() } : a),
-      modified: Date.now(),
-    },
-    dirty: true,
-  })),
+  updateAsset: (assetId, data) => {
+    const snapshot = captureSnapshot();
+    set((s) => ({
+      project: {
+        ...s.project,
+        assets: s.project.assets.map(a => a.id === assetId ? { ...a, ...data, modified: Date.now() } : a),
+        modified: Date.now(),
+      },
+      dirty: true,
+    }));
+    pushHistory('Update Asset', snapshot);
+  },
 
-  renameAsset: (assetId, newName) => set((s) => ({
-    project: {
-      ...s.project,
-      assets: s.project.assets.map(a => a.id === assetId ? { ...a, name: newName } : a),
-      modified: Date.now(),
-    },
-    dirty: true,
-  })),
+  renameAsset: (assetId, newName) => {
+    const snapshot = captureSnapshot();
+    set((s) => ({
+      project: {
+        ...s.project,
+        assets: s.project.assets.map(a => a.id === assetId ? { ...a, name: newName } : a),
+        modified: Date.now(),
+      },
+      dirty: true,
+    }));
+    pushHistory('Rename Asset', snapshot);
+  },
 
-  moveAssetToFolder: (assetId, folderId) => set((s) => ({
-    project: {
-      ...s.project,
-      assets: s.project.assets.map(a => a.id === assetId ? { ...a, folderId } : a),
-      modified: Date.now(),
-    },
-    dirty: true,
-  })),
+  moveAssetToFolder: (assetId, folderId) => {
+    const snapshot = captureSnapshot();
+    set((s) => ({
+      project: {
+        ...s.project,
+        assets: s.project.assets.map(a => a.id === assetId ? { ...a, folderId } : a),
+        modified: Date.now(),
+      },
+      dirty: true,
+    }));
+    pushHistory('Move Asset', snapshot);
+  },
 
-  updateSettings: (settings) => set((s) => ({
-    project: { ...s.project, settings: { ...s.project.settings, ...settings }, modified: Date.now() },
-    dirty: true,
-  })),
+  updateSettings: (settings) => {
+    const snapshot = captureSnapshot();
+    set((s) => ({
+      project: { ...s.project, settings: { ...s.project.settings, ...settings }, modified: Date.now() },
+      dirty: true,
+    }));
+    pushHistory('Update Project Settings', snapshot);
+  },
 
   newProject: () => set({
-    project: { ...DEFAULT_PROJECT, id: genId(), folders: [] },
+    project: {
+      ...DEFAULT_PROJECT,
+      id: genId(),
+      folders: [],
+      name: '',   // Empty so first-save modal starts with a blank field
+    },
     dirty: false,
     fileHandle: null,
   }),
 
   // ── Folder CRUD ────────────────────────────────────────────
   addFolder: (name, parentId = null) => {
+    const snapshot = captureSnapshot();
     const folder: ProjectFolder = {
       id: genId('folder'),
       name,
@@ -104,15 +142,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       },
       dirty: true,
     }));
+    pushHistory('Add Folder', snapshot);
     return folder;
   },
 
   removeFolder: (id) => {
+    const snapshot = captureSnapshot();
     // Cascade: unassign all children (both sub-folders and assets/comps) up to root.
     set((s) => {
       const folders = s.project.folders ?? [];
       const toRemove = new Set<string>([id]);
-      // Depth-first: find all descendants
       let changed = true;
       while (changed) {
         changed = false;
@@ -141,16 +180,21 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         }
       }
     });
+    pushHistory('Remove Folder', snapshot);
   },
 
-  renameFolder: (id, name) => set((s) => ({
-    project: {
-      ...s.project,
-      folders: (s.project.folders ?? []).map(f => f.id === id ? { ...f, name } : f),
-      modified: Date.now(),
-    },
-    dirty: true,
-  })),
+  renameFolder: (id, name) => {
+    const snapshot = captureSnapshot();
+    set((s) => ({
+      project: {
+        ...s.project,
+        folders: (s.project.folders ?? []).map(f => f.id === id ? { ...f, name } : f),
+        modified: Date.now(),
+      },
+      dirty: true,
+    }));
+    pushHistory('Rename Folder', snapshot);
+  },
 
   moveFolder: (id, newParentId) => {
     // Guard: don't allow a folder to become descendant of itself.
@@ -160,6 +204,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       if (cur === id) return; // cycle
       cur = folders.find(f => f.id === cur)?.parentId ?? null;
     }
+    const snapshot = captureSnapshot();
     set((s) => ({
       project: {
         ...s.project,
@@ -168,8 +213,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       },
       dirty: true,
     }));
+    pushHistory('Move Folder', snapshot);
   },
 
+  // Note: NOT undoable — expanded/collapsed is UI state, not project data
   toggleFolder: (id) => set((s) => ({
     project: {
       ...s.project,
@@ -180,6 +227,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   })),
 
   moveCompToFolder: (compId, folderId) => {
+    // compositionStore.updateComposition already captures history for us
     import('./compositionStore').then(({ useCompositionStore }) => {
       useCompositionStore.getState().updateComposition(compId, { folderId } as any);
     });

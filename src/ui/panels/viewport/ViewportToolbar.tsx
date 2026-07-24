@@ -21,6 +21,9 @@ import {
   type PreviewScale,
 } from '../../../state/previewResolutionStore';
 import { TOOLS } from '../../../config/constants';
+import { cameraController, type ViewMode } from '../../../renderer/CameraController';
+import { useRendererBackendStore } from '../../../state/rendererBackendStore';
+import type { BackendId } from '../../../renderer/backend/RenderBackend';
 
 interface Props {
   showGrid?: boolean;
@@ -228,9 +231,7 @@ const PreviewScaleMenu: React.FC = () => {
 };
 
 export const ViewportToolbar: React.FC<Props> = ({ renderer }) => {
-  const [isFreeView, setIsFreeView] = useState(
-    () => !!(window as any).__freeViewMode,
-  );
+  const [viewMode, setViewMode] = useState<ViewMode>(cameraController.mode);
   const activeTool = useToolStore((s) => s.activeTool);
   const setActiveTool = useToolStore((s) => s.setActiveTool);
   const showGrid = useViewportStore((s) => s.settings.showGrid);
@@ -245,57 +246,55 @@ export const ViewportToolbar: React.FC<Props> = ({ renderer }) => {
       : null,
   );
   const is3D = comp?.perspective3D ?? false;
+  const isFreeView = viewMode === 'freeView';
+  const moveWithView = comp?.cameraMoveWithView ?? false;
 
+  // Subscribe to camera controller mode changes
   useEffect(() => {
-    const update = (e?: Event) => {
-      // Read from the event detail (source of truth for this change)
-      // Fall back to window global (persistent state)
-      const detail = (e as CustomEvent | undefined)?.detail;
-      if (detail && typeof detail.free === 'boolean') {
-        setIsFreeView(detail.free);
-      } else {
-        setIsFreeView(!!(window as any).__freeViewMode);
-      }
-    };
-    document.addEventListener('viewport:viewmode', update);
-    update();
-    return () => document.removeEventListener('viewport:viewmode', update);
-  }, []); // ← no renderer dep — event drives it
+    const unsub = cameraController.onModeChange((mode) => setViewMode(mode));
+    return unsub;
+  }, []);
 
   const requestRender = useCallback(() => {
     renderer?.renderLoop?.requestRender?.();
   }, [renderer]);
 
   const toggleView = useCallback(() => {
-    const current = !!(window as any).__freeViewMode;
-    const next = !current;
-    (window as any).__freeViewMode = next;
-    setIsFreeView(next);
-    document.dispatchEvent(
-      new CustomEvent('viewport:viewmode', { detail: { free: next } }),
-    );
+    cameraController.toggleMode();
     requestRender();
   }, [requestRender]);
+
+  const toggleMoveWithView = useCallback(() => {
+    if (!comp) return;
+    useCompositionStore.getState().updateComposition(comp.id, {
+      cameraMoveWithView: !moveWithView,
+    });
+    requestRender();
+  }, [comp, moveWithView, requestRender]);
 
   const zoomIn = useCallback(() => {
     if (is3D && !isFreeView) {
       setCameraViewZoom(cameraViewZoom * 1.15);
+    } else if (is3D && isFreeView) {
+      cameraController.dolly(-3, comp?.cameraInvertZoom ?? false);
     } else if (renderer?.cameraManager) {
       const cm = renderer.cameraManager;
       cm.setZoom?.((cm.zoom ?? 1) * 1.15);
     }
     requestRender();
-  }, [is3D, isFreeView, cameraViewZoom, setCameraViewZoom, renderer, requestRender]);
+  }, [is3D, isFreeView, cameraViewZoom, setCameraViewZoom, renderer, requestRender, comp]);
 
   const zoomOut = useCallback(() => {
     if (is3D && !isFreeView) {
       setCameraViewZoom(cameraViewZoom / 1.15);
+    } else if (is3D && isFreeView) {
+      cameraController.dolly(3, comp?.cameraInvertZoom ?? false);
     } else if (renderer?.cameraManager) {
       const cm = renderer.cameraManager;
       cm.setZoom?.((cm.zoom ?? 1) / 1.15);
     }
     requestRender();
-  }, [is3D, isFreeView, cameraViewZoom, setCameraViewZoom, renderer, requestRender]);
+  }, [is3D, isFreeView, cameraViewZoom, setCameraViewZoom, renderer, requestRender, comp]);
 
   const toggleHand = useCallback(() => {
     if (activeTool === TOOLS.HAND) setActiveTool(TOOLS.SELECT as any);
@@ -307,6 +306,13 @@ export const ViewportToolbar: React.FC<Props> = ({ renderer }) => {
     renderer?.setGridVisible?.(!showGrid);
     requestRender();
   }, [toggleGrid, showGrid, renderer, requestRender]);
+
+  const toggleFly = useCallback(() => {
+    useViewportStore.getState().toggleFlyMode();
+    document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'F', shiftKey: true, bubbles: true,
+    }));
+  }, []);
 
   return (
     <div className="viewport-rail">
@@ -329,8 +335,8 @@ export const ViewportToolbar: React.FC<Props> = ({ renderer }) => {
           onClick={toggleView}
           title={
             isFreeView
-              ? 'Free View — orbit scene. Click for Camera View'
-              : 'Camera View — through comp camera. Click for Free View'
+              ? 'Free View — orbit scene freely. Click for Active Camera.'
+              : 'Active Camera — through comp camera. Click for Free View.'
           }
           className="viewport-rail-btn"
           style={{
@@ -357,11 +363,40 @@ export const ViewportToolbar: React.FC<Props> = ({ renderer }) => {
         </button>
       )}
 
+      {is3D && !isFreeView && (
+        <RailBtn
+          title={
+            moveWithView
+              ? 'Move with View: ON — MMB/RMB/WASD move the comp camera'
+              : 'Move with View: OFF — camera locked. Click to allow camera moves.'
+          }
+          active={moveWithView}
+          onClick={toggleMoveWithView}
+        >
+          <svg width={14} height={14} viewBox="0 0 14 14" fill="none"
+            stroke="currentColor" strokeWidth={1.8}
+            strokeLinecap="round" strokeLinejoin="round">
+            {moveWithView ? (
+              <>
+                <rect x="3" y="6" width="8" height="6" rx="1" />
+                <path d="M5 6V4a2 2 0 0 1 4 0" />
+              </>
+            ) : (
+              <>
+                <rect x="3" y="6" width="8" height="6" rx="1" />
+                <path d="M5 6V4a2 2 0 0 1 4 0v2" />
+                <path d="M7 9v1" />
+              </>
+            )}
+          </svg>
+        </RailBtn>
+      )}
+
       {is3D && (
         <RailBtn
-          title={flyMode ? 'Exit Fly Mode (Shift+`)' : 'Fly Mode (Shift+`)'}
+          title={flyMode ? 'Exit Fly Mode (Shift+F)' : 'Fly Mode (Shift+F) — WASD + mouse look'}
           active={flyMode}
-          onClick={() => useViewportStore.getState().toggleFlyMode()}
+          onClick={toggleFly}
         >
           <Move3D size={14} strokeWidth={1.8} />
         </RailBtn>
@@ -377,5 +412,47 @@ export const ViewportToolbar: React.FC<Props> = ({ renderer }) => {
 
       <PreviewScaleMenu />
     </div>
+  );
+};
+
+const BackendPill: React.FC = () => {
+  const actual = useRendererBackendStore(s => s.actualBackend);
+  const preferred = useRendererBackendStore(s => s.preferredBackend);
+  const swapping = useRendererBackendStore(s => s.swapping);
+  const isWebGPU = actual === 'webgpu';
+  const mismatch = actual !== preferred;
+
+  const cycle = async () => {
+    const target: BackendId = isWebGPU ? 'webgl' : 'webgpu';
+    useRendererBackendStore.getState().setPreferredBackend(target);
+    const r: any = (window as any).__renderer;
+    if (r?.swapBackend) await r.swapBackend(target);
+  };
+
+  return (
+    <button
+      onClick={cycle}
+      title={
+        swapping
+          ? 'Switching backend...'
+          : mismatch
+            ? `Preferred: ${preferred} · Active: ${actual}. Click to toggle.`
+            : `Active backend: ${actual}. Click to toggle.`
+      }
+      className="viewport-rail-btn"
+      style={{
+        background: isWebGPU ? 'rgba(191,64,255,0.2)' : 'rgba(60,120,220,0.2)',
+        border: `1px solid ${isWebGPU ? 'rgba(191,64,255,0.6)' : 'rgba(60,120,220,0.6)'}`,
+        color: isWebGPU ? '#c37cff' : '#5cc0ff',
+        fontSize: 8,
+        fontWeight: 700,
+        letterSpacing: '0.03em',
+        fontFamily: 'var(--font-family-mono)',
+        opacity: swapping ? 0.5 : 1,
+        cursor: swapping ? 'wait' : 'pointer',
+      }}
+    >
+      {isWebGPU ? 'GPU' : 'GL'}
+    </button>
   );
 };

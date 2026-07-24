@@ -1,6 +1,13 @@
 /**
  * propertyRowActions — reusable insert/delete keyframe actions for a
  * (layerId, propertyPath) at the current playhead frame.
+ *
+ * The `readCurrentValue` function is the source of truth for what value
+ * gets stored when the user hits the "add keyframe" diamond. If it returns
+ * 0 for a valid property, that keyframe will lock the slider at 0 forever.
+ *
+ * All property path patterns are handled here — audio pan, spatial audio,
+ * mask props, camera props, effect params, everything.
  */
 import { useKeyframeStore } from '../../../state/keyframeStore';
 import { useCompositionStore } from '../../../state/compositionStore';
@@ -21,7 +28,6 @@ function currentGlobalFrame(): { frame: number; fps: number; compId: string | nu
   };
 }
 
-/** Compute local layer frame from global frame. */
 function toLocalFrame(layerId: string, globalFrame: number): number {
   const cs = useCompositionStore.getState();
   const comp = cs.activeCompositionId
@@ -33,8 +39,20 @@ function toLocalFrame(layerId: string, globalFrame: number): number {
 }
 
 /**
- * Read the current value of a property from the layer/composition data.
- * Used when inserting a new keyframe so it takes the "current" value.
+ * Read the current value of a property. Covers ALL patterns:
+ *   - transform.*                → layer.transform.*
+ *   - transform3D.*              → layer.transform3D.*
+ *   - opacity                    → layer.opacity
+ *   - volume, pan, playbackRate  → layer.data.volume / pan / playbackRate
+ *   - fadeIn, fadeOut            → layer.data.fadeIn / fadeOut
+ *   - spatial.<field>            → layer.data.spatial<Field>
+ *   - mask.<maskId>.<field>      → maskStore
+ *   - effect.<effectId>.<param>  → effectsStore
+ *   - audioEffect.<id>.<param>   → layer.data.audioEffects[id].params[param]
+ *   - eq.<bandIdx>.<field>       → layer.data.eq.bands[i].<field>
+ *   - camera.*                   → composition camera fields
+ *   - timeRemap                  → engine evaluation
+ *   - <arbitrary layer.data field> → falls back to reading layer.data[field]
  */
 function readCurrentValue(layerId: string, propertyPath: string): number | number[] | string | boolean {
   const cs = useCompositionStore.getState();
@@ -42,7 +60,7 @@ function readCurrentValue(layerId: string, propertyPath: string): number | numbe
     ? cs.compositions.find(c => c.id === cs.activeCompositionId)
     : null;
 
-  // Camera pseudo-layer
+  // ── Camera pseudo-layer ─────────────────────────────────
   if (layerId === '__camera__' && comp) {
     const field = propertyPath.replace('camera.', '');
     const c: any = comp;
@@ -61,8 +79,9 @@ function readCurrentValue(layerId: string, propertyPath: string): number | numbe
 
   const layer = comp?.layers.find(l => l.id === layerId);
   if (!layer) return 0;
+  const d: any = layer.data ?? {};
 
-  // transform.*
+  // ── Transform 2D ──────────────────────────────────────
   if (propertyPath === 'transform.position') return [layer.transform.position.x, layer.transform.position.y];
   if (propertyPath === 'transform.position.x') return layer.transform.position.x;
   if (propertyPath === 'transform.position.y') return layer.transform.position.y;
@@ -75,7 +94,7 @@ function readCurrentValue(layerId: string, propertyPath: string): number | numbe
   if (propertyPath === 'transform.anchorPoint.y') return layer.transform.anchorPoint.y;
   if (propertyPath === 'opacity') return layer.opacity;
 
-  // transform3D.*
+  // ── Transform 3D ──────────────────────────────────────
   if (propertyPath.startsWith('transform3D.') && layer.transform3D) {
     const t3d: any = layer.transform3D;
     const field = propertyPath.slice('transform3D.'.length);
@@ -90,15 +109,90 @@ function readCurrentValue(layerId: string, propertyPath: string): number | numbe
     if (field === 'rotationZ') return t3d.rotationZ;
   }
 
-  // audio / video volume
+  // ── Audio/video basic data ───────────────────────────
   if (propertyPath === 'volume') {
-    const d: any = layer.data;
     let v = d?.volume ?? 1;
-    if (v > 1) v = v / 100;
+    if (v > 2) v = v / 100;    // legacy percent format
     return v;
   }
+  if (propertyPath === 'pan')            return d?.pan ?? 0;
+  if (propertyPath === 'playbackRate')   return d?.playbackRate ?? 1;
+  if (propertyPath === 'fadeIn')         return d?.fadeIn ?? 0;
+  if (propertyPath === 'fadeOut')        return d?.fadeOut ?? 0;
 
-  // Time remap
+  // ── Spatial audio ────────────────────────────────────
+  if (propertyPath.startsWith('spatial.')) {
+    const field = propertyPath.slice('spatial.'.length);
+    const spatialMap: Record<string, any> = {
+      positionX:      d?.spatialX ?? 0,
+      positionY:      d?.spatialY ?? 0,
+      positionZ:      d?.spatialZ ?? 0,
+      refDistance:    d?.spatialRefDistance ?? 200,
+      maxDistance:    d?.spatialMaxDistance ?? 2000,
+      rolloff:        d?.spatialRolloff ?? 1,
+      coneInnerAngle: d?.spatialConeInnerAngle ?? 360,
+      coneOuterAngle: d?.spatialConeOuterAngle ?? 360,
+      coneOuterGain:  d?.spatialConeOuterGain ?? 0,
+      orientX:        d?.spatialOrientX ?? 0,
+      orientY:        d?.spatialOrientY ?? 0,
+      orientZ:        d?.spatialOrientZ ?? 1,
+    };
+    return spatialMap[field] ?? 0;
+  }
+
+  // ── Mask properties ──────────────────────────────────
+  if (propertyPath.startsWith('mask.')) {
+    // mask.<maskId>.<field>
+    const parts = propertyPath.split('.');
+    if (parts.length >= 3) {
+      const maskId = parts[1];
+      const field = parts.slice(2).join('.');
+      const maskStore = (window as any).__maskStore?.getState?.();
+      if (maskStore) {
+        const masks = maskStore.getMasksForLayer(layerId) ?? [];
+        const mask = masks.find((m: any) => m.id === maskId);
+        if (mask) {
+          // Prefer top-level field, else params.<field>
+          if (field in mask) return mask[field];
+          if (mask.params && field in mask.params) return mask.params[field];
+        }
+      }
+      return 0;
+    }
+  }
+
+  // ── Audio effect param — audioEffect.<instanceId>.<paramKey> ──
+  if (propertyPath.startsWith('audioEffect.')) {
+    const parts = propertyPath.split('.');
+    if (parts.length >= 3) {
+      const instanceId = parts[1];
+      const paramKey = parts.slice(2).join('.');
+      const effects = d?.audioEffects ?? [];
+      const fx = effects.find((e: any) => e.id === instanceId);
+      if (fx) {
+        if (paramKey === 'mix') return fx.mix ?? 1;
+        if (paramKey === 'enabled') return fx.enabled !== false;
+        const v = fx.params?.[paramKey];
+        if (v !== undefined) return v;
+      }
+      return 0;
+    }
+  }
+
+  // ── EQ band — eq.<bandIdx>.<field> ──
+  if (propertyPath.startsWith('eq.')) {
+    const parts = propertyPath.split('.');
+    if (parts.length >= 3) {
+      const bandIdx = parseInt(parts[1], 10);
+      const field = parts.slice(2).join('.');
+      const bands = d?.eq?.bands ?? [];
+      const band = bands[bandIdx];
+      if (band && field in band) return band[field];
+    }
+    return 0;
+  }
+
+  // ── Time remap ───────────────────────────────────────
   if (propertyPath === 'timeRemap') {
     const engine = useKeyframeStore.getState().engine;
     const kfs = engine.getKeyframesForProperty(layerId, 'timeRemap');
@@ -110,23 +204,62 @@ function readCurrentValue(layerId: string, propertyPath: string): number | numbe
         if (typeof r.value === 'number') return r.value;
       }
     }
-    // Default identity: current local frame
     const gf = currentGlobalFrame();
     return gf ? toLocalFrame(layerId, gf.frame) : 0;
   }
 
-  // effect.<effectId>.<paramId>
+  // ── Layer effect param — effect.<effectId>.<paramId> ──
   if (propertyPath.startsWith('effect.')) {
     const parts = propertyPath.split('.');
     if (parts.length >= 3) {
       const effectsStore = (window as any).__effectsStore?.getState?.();
       if (!effectsStore) return 0;
-      const effects = effectsStore.getEffects?.(layerId) ?? [];
+      const effects = effectsStore.getEffectsForLayer?.(layerId) ?? [];
       const eff = effects.find((e: any) => e.id === parts[1]);
-      const v = eff?.params?.[parts.slice(2).join('.')];
-      return v ?? 0;
+      const paramKey = parts.slice(2).join('.');
+      const param = eff?.parameters?.find((p: any) => p.id === paramKey);
+      return param?.value ?? 0;
     }
   }
+
+  // ── Adjust layer bundle — adjust.<field> ─────────────
+  if (propertyPath.startsWith('adjust.')) {
+    const field = propertyPath.slice('adjust.'.length);
+    const adj = d?.adjust ?? {};
+    if (field in adj) return adj[field];
+    return 0;
+  }
+
+  // Cutout properties
+  if (propertyPath.startsWith('cutout.')) {
+    const field = propertyPath.slice('cutout.'.length);
+    const c = d?.cutout ?? {};
+    // Nested paths for stroke sub-object
+    if (field.startsWith('stroke.')) {
+      const sf = field.slice('stroke.'.length);
+      const s = c.stroke ?? {};
+      if (sf === 'width') return s.width ?? 4;
+      if (sf === 'softness') return s.softness ?? 40;
+      return s[sf] ?? 0;
+    }
+    if (field.startsWith('chroma.')) {
+      const cf = field.slice('chroma.'.length);
+      const ch = c.chroma ?? {};
+      if (cf === 'similarity')   return ch.similarity ?? 40;
+      if (cf === 'smoothness')   return ch.smoothness ?? 20;
+      if (cf === 'spillSuppress')return ch.spillSuppress ?? 30;
+      return ch[cf] ?? 0;
+    }
+    if (field === 'feather')    return c.feather ?? 2;
+    if (field === 'contract')   return c.contract ?? 0;
+    if (field === 'smoothing')  return c.smoothing ?? 30;
+    if (field === 'threshold')  return c.threshold ?? 50;
+    return c[field] ?? 0;
+  }
+
+  // ── Generic fallback — direct layer.data field ────────
+  // Handles arbitrary top-level fields future code might key on.
+  if (propertyPath in d) return d[propertyPath];
 
   return 0;
 }
@@ -162,17 +295,12 @@ export function insertKeyframeAtPlayhead(layerId: string, propertyPath: string):
       interpolation: 'linear' as InterpolationType,
     };
     store.addKeyframe(layerId, kf);
-    // Also mark property as animated so the timeline row shows
     if (!store.isPropertyAnimated?.(layerId, propertyPath)) {
       store.toggleAnimatedProperty?.(layerId, propertyPath);
     }
   }
 }
 
-/**
- * Delete keyframe at playhead (exact frame match).
- * If none exists, no-op with a subtle notification.
- */
 export function deleteKeyframeAtPlayhead(layerId: string, propertyPath: string): void {
   const gf = currentGlobalFrame();
   if (!gf) return;

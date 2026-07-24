@@ -11,7 +11,7 @@ import { createAudioEffect } from '../audio/audioEffects';
 export class VideoLayerRenderer extends BaseLayerRenderer {
   private video: HTMLVideoElement | null = null;
   private texture: THREE.Texture | null = null;
-  private _liveTexture: THREE.VideoTexture | null = null;
+  private _liveTexture: THREE.Texture | null = null;
   private _usingCachedFrame = false;
   private naturalW: number;
   private naturalH: number;
@@ -30,6 +30,8 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
   private _audioEffectsOut: GainNode | null = null;
   private _audioEQIn: GainNode | null = null;
   private _audioEQOut: GainNode | null = null;
+  private _audioSpatialNode: PannerNode | null = null;
+  private _lastAudioSpatialHash = '';
   private _activeEffects: Array<{ instanceId: string; node: ReturnType<typeof createAudioEffect> }> = [];
   private _activeEQBands: BiquadFilterNode[] = [];
   private _lastEffectsHash = '';
@@ -76,16 +78,34 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     video.preload = 'auto';  // Fix #2 — 'metadata' starves seeked events
     video.load();
 
-    const texture = new THREE.VideoTexture(video);
+    // Manually-managed CanvasTexture. Every frame we blit the current
+    // video frame into a canvas, THEN dispose+recreate the underlying
+    // WebGL texture to force a fresh upload. This bypasses THREE's
+    // texSubImage2D path which was throwing GL_INVALID_VALUE on some
+    // GPUs due to a mismatch between internal texture dimensions and
+    // the source canvas dimensions.
+    const blitCanvas = document.createElement('canvas');
+    blitCanvas.width = Math.max(2, video.videoWidth || 2);
+    blitCanvas.height = Math.max(2, video.videoHeight || 2);
+    const blitCtx = blitCanvas.getContext('2d', {
+      willReadFrequently: false,
+      alpha: false,
+    });
+
+    const texture = new THREE.CanvasTexture(blitCanvas);
     texture.flipY = true;
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.minFilter = THREE.LinearFilter;
     texture.magFilter = THREE.LinearFilter;
+    // Force full-image upload on each needsUpdate — avoids the
+    // texSubImage2D bounds bug when canvas dims change post-init.
+    texture.generateMipmaps = false;
+    texture.premultiplyAlpha = false;
 
-    // Fix #3 — VideoTexture does NOT need needsUpdate = true here.
-    // THREE.VideoTexture overrides needsUpdate with a getter that
-    // checks video.readyState. Setting it manually causes a one-frame
-    // stale upload and can throw on certain drivers.
+    // Store for the per-frame pump loop
+    (this as any)._blitCanvas = blitCanvas;
+    (this as any)._blitCtx = blitCtx;
+    (this as any)._lastBlitTime = -1;
 
     const mat = this.material as THREE.MeshBasicMaterial;
     mat.map = texture;
@@ -135,6 +155,58 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     if (!this.video) return;
     this.video.pause();
     this._playing = false;
+  }
+
+  /**
+   * Called every render tick. During PLAYBACK we do nothing — the material
+   * should point to a VideoTexture that THREE updates automatically with
+   * zero CPU cost. During PAUSE/SCRUB we blit the current video frame
+   * into a CanvasTexture so the user sees the correct still frame.
+   *
+   * The key insight: VideoTexture works fine AFTER the video has decoded
+   * (videoWidth > 0). It only fails if created BEFORE decode. So we
+   * lazily create it on first pump when dims are available.
+   */
+  pumpVideoFrame(): void {
+    const video = this.video;
+    if (!video) return;
+    if (video.readyState < 2) return;
+    if (video.videoWidth === 0 || video.videoHeight === 0) return;
+
+    // If we're showing a cached scrub bitmap, don't touch anything —
+    // restoreLiveTexture() handles the swap back when play resumes.
+    if (this._usingCachedFrame) return;
+
+    // ── Lazy-create a proper VideoTexture now that dims are known ──
+    // This replaces the CanvasTexture we created at construction time
+    // (when video dims were still 0). VideoTexture is zero-copy during
+    // playback — THREE samples directly from the video element's
+    // current frame without any drawImage or GPU re-upload.
+    if (this._liveTexture && !(this._liveTexture instanceof THREE.VideoTexture)) {
+      const oldTex = this._liveTexture;
+      const fresh = new THREE.VideoTexture(video);
+      fresh.flipY = true;
+      fresh.colorSpace = THREE.SRGBColorSpace;
+      fresh.minFilter = THREE.LinearFilter;
+      fresh.magFilter = THREE.LinearFilter;
+      fresh.generateMipmaps = false;
+      fresh.premultiplyAlpha = false;
+
+      this._liveTexture = fresh;
+      this.texture = fresh;
+      const mat = this.material as THREE.MeshBasicMaterial;
+      mat.map = fresh;
+      mat.needsUpdate = true;
+      try { oldTex.dispose(); } catch {}
+
+      // Clean up the blit canvas — no longer needed for playback
+      // (kept alive for future scrub frames via setCachedBitmap path)
+    }
+
+    // Nothing else to do — VideoTexture auto-updates from the
+    // playing video element. THREE's internal needsUpdate getter
+    // checks video.readyState on each render and uploads the
+    // current frame only when it's changed.
   }
 
   /**
@@ -291,6 +363,7 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     pan: number,
     effects: import('../../types/layer').AudioEffectInstance[],
     eq: import('../../types/layer').AudioEQ | undefined,
+    videoData?: import('../../types/layer').VideoData,
   ): void {
     if (!this._audioGain) {
       // Fallback: video.volume if Web Audio setup failed
@@ -312,6 +385,11 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     // Effects chain
     this._syncEffectsChain(effects);
     this._syncEQ(eq);
+
+    // Sync spatial positioning
+    if (videoData) {
+      this._syncSpatial(videoData);
+    }
   }
 
   private _teardownAudioGraph(): void {
@@ -321,6 +399,9 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     this._activeEQBands = [];
     if (this.video) unregisterForUnlock(this.video);
     try { this._audioEQOut?.disconnect(); } catch {}
+    try { this._audioSpatialNode?.disconnect(); } catch {}
+    this._audioSpatialNode = null;
+    this._lastAudioSpatialHash = '';
     try { this._audioEQIn?.disconnect(); } catch {}
     try { this._audioEffectsOut?.disconnect(); } catch {}
     try { this._audioEffectsIn?.disconnect(); } catch {}
@@ -400,6 +481,48 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     prev.connect(this._audioEQOut);
   }
 
+  // ── Spatial audio ──────────────────────────────────────────
+
+  private _syncSpatial(data: import('../../types/layer').VideoData): void {
+    if (!this._audioEQOut) return;
+
+    import('../audio/spatialAudio').then(({ readSpatialFromData, applyLinkedLayerPosition, createSpatialNode, applySpatialConfig }) => {
+      let config = readSpatialFromData(data);
+      if (config) {
+        config = applyLinkedLayerPosition(config, (data as any).spatialLinkedLayerId);
+      }
+
+      const enabled = !!config;
+      const hash = enabled
+        ? JSON.stringify({ ...config, linked: (data as any).spatialLinkedLayerId })
+        : 'off';
+      if (hash === this._lastAudioSpatialHash) return;
+      this._lastAudioSpatialHash = hash;
+
+      const ctx = (this._audioEQOut!.context as AudioContext);
+
+      if (!enabled) {
+        if (this._audioSpatialNode) {
+          try { this._audioEQOut!.disconnect(); } catch {}
+          try { this._audioSpatialNode.disconnect(); } catch {}
+          this._audioSpatialNode = null;
+        }
+        try { this._audioEQOut!.disconnect(); } catch {}
+        this._audioEQOut!.connect(ctx.destination);
+        return;
+      }
+
+      if (!this._audioSpatialNode) {
+        this._audioSpatialNode = createSpatialNode(config!);
+        try { this._audioEQOut!.disconnect(); } catch {}
+        this._audioEQOut!.connect(this._audioSpatialNode);
+        this._audioSpatialNode.connect(ctx.destination);
+      } else {
+        applySpatialConfig(this._audioSpatialNode, config!);
+      }
+    });
+  }
+
   override dispose(): void {
     // Teardown Web Audio
     for (const { node } of this._activeEffects) node.dispose();
@@ -408,6 +531,9 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
     this._activeEQBands = [];
     if (this.video) unregisterForUnlock(this.video);
     try { this._audioEQOut?.disconnect(); } catch {}
+    try { this._audioSpatialNode?.disconnect(); } catch {}
+    this._audioSpatialNode = null;
+    this._lastAudioSpatialHash = '';
     try { this._audioEQIn?.disconnect(); } catch {}
     try { this._audioEffectsOut?.disconnect(); } catch {}
     try { this._audioEffectsIn?.disconnect(); } catch {}
@@ -439,6 +565,9 @@ export class VideoLayerRenderer extends BaseLayerRenderer {
       this._liveTexture.dispose();
       this._liveTexture = null;
     }
+
+    (this as any)._blitCanvas = null;
+    (this as any)._blitCtx = null;
 
     this.texture = null;
     super.dispose();

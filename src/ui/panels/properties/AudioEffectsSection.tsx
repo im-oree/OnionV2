@@ -1,13 +1,19 @@
 /**
  * AudioEffectsSection — preset library + active audio effects with customizable params.
+ *
+ * All numeric params AND Mix are keyframeable via property paths
+ * `audioEffect.<instanceId>.<paramKey>` and `audioEffect.<instanceId>.mix`.
+ * PropertyBinder reads these paths during playback and applies runtime
+ * overrides to the AudioLayerRenderer / VideoLayerRenderer without
+ * mutating the composition store.
  */
 import React, { useState, useCallback } from 'react';
-import { Trash2, ChevronDown, ChevronRight, X } from 'lucide-react';
+import { Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { Section } from './Section';
 import { PropRowWithKF } from './PropRowWithKF';
 import type { Layer, AudioEffectInstance, VideoData, AudioData } from '../../../types/layer';
 import { useCompositionStore } from '../../../state/compositionStore';
-import { AUDIO_PRESETS, type PresetCategory, type AudioPreset } from '../../../renderer/audio/audioPresets';
+import { AUDIO_PRESETS, type AudioPreset } from '../../../renderer/audio/audioPresets';
 import { EFFECT_METADATA } from '../../../renderer/audio/audioEffects';
 
 interface Props {
@@ -20,6 +26,10 @@ type CategoryTab = 'voice-filter' | 'voice-character' | 'speech-to-song';
 function genEffectId(): string {
   return `fx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
+
+/** Property path helpers — one place to change if we ever rename. */
+const paramPath = (fxId: string, key: string) => `audioEffect.${fxId}.${key}`;
+const mixPath   = (fxId: string) => `audioEffect.${fxId}.mix`;
 
 export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
   const data = layer.data as (VideoData | AudioData) | undefined;
@@ -35,7 +45,6 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
   }, [data, compId, layer.id]);
 
   const applyPreset = useCallback((preset: AudioPreset) => {
-    // A preset can be a chain of multiple effects — add all of them
     const newEffects: AudioEffectInstance[] = preset.effects.map((fx, idx) => ({
       id: genEffectId(),
       baseType: fx.baseType,
@@ -96,11 +105,8 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
       <Section label={`Active Effects (${effects.length})`} defaultOpen={effects.length > 0}>
         {effects.length === 0 ? (
           <div style={{
-            padding: '12px 10px',
-            fontSize: 11,
-            color: 'var(--color-text-tertiary)',
-            fontStyle: 'italic',
-            textAlign: 'center',
+            padding: '12px 10px', fontSize: 11,
+            color: 'var(--color-text-tertiary)', fontStyle: 'italic', textAlign: 'center',
           }}>
             No effects yet. Pick a preset below or add a custom effect.
           </div>
@@ -109,14 +115,10 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
             const meta = EFFECT_METADATA[fx.baseType];
             const isExpanded = expandedFxIds.has(fx.id);
             return (
-              <div key={fx.id} style={{
-                borderBottom: '1px solid var(--color-divider)',
-              }}>
+              <div key={fx.id} style={{ borderBottom: '1px solid var(--color-divider)' }}>
                 {/* Effect header row */}
                 <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
+                  display: 'flex', alignItems: 'center', gap: 8,
                   padding: '6px 10px',
                   background: fx.enabled ? 'transparent' : 'rgba(0,0,0,0.15)',
                   opacity: fx.enabled ? 1 : 0.5,
@@ -132,32 +134,21 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
                   >
                     {isExpanded
                       ? <ChevronDown size={12} strokeWidth={2} />
-                      : <ChevronRight size={12} strokeWidth={2} />
-                    }
+                      : <ChevronRight size={12} strokeWidth={2} />}
                   </button>
 
                   <input
                     type="checkbox"
                     checked={fx.enabled}
                     onChange={() => toggleEffect(fx.id)}
-                    style={{
-                      accentColor: 'var(--color-accent)',
-                      cursor: 'pointer',
-                    }}
+                    style={{ accentColor: 'var(--color-accent)', cursor: 'pointer' }}
                   />
 
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{
-                      fontSize: 11,
-                      fontWeight: 600,
-                      color: 'var(--color-text-primary)',
-                    }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-primary)' }}>
                       {fx.name}
                     </div>
-                    <div style={{
-                      fontSize: 9,
-                      color: 'var(--color-text-tertiary)',
-                    }}>
+                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>
                       {meta?.displayName ?? fx.baseType}
                     </div>
                   </div>
@@ -167,8 +158,7 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
                     style={{
                       border: 0, background: 'transparent',
                       color: 'var(--color-text-disabled)',
-                      cursor: 'pointer', padding: 3,
-                      borderRadius: 3,
+                      cursor: 'pointer', padding: 3, borderRadius: 3,
                     }}
                     onMouseEnter={(e) => {
                       (e.currentTarget as HTMLElement).style.color = '#ff6060';
@@ -197,6 +187,8 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
                         min={0} max={100} step={1}
                         defaultValue={100}
                         formatValue={(v) => `${Math.round(v)}%`}
+                        layerId={layer.id}
+                        propertyPath={mixPath(fx.id)}
                         onChange={(v) => updateEffectMix(fx.id, v / 100)}
                       />
                     )}
@@ -213,7 +205,7 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
                           defaultValue={p.default}
                           formatValue={p.format}
                           layerId={layer.id}
-                          propertyPath={`audioEffects.${fx.id}.${p.key}`}
+                          propertyPath={paramPath(fx.id, p.key)}
                           onChange={(v) => updateEffectParam(fx.id, p.key, v)}
                         />
                       );
@@ -228,10 +220,8 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
 
       {/* ── Preset Library ── */}
       <Section label="Preset Library">
-        {/* Category tabs */}
         <div style={{
-          display: 'flex',
-          gap: 4,
+          display: 'flex', gap: 4,
           padding: '6px 10px',
           borderBottom: '1px solid var(--color-divider)',
         }}>
@@ -244,19 +234,11 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
               key={cat}
               onClick={() => setActiveCategory(cat as CategoryTab)}
               style={{
-                padding: '4px 10px',
-                fontSize: 10,
-                fontWeight: 500,
-                background: activeCategory === cat
-                  ? 'var(--color-accent-muted)'
-                  : 'transparent',
-                color: activeCategory === cat
-                  ? 'var(--color-accent)'
-                  : 'var(--color-text-secondary)',
+                padding: '4px 10px', fontSize: 10, fontWeight: 500,
+                background: activeCategory === cat ? 'var(--color-accent-muted)' : 'transparent',
+                color: activeCategory === cat ? 'var(--color-accent)' : 'var(--color-text-secondary)',
                 border: `1px solid ${activeCategory === cat ? 'var(--color-accent)' : 'var(--color-border)'}`,
-                borderRadius: 3,
-                cursor: 'pointer',
-                transition: 'all 120ms ease',
+                borderRadius: 3, cursor: 'pointer', transition: 'all 120ms ease',
               }}
             >
               {label}
@@ -264,21 +246,15 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
           ))}
         </div>
 
-        {/* Preset grid */}
         <div style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))',
-          gap: 6,
-          padding: '8px 10px',
+          gap: 6, padding: '8px 10px',
         }}>
           {presetsInCategory.length === 0 ? (
             <div style={{
-              gridColumn: '1 / -1',
-              padding: 16,
-              fontSize: 10,
-              color: 'var(--color-text-tertiary)',
-              textAlign: 'center',
-              fontStyle: 'italic',
+              gridColumn: '1 / -1', padding: 16, fontSize: 10,
+              color: 'var(--color-text-tertiary)', textAlign: 'center', fontStyle: 'italic',
             }}>
               More presets coming soon
             </div>
@@ -287,18 +263,13 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
               key={preset.id}
               onClick={() => applyPreset(preset)}
               style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 4,
-                padding: '10px 6px',
+                display: 'flex', flexDirection: 'column',
+                alignItems: 'center', justifyContent: 'center',
+                gap: 4, padding: '10px 6px',
                 background: 'var(--color-input-bg)',
                 border: '1px solid var(--color-border)',
-                borderRadius: 4,
-                color: 'var(--color-text-primary)',
-                cursor: 'pointer',
-                transition: 'all 120ms ease',
+                borderRadius: 4, color: 'var(--color-text-primary)',
+                cursor: 'pointer', transition: 'all 120ms ease',
                 minHeight: 60,
               }}
               onMouseEnter={(e) => {
@@ -311,12 +282,7 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
               }}
               title={`Add ${preset.name}`}
             >
-              <span style={{
-                fontSize: 10,
-                fontWeight: 600,
-                textAlign: 'center',
-                lineHeight: 1.2,
-              }}>
+              <span style={{ fontSize: 10, fontWeight: 600, textAlign: 'center', lineHeight: 1.2 }}>
                 {preset.name}
               </span>
             </button>
@@ -327,10 +293,8 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
       {/* ── Custom Effects ── */}
       <Section label="Add Custom Effect" defaultOpen={false}>
         <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(2, 1fr)',
-          gap: 6,
-          padding: '8px 10px',
+          display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)',
+          gap: 6, padding: '8px 10px',
         }}>
           {Object.values(EFFECT_METADATA).map((meta) => (
             <button
@@ -350,15 +314,11 @@ export const AudioEffectsSection: React.FC<Props> = ({ layer, compId }) => {
                 updateData({ audioEffects: [...effects, newEffect] } as any);
               }}
               style={{
-                padding: '6px 8px',
-                fontSize: 10,
+                padding: '6px 8px', fontSize: 10,
                 background: 'var(--color-input-bg)',
                 border: '1px solid var(--color-border)',
-                borderRadius: 3,
-                color: 'var(--color-text-primary)',
-                cursor: 'pointer',
-                textAlign: 'left',
-                transition: 'all 120ms',
+                borderRadius: 3, color: 'var(--color-text-primary)',
+                cursor: 'pointer', textAlign: 'left', transition: 'all 120ms',
               }}
               onMouseEnter={(e) => {
                 (e.currentTarget as HTMLElement).style.background = 'var(--color-panel-hover)';

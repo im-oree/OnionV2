@@ -120,6 +120,23 @@ export interface Composition {
   /** Allow camera orbit/pan/zoom in Active Camera view (default false = camera locked) */
   cameraMoveWithView?: boolean;
 
+  /** Which view mode is currently active for this comp */
+  activeViewMode?: 'activeCamera' | 'freeView';
+
+  // ── Free View camera state (persisted per-comp) ──
+  /** Free View orbit pitch (radians, -π/2..π/2) */
+  freeOrbitPitch?: number;
+  /** Free View orbit yaw (radians) */
+  freeOrbitYaw?: number;
+  /** Free View distance from focal point to camera */
+  freeDistance?: number;
+  /** Free View focal point (orbit pivot) in world space */
+  freeFocalX?: number;
+  freeFocalY?: number;
+  freeFocalZ?: number;
+  /** Free View uses orthographic projection instead of perspective */
+  freeOrthographic?: boolean;
+
   // ── 3D Scene Settings ──
   /** Fly-through movement speed (units/sec) */
   flySpeed?: number;

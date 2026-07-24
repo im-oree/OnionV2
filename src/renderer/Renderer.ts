@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { SceneManager } from './SceneManager';
+import { createBackendRenderer } from './backend/backendFactory';
+import type { BackendId, UnifiedRenderer } from './backend/RenderBackend';
+import { useRendererBackendStore } from '../state/rendererBackendStore';
 import { CameraManager } from './CameraManager';
 import { RenderLoop, type FrameStats } from './RenderLoop';
 import { ResizeHandler } from './ResizeHandler';
@@ -45,6 +48,12 @@ import type { LightData } from '../types/layer';
 import type { Model3DData } from '../types/model3d';
 import { frameCache } from './cache/FrameCache';
 import { scrubPrewarmer } from './ScrubPrewarmer';
+import { cameraController } from './CameraController';
+import { startCameraModeBridge } from './CameraModeBridge';
+import { AdjustPassRenderer } from './compositing/AdjustPassRenderer';
+import { isAdjustActive } from './effects/library/adjustPass';
+import { CutoutCompositor } from './cutout/CutoutCompositor';
+import { useLUTStore } from './color/lutStore';
 
 export interface RendererState {
   fps: number;
@@ -81,6 +90,8 @@ export class Renderer {
   public readonly transitionCompositor: TransitionCompositor;
   public readonly tonemapPass: TonemapPass;
   public readonly scene3D: Scene3DManager;
+  public readonly adjustPassRenderer: AdjustPassRenderer;
+  public readonly cutoutCompositor: CutoutCompositor;
 
   private _state: RendererState = { fps: 0, zoom: 1, frameCount: 0 };
   private _onStateChange?: (state: RendererState) => void;
@@ -91,16 +102,21 @@ export class Renderer {
   private _toolUnsubscribe: (() => void) | null = null;
   private _kfUnsub: (() => void) | null = null;
   private _compStoreUnsub: (() => void) | null = null;
+  private _camBridgeUnsub: (() => void) | null = null;
+  private _backendStore = useRendererBackendStore.getState();
+  private _container: HTMLElement | null = null;
 
   // ── Frame cache state ──────────────────────────────────────
   private _cacheWorker: Worker | null = null;
   /** Hash of the last frame we rendered or served from cache */
   private _lastFrameHash: string = '';
   /** When true the current frame was served from RAM cache — skip 3D render */
-  private _cacheHitThisFrame = false;
+
   /** Pending async disk-cache read for the current hash */
   private _pendingCacheRead: Promise<void> | null = null;
 
+  /** Track original textures swapped by adjust pass so we can restore them after effects. */
+  private _adjustOriginalTextures: Map<string, THREE.Texture> | null = null;
 
   /** AE-style viewer clipping */
   private _clipToCompBounds = true;
@@ -128,6 +144,9 @@ export class Renderer {
   private _previewFBOSize = { w: 0, h: 0 };
 
   constructor(container: HTMLElement) {
+    // Renderer is created synchronously with WebGL as a safe default.
+    // A hot-swap to WebGPU (if user preferred it) happens right after
+    // construction so all managers can be built against a valid renderer.
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       alpha: true,
@@ -140,6 +159,13 @@ export class Renderer {
     this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
     container.appendChild(this.renderer.domElement);
+
+    // Backend state — start assuming WebGL is active
+    this._backendStore.setActualBackend('webgl');
+    this._container = container;
+
+    // WebGPU auto-swap disabled. The rendererBackendStore also coerces any
+    // saved "webgpu" preference to "webgl" so this branch never fires.
 
     this.sceneManager = new SceneManager();
     this.cameraManager = new CameraManager();
@@ -178,6 +204,8 @@ export class Renderer {
     this.transitionCompositor = new TransitionCompositor(this.renderer);
     this.tonemapPass = new TonemapPass(this.renderer);
     this.texturePreloader = new TexturePreloader();
+    this.adjustPassRenderer = new AdjustPassRenderer();
+    this.cutoutCompositor = new CutoutCompositor();
     this.scene3D = new Scene3DManager();
     this.scene3D.setRenderer(this.renderer);
     this._previewFBO = null;
@@ -198,6 +226,9 @@ export class Renderer {
     (window as any).__renderer = this;
     (window as any).__gpuTextureCache = this.gpuTextureCache;
     (window as any).__videoFrameCache = this.videoFrameCache;
+
+    // LUT store bridge — use the module-level import (see top of file)
+    (window as any).__lutStore = useLUTStore;
 
     import('./effects/EffectThumbnailGenerator').then(({ effectThumbnailGenerator }) => {
       effectThumbnailGenerator.setRenderer(this.renderer);
@@ -221,20 +252,47 @@ export class Renderer {
     };
     document.addEventListener('renderer:interactive', this._interactiveHandler);
 
-    (window as any).__freeViewMode = false;
-    (window as any).__freeOrbitX = 0.2;
-    (window as any).__freeOrbitY = 0.8;
-    (window as any).__freeDistance = 800;
-    (window as any).__freeLookAtX = 0;
-    (window as any).__freeLookAtY = 0;
-    (window as any).__freeLookAtZ = 0;
+    // Migrate stashed "original texture" pointers when a video layer's
+    // live texture is swapped out (e.g. when video dims change).
+    const liveTexHandler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail) return;
+      const { layerId, oldTexture, newTexture } = detail;
+      if (this._adjustOriginalTextures?.get(layerId) === oldTexture) {
+        this._adjustOriginalTextures.set(layerId, newTexture);
+      }
+      const lr = this.layerSync.getRenderer(layerId);
+      if (lr && (lr as any)._cutoutOriginalMap === oldTexture) {
+        (lr as any)._cutoutOriginalMap = newTexture;
+      }
+    };
+    document.addEventListener('layer:live-texture-changed', liveTexHandler);
+    (this as any)._liveTexHandler = liveTexHandler;
+
+    // Start the CameraController bridge — binds controller to the active
+    // composition and re-renders on view-mode changes.
+    this._camBridgeUnsub = startCameraModeBridge(() => {
+      const st = cameraController.freeState;
+      (window as any).__freeViewMode = cameraController.isFreeView;
+      (window as any).__freeOrbitX   = st.pitch;
+      (window as any).__freeOrbitY   = st.yaw;
+      (window as any).__freeDistance = st.distance;
+      (window as any).__freeLookAtX  = st.focal.x;
+      (window as any).__freeLookAtY  = st.focal.y;
+      (window as any).__freeLookAtZ  = st.focal.z;
+      const comp = this._composition;
+      if (comp) this._applyPerspectiveCamera(comp);
+      this.renderLoop.requestRender();
+    });
+
+    // Legacy viewport:viewmode event — bridges into CameraController
     this._viewModeHandler = ((e: Event) => {
       const detail = (e as CustomEvent).detail;
-      (window as any).__freeViewMode = !!detail?.free;
-      const comp = this._composition;
-      if (!comp) return;
-      this._applyPerspectiveCamera(comp);
-      this.renderLoop.requestRender();
+      const wantFree = !!detail?.free;
+      const targetMode = wantFree ? 'freeView' : 'activeCamera';
+      if (cameraController.mode !== targetMode) {
+        cameraController.setMode(targetMode);
+      }
     }) as EventListener;
     document.addEventListener('viewport:viewmode', this._viewModeHandler);
 
@@ -251,7 +309,7 @@ export class Renderer {
     // ── beforeRender: check frame cache ───────────────────────
     this.renderLoop.beforeRender = () => {
       renderStart = performance.now();
-      this._cacheHitThisFrame = false;
+
 
       const cs = useCompositionStore.getState();
       const comp = cs.activeCompositionId
@@ -262,47 +320,57 @@ export class Renderer {
         return;
       }
 
+      // ── Restore effect-swapped textures — DISABLED (no swaps happening) ──
+      // Uncomment when cutout + adjust passes are re-enabled.
+      /*
+      for (const layer of comp.layers) {
+        const lr = this.layerSync.getRenderer(layer.id);
+        if (!lr) continue;
+        if (!((lr as any)._cutoutOriginalMap)) continue;
+        const mesh = (lr as any).mesh as THREE.Mesh | undefined;
+        const mat = mesh?.material as THREE.MeshBasicMaterial | undefined;
+        if (!mat) continue;
+        mat.map = (lr as any)._cutoutOriginalMap;
+        mat.needsUpdate = true;
+        delete (lr as any)._cutoutOriginalMap;
+      }
+      if (this._adjustOriginalTextures && this._adjustOriginalTextures.size > 0) {
+        for (const [layerId, originalTex] of this._adjustOriginalTextures) {
+          if (!originalTex) continue;
+          const lr = this.layerSync.getRenderer(layerId);
+          if (!lr) continue;
+          const mesh = (lr as any).mesh as THREE.Mesh | undefined;
+          const mat = mesh?.material as THREE.MeshBasicMaterial | undefined;
+          if (!mat) continue;
+          mat.map = originalTex;
+          mat.needsUpdate = true;
+        }
+        this._adjustOriginalTextures.clear();
+      }
+      */
+
       const effectiveTime = comp.currentTime;
       const frame = Math.floor(effectiveTime * comp.fps);
       const playbackState = useTimelineStore.getState().playbackState;
       const isPlaying = playbackState === 'playing';
 
-      // ⚠ FAST PATH: During playback, completely bypass the cache system.
-      // No hashing, no cache lookup, no disk read — just render.
-      // This is critical for playback smoothness; hashing every layer per
-      // frame + async promise chains steal too much frame budget.
+      // Cache is used ONLY for afterRender capture — never skip rendering.
+      // Skipping beforeRender processing caused adjust/cutout/video to break.
       if (!isPlaying && !ModalTransform.activeAnywhere) {
         const hash = frameCache.hashFor(comp, frame);
-
-        // Same frame as last render → skip entirely
-        if (hash === this._lastFrameHash && frameCache.ram.has(hash)) {
-          this._cacheHitThisFrame = true;
-          return;
-        }
-
-        // New frame → try RAM
-        if (hash !== this._lastFrameHash) {
-          const ramEntry = frameCache.ram.get(hash);
-          if (ramEntry) {
-            frameCache.blitToCanvas(ramEntry.data, this.renderer.domElement);
-            this._lastFrameHash = hash;
-            this._cacheHitThisFrame = true;
-            return;
-          }
-          // Disk read (async, non-blocking)
+        // Kick off async disk read so it's ready for afterRender
+        if (!frameCache.ram.has(hash)) {
           this._pendingCacheRead = frameCache.get(hash).then((diskHit) => {
             if (diskHit && !frameCache.ram.has(hash)) {
               frameCache.ram.set(hash, diskHit, comp.id, frame);
-              this.renderLoop.requestRender();
             }
             this._pendingCacheRead = null;
           }).catch(() => { this._pendingCacheRead = null; });
         }
-
         scrubPrewarmer.cancel();
       }
 
-      // Hide any cache overlay so the WebGL canvas is visible again
+      // Always hide overlay — WebGL renders every frame now
       frameCache.hideOverlay();
 
       const bgColor = comp.backgroundColor ?? '#000000';
@@ -346,6 +414,24 @@ export class Renderer {
 
       this.texturePreloader.isPlaying = isPlaying;
       this.texturePreloader.update(comp, frame);
+
+      // Pump video frames into the canvas-backed textures. Runs every
+      // render tick — cheap, and reliably keeps the visible frame current
+      // regardless of whether playing, paused, or scrubbing.
+      for (const layer of comp.layers) {
+        if (layer.type !== 'video') continue;
+        const lr = this.layerSync.getRenderer(layer.id);
+        if (lr instanceof VideoLayerRenderer && (lr as any).pumpVideoFrame) {
+          (lr as any).pumpVideoFrame();
+        }
+      }
+
+      // Apply masks AFTER video pump — masks must run every frame for
+      // video layers because pumpVideoFrame overwrites the blit canvas.
+      for (const layer of comp.layers) {
+        if (layer.type !== 'video') continue;
+        this.layerSync.applyMasksForLayer(layer.id);
+      }
 
       if (playbackState !== 'stopped') {
         this._syncVideoLayers(comp, effectiveTime);
@@ -475,8 +561,7 @@ export class Renderer {
     this.renderLoop.afterRender = () => {
       this.tonemapPass.afterRender();
 
-      // Skip capture if this frame was a cache hit (no render happened)
-      if (this._cacheHitThisFrame) return;
+      // (cache-hit early-return removed — we always render now)
 
       // ⚠ CRITICAL: Never capture during playback.
       // readPixels() stalls the GPU pipeline and destroys playback smoothness.
@@ -519,27 +604,23 @@ export class Renderer {
     };
 
     this.renderLoop.onFrame = (stats: FrameStats) => {
-      // If this was a pure cache-hit frame, skip the heavy post-frame work
-      // (visibility restore, adjustment restore, etc.) since nothing rendered.
-      if (!this._cacheHitThisFrame) {
-        this._disableCompositionScissor();
+      this._disableCompositionScissor();
 
-        const cs2 = useCompositionStore.getState();
-        const activeComp = cs2.activeCompositionId
-          ? cs2.compositions.find((c) => c.id === cs2.activeCompositionId)
-          : null;
-        if (activeComp) {
-          const restoreFrame = Math.floor(activeComp.currentTime * activeComp.fps);
-          this.adjustmentCompositor.restoreVisibility(activeComp.layers, restoreFrame);
-          if (activeComp.motionBlur?.enabled) {
-            this.motionBlurCompositor.restore(activeComp, this.sceneManager.scene);
-          }
+      const cs2 = useCompositionStore.getState();
+      const activeComp = cs2.activeCompositionId
+        ? cs2.compositions.find((c) => c.id === cs2.activeCompositionId)
+        : null;
+      if (activeComp) {
+        const restoreFrame = Math.floor(activeComp.currentTime * activeComp.fps);
+        this.adjustmentCompositor.restoreVisibility(activeComp.layers, restoreFrame);
+        if (activeComp.motionBlur?.enabled) {
+          this.motionBlurCompositor.restore(activeComp, this.sceneManager.scene);
         }
+      }
 
-        if (this._activeTransitions) {
-          this._executeTransitions(this._activeTransitions);
-          this._activeTransitions = null;
-        }
+      if (this._activeTransitions) {
+        this._executeTransitions(this._activeTransitions);
+        this._activeTransitions = null;
       }
 
       const vp = this.cameraManager.getViewportTransform();
@@ -665,10 +746,18 @@ export class Renderer {
         _layerFingerprints.set(comp.id, nextFingerprints);
 
         if (hadRemoval) {
+          // Clean up cutout compositor for removed layers
+          for (const [id] of prevFingerprints) {
+            if (!comp.layers.find(l => l.id === id)) {
+              this.cutoutCompositor.removeLayer(id);
+            }
+          }
+
           // Can't know the removed layer's range — nuke whole comp
           frameCache.ram.invalidateComp(comp.id);
           this._lastFrameHash = '';
           frameCache.hideOverlay();
+          this.renderLoop.requestRender();
         } else if (invalidatedRanges.length > 0) {
           // Merge overlapping ranges and invalidate
           for (const r of invalidatedRanges) {
@@ -676,6 +765,7 @@ export class Renderer {
           }
           this._lastFrameHash = '';
           frameCache.hideOverlay();
+          this.renderLoop.requestRender();
         }
       }
     });
@@ -689,17 +779,47 @@ export class Renderer {
   private _layerFingerprint(layer: import('../types/layer').Layer): string {
     const t = layer.transform;
     const e = layer.effects;
+    const d: any = layer.data ?? {};
+    const adj = d.adjust;
+    const cut = d.cutout;
     return [
       layer.visible ? '1' : '0',
       layer.opacity,
       layer.blendMode,
       layer.startFrame,
       layer.endFrame,
-      t ? `${t.x?.toFixed(1)},${t.y?.toFixed(1)},${t.scaleX?.toFixed(2)},${t.scaleY?.toFixed(2)},${t.rotation?.toFixed(2)}` : '',
-      e ? e.map(fx => `${fx.effectId}:${fx.enabled}`).join('|') : '',
-      // For image/video layers, include the source url so asset swaps bust cache
-      (layer.data as any)?.url ?? '',
-      (layer.data as any)?.sourceCompId ?? '',
+      t
+        ? `${t.position?.x?.toFixed(1)},${t.position?.y?.toFixed(1)},` +
+          `${t.scale?.x?.toFixed(2)},${t.scale?.y?.toFixed(2)},` +
+          `${t.rotation?.toFixed(2)}`
+        : '',
+      e ? e.map(fx => `${fx.type}:${fx.enabled}`).join('|') : '',
+      d.url ?? '',
+      d.sourceCompId ?? '',
+      d.assetId ?? '',
+      adj ? [
+        adj.enabled ? 1 : 0,
+        adj.temp, adj.tint, adj.saturation,
+        adj.exposure, adj.contrast, adj.highlights, adj.shadows,
+        adj.whites, adj.blacks, adj.brilliance,
+        adj.sharpen, adj.clarity, adj.fade,
+        adj.vignette, adj.vignetteFeather,
+        adj.lutId ?? '', adj.lutIntensity ?? 100,
+        adj.protectSkinTone ? 1 : 0,
+      ].join(',') : '',
+      cut ? [
+        cut.enabled ? 1 : 0,
+        cut.model ?? '',
+        cut.bakeComplete ? 1 : 0,
+        cut.bakedFrameCount ?? 0,
+        cut.feather ?? 0, cut.contract ?? 0,
+        cut.smoothing ?? 0, cut.threshold ?? 50,
+        cut.manualMode ?? 'ai',
+        (cut.manualStrokes?.length ?? 0),
+        cut.chroma ? `${cut.chroma.enabled?1:0}:${cut.chroma.keyColor}:${cut.chroma.similarity}:${cut.chroma.smoothness}:${cut.chroma.spillSuppress}` : '',
+        cut.stroke ? `${cut.stroke.enabled?1:0}:${cut.stroke.color}:${cut.stroke.width}:${cut.stroke.softness}:${cut.stroke.position}:${cut.stroke.style}` : '',
+      ].join(',') : '',
+      Array.isArray(layer.masks) ? layer.masks.length : 0,
     ].join(';');
   }
 
@@ -841,7 +961,6 @@ export class Renderer {
   }
 
   private _applyPerspectiveCamera(comp: Composition): void {
-    const isFree = !!(window as any).__freeViewMode;
     const camMode = comp.cameraMode ?? 'perspective';
 
     if (camMode === 'orthographic') {
@@ -854,53 +973,50 @@ export class Renderer {
     }
 
     this.scene3D.isActive = true;
-    const cam = this.scene3D.perspectiveCamera;
-    cam.near = 0.1;
-    cam.far = 50000;
 
-    if (isFree) {
-      const yaw      = (window as any).__freeOrbitY   ?? 0.5;
-      const pitch    = (window as any).__freeOrbitX   ?? 0.3;
-      const dist     = (window as any).__freeDistance ?? 500;
-      const lookAtX  = (window as any).__freeLookAtX  ?? 0;
-      const lookAtY  = (window as any).__freeLookAtY  ?? 0;
-      const lookAtZ  = (window as any).__freeLookAtZ  ?? 0;
-
-      cam.fov    = 50;
-      cam.aspect = this.cameraManager.viewportWidth / this.cameraManager.viewportHeight;
-
-      const camX = lookAtX + dist * Math.sin(yaw) * Math.cos(pitch);
-      const camY = lookAtY + dist * Math.sin(pitch);
-      const camZ = lookAtZ + dist * Math.cos(yaw) * Math.cos(pitch);
-
-      cam.position.set(camX, camY, camZ);
-      cam.lookAt(lookAtX, lookAtY, lookAtZ);
-
-      (window as any).__freeCamX = camX;
-      (window as any).__freeCamY = camY;
-      (window as any).__freeCamZ = camZ;
-    } else {
-      const baseFov      = comp.cameraFOV      ?? 50;
-      const uiZoom       = useViewportStore.getState().settings.cameraViewZoom ?? 1;
-      const effectiveFov = Math.max(1, Math.min(170, baseFov / uiZoom));
-      const camZ         = comp.cameraPositionZ ?? 1000;
-      const orbitX       = comp.cameraRotationX ?? 0;
-      const orbitY       = comp.cameraRotationY ?? 0;
-      const panX         = comp.cameraPositionX ?? 0;
-      const panY         = comp.cameraPositionY ?? 0;
-
-      cam.fov    = effectiveFov;
-      cam.aspect = this.cameraManager.viewportWidth / this.cameraManager.viewportHeight;
-
-      const x = camZ * Math.sin(orbitY) * Math.cos(orbitX) + panX;
-      const y = -camZ * Math.sin(orbitX) + panY;
-      const z = camZ * Math.cos(orbitY) * Math.cos(orbitX);
-
-      cam.position.set(x, y, z);
-      cam.lookAt(panX, panY, 0);
+    if (cameraController.isFreeView) {
+      // FREE VIEW — use the controller's own camera (persistent state)
+      cameraController.setViewportSize(
+        this.cameraManager.viewportWidth,
+        this.cameraManager.viewportHeight,
+      );
+      const freeCam = cameraController.freeCamera;
+      this.renderLoop.setCamera(freeCam);
+      this.cameraManager.setPerspectiveCamera(
+        freeCam as THREE.PerspectiveCamera,
+        this.renderer.domElement.width,
+        this.renderer.domElement.height,
+      );
+      (window as any).__perspectiveActive = true;
+      (window as any).__perspectiveCamera = freeCam;
+      return;
     }
 
+    // ACTIVE CAMERA — driven by comp.cameraPositionX/Y/Z + rotationX/Y
+    const cam = this.scene3D.perspectiveCamera;
+    cam.near = 0.1;
+    cam.far  = 50000;
+
+    const baseFov      = comp.cameraFOV      ?? 50;
+    const uiZoom       = useViewportStore.getState().settings.cameraViewZoom ?? 1;
+    const effectiveFov = Math.max(1, Math.min(170, baseFov / uiZoom));
+    const camZ         = comp.cameraPositionZ ?? 1000;
+    const orbitX       = comp.cameraRotationX ?? 0;
+    const orbitY       = comp.cameraRotationY ?? 0;
+    const panX         = comp.cameraPositionX ?? 0;
+    const panY         = comp.cameraPositionY ?? 0;
+
+    cam.fov    = effectiveFov;
+    cam.aspect = this.cameraManager.viewportWidth / this.cameraManager.viewportHeight;
+
+    const x = camZ * Math.sin(orbitY) * Math.cos(orbitX) + panX;
+    const y = -camZ * Math.sin(orbitX) + panY;
+    const z = camZ * Math.cos(orbitY) * Math.cos(orbitX);
+
+    cam.position.set(x, y, z);
+    cam.lookAt(panX, panY, 0);
     cam.updateProjectionMatrix();
+
     this.cameraManager.setPerspectiveCamera(
       cam,
       this.renderer.domElement.width,
@@ -1063,11 +1179,30 @@ export class Renderer {
       const effectiveVol = baseVol * envelope;
       const muted = !!vdata.muted;
       const pan = vdata.pan ?? 0;
-      const effects = vdata.audioEffects ?? [];
-      const eq = vdata.eq;
+
+      // Apply PropertyBinder dataOverride so keyframed audioEffects / eq
+      // are picked up during playback
+      let effectsList = vdata.audioEffects ?? [];
+      let eqData = vdata.eq;
+      if (overrides?.dataOverride) {
+        const d = overrides.dataOverride;
+        if (d.audioEffects) effectsList = d.audioEffects;
+        if (d.eq) eqData = d.eq;
+      }
+
+      // Also apply pan override if keyframed
+      let effectivePan = pan;
+      if (overrides?.dataOverride?.pan !== undefined) {
+        effectivePan = overrides.dataOverride.pan;
+      }
 
       // Route everything through VideoLayerRenderer's Web Audio pipeline
-      r.syncAudio(effectiveVol, muted, pan, effects, eq);
+      r.syncAudio(effectiveVol, muted, effectivePan, effectsList, eqData, {
+        ...vdata,
+        audioEffects: effectsList,
+        eq: eqData,
+        pan: effectivePan,
+      });
     }
   }
 
@@ -1134,6 +1269,11 @@ export class Renderer {
       } else {
         // Paused / scrubbing — show correct frame via cached bitmap or fresh capture
         if (!video.paused) video.pause();
+
+        // If we're playing but simply outside this layer's segment,
+        // don't seek/capture — just leave it paused and continue.
+        if (isPlaying) continue;
+
         if (inRange) {
           const vdata = layer.data as VideoData | undefined;
           let localTime = (timeS - segStartSec) + (activeSeg.sourceOffset / fps);
@@ -1149,41 +1289,47 @@ export class Renderer {
             // Instant path — use cached bitmap
             r.setCachedBitmap(cachedFrame.imageBitmap);
           } else {
-            // Seek video and force additional render passes
-            // until we have a valid frame. Otherwise the WebGL canvas keeps
-            // showing the OLD VideoTexture frame while we wait for `seeked`.
+            // Cache miss — seek and capture, but do it ONLY ONCE per frame.
+            // Use a debounced approach: seekTo queues the seek, and we wait
+            // for the video to stabilize before capturing. This prevents the
+            // pumpVideoFrame → seek → pumpVideoFrame fight that caused stutter.
             const needSeek = Math.abs(video.currentTime - localTime) > 0.05;
 
             if (needSeek) {
-              // Use the VideoLayerRenderer's own queue (drops intermediate seeks)
-              // Fallback to direct currentTime if seekTo unavailable
+              // Queue the seek (VideoLayerRenderer handles debouncing)
               r.seekTo?.(localTime) ?? (video.currentTime = localTime);
-            }
-
-            // Set up a one-shot capture that also invalidates the frame cache
-            // so the render loop DOESN'T early-exit next tick.
-            const expectedTime = localTime;
-            const doCapture = () => {
-              if (Math.abs(video.currentTime - expectedTime) > 0.15) return;
+              
+              // Mark this layer as "seeking" so pumpVideoFrame doesn't overwrite
+              (r as any)._seekPending = true;
+              
+              // Schedule a ONE-SHOT capture after seeked fires
+              const onSeeked = () => {
+                video.removeEventListener('seeked', onSeeked);
+                (r as any)._seekPending = false;
+                
+                // Small delay to let the video fully decode the sought frame
+                setTimeout(() => {
+                  r.captureFrame().then((bitmap) => {
+                    if (!bitmap) return;
+                    this.videoFrameCache.store(layer.id, compFrame, bitmap);
+                    r.setCachedBitmap(bitmap);
+                    // Invalidate cache hash so next beforeRender re-processes
+                    this._lastFrameHash = '';
+                    this.renderLoop.requestRender();
+                  }).catch(() => {});
+                }, 16); // One frame delay
+              };
+              
+              video.addEventListener('seeked', onSeeked, { once: true });
+            } else {
+              // Video is already at the right time — capture immediately
               r.captureFrame().then((bitmap) => {
                 if (!bitmap) return;
                 this.videoFrameCache.store(layer.id, compFrame, bitmap);
                 r.setCachedBitmap(bitmap);
-                // Force one more render so the new bitmap actually appears
-                this._lastFrameHash = '';  // invalidate so beforeRender re-processes
+                this._lastFrameHash = '';
                 this.renderLoop.requestRender();
               }).catch(() => {});
-            };
-
-            if (needSeek) {
-              const onSeeked = () => {
-                video.removeEventListener('seeked', onSeeked);
-                doCapture();
-              };
-              video.addEventListener('seeked', onSeeked, { once: true });
-            } else {
-              // Video is close enough — capture what's already there
-              doCapture();
             }
           }
         }
@@ -1215,14 +1361,24 @@ export class Renderer {
         this._audioRenderers.set(layer.id, audioRenderer);
       }
       const overrides = this.propertyBinder.overrides.get(layer.id);
-      if (overrides?.volume != null) {
+      // Merge overrides into layer.data:
+      //   - overrides.volume overrides data.volume
+      //   - overrides.dataOverride is a full data patch (audioEffects, eq, etc.)
+      let effectiveLayer = layer;
+      if (overrides) {
         const origData = layer.data as any;
-        const patchedData = { ...origData, volume: overrides.volume };
-        const patchedLayer = { ...layer, data: patchedData };
-        audioRenderer.sync(patchedLayer, currentTime, fps, isPlaying);
-      } else {
-        audioRenderer.sync(layer, currentTime, fps, isPlaying);
+        let patchedData: any = origData;
+        if (overrides.dataOverride) {
+          patchedData = { ...patchedData, ...overrides.dataOverride };
+        }
+        if (overrides.volume != null) {
+          patchedData = { ...patchedData, volume: overrides.volume };
+        }
+        if (patchedData !== origData) {
+          effectiveLayer = { ...layer, data: patchedData };
+        }
       }
+      audioRenderer.sync(effectiveLayer, currentTime, fps, isPlaying);
     }
   }
 
@@ -1352,6 +1508,14 @@ export class Renderer {
     this.renderer.setViewport(0, 0, lw, lh);
     this.renderer.setScissor(0, 0, lw, lh);
 
+    // Restore original textures swapped by the adjust pass on the
+    // previous frame. This must happen BEFORE the main scene render
+    // — the restore at end of _processEffects only stores originals
+    // for the CURRENT frame's swaps; the actual restore runs here so
+    // layers without effects also show the adjusted texture during
+    // the scene render pass.
+    // Texture restoration moved to top of beforeRender.
+
     const layerIds: string[] = [];
     const nameToId = new Map<string, string>();
     for (const child of this.sceneManager.layerGroup.children) {
@@ -1375,6 +1539,33 @@ export class Renderer {
       const gh = (r as any).geometryHeight?.() ?? 0;
       const isFreeView = !!(window as any).__freeViewMode;
 
+      // ── Cutout pass — DISABLED pending shader pipeline stabilization ──
+      // TODO: Re-enable after fixing GLSL3 shader compilation + texture
+      // swap lifecycle. The UI panel still works — settings are saved,
+      // bake runs, data persists. Just the visual application is paused.
+      // See TODO.md for the re-enablement checklist.
+      /*
+      const cs2 = useCompositionStore.getState();
+      const comp2 = cs2.activeCompositionId
+        ? cs2.compositions.find(c => c.id === cs2.activeCompositionId)
+        : null;
+      const layerObj = comp2?.layers.find(l => l.id === id);
+      const cutoutData = (layerObj as any)?.data?.cutout;
+      if (comp2 && layerObj && cutoutData?.enabled) {
+        // ... cutout apply block ...
+      }
+      */
+
+      // ── Adjust pass — DISABLED pending shader pipeline stabilization ──
+      // TODO: Re-enable after fixing GLSL3 shader compilation. The UI
+      // panel still works — slider values are saved and keyframeable.
+      /*
+      const adjustData = layerObj ? (layerObj as any).data?.adjust : null;
+      if (adjustData && isAdjustActive(adjustData)) {
+        // ... adjust apply block ...
+      }
+      */
+
       if (this.effectsRenderer.hasEffects(id) && gw > 0 && gh > 0 && !isFreeView) {
         try {
           const success = this.effectsRenderer.renderLayer(id, r.mesh, gw, gh, r.group);
@@ -1395,6 +1586,9 @@ export class Renderer {
         this.effectsRenderer.removeLayerEffects(id);
       }
     }
+    // Do NOT clear _adjustOriginalTextures here — the beforeRender restore
+    // logic manages the lifecycle. Clearing here would lose the original
+    // texture reference and break restoration when adjust is turned off.
 
     if (effectCount > 0) this.renderLoop.requestRender();
   }
@@ -1611,6 +1805,78 @@ export class Renderer {
 
   get canvas(): HTMLCanvasElement { return this.renderer.domElement; }
 
+  /** Current backend id (from the store) */
+  get activeBackend(): BackendId {
+    return useRendererBackendStore.getState().actualBackend;
+  }
+
+  // ── Backend hot-swap ─────────────────────────────────────
+
+  /**
+   * Attempt to swap the renderer to a different backend at runtime.
+   * If it fails, silently falls back to the previous backend.
+   * Emits a state update via useRendererBackendStore.
+   */
+  async swapBackend(target: BackendId): Promise<{ ok: boolean; reason?: string }> {
+    const store = useRendererBackendStore.getState();
+    if (target === 'webgpu') {
+      return { ok: false, reason: 'WebGPU is temporarily disabled.' };
+    }
+    if (store.actualBackend === target) return { ok: true };
+    if (!this._container) return { ok: false, reason: 'No container' };
+
+    store.setSwapping(true);
+    try {
+      const result = await createBackendRenderer(target, {
+        antialias: true,
+        alpha: true,
+        preserveDrawingBuffer: true,
+        premultipliedAlpha: false,
+      });
+
+      // Detach + dispose the old canvas
+      const oldCanvas = this.renderer.domElement;
+      try { this.renderer.dispose(); } catch {}
+      if (oldCanvas.parentElement) oldCanvas.parentElement.removeChild(oldCanvas);
+
+      // Install the new renderer
+      const newRenderer = result.renderer as any as THREE.WebGLRenderer;
+      newRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      newRenderer.setClearColor(0x000000, 0);
+      newRenderer.domElement.style.display = 'block';
+      newRenderer.domElement.style.width = '100%';
+      newRenderer.domElement.style.height = '100%';
+      this._container.appendChild(newRenderer.domElement);
+
+      // Replace fields — cast because UnifiedRenderer isn't structurally
+      // identical to WebGLRenderer, but for the methods we call it is
+      (this as any).renderer = newRenderer;
+
+      // Hand the new renderer to any managers that hold a direct reference
+      try { this.scene3D.setRenderer(newRenderer as any); } catch {}
+      try { this.renderLoop.updateRenderer?.(newRenderer as any); } catch {}
+      try { this.tonemapPass.updateRenderer?.(newRenderer as any); } catch {}
+      try { this.effectsRenderer.updateRenderer?.(newRenderer as any); } catch {}
+
+      // Update backend store
+      store.setActualBackend(result.actualBackend, result.fallbackReason);
+      store.setSwapping(false);
+
+      // Trigger a re-sync + fresh render
+      if (this._composition) this.applyComposition(this._composition);
+      this.renderLoop.requestRender();
+
+      return result.fallbackReason
+        ? { ok: false, reason: result.fallbackReason }
+        : { ok: true };
+    } catch (err) {
+      store.setSwapping(false);
+      const reason = (err as Error).message;
+      console.error('[Renderer] Backend swap failed:', reason);
+      return { ok: false, reason };
+    }
+  }
+
   dispose(): void {
     this.renderLoop.dispose();
     this.resizeHandler.dispose();
@@ -1622,6 +1888,8 @@ export class Renderer {
     this.layerSync.clear();
     this.effectsRenderer.dispose();
     this.adjustmentCompositor.dispose();
+    this.adjustPassRenderer.dispose();
+    this.cutoutCompositor.dispose();
     this.motionBlurCompositor.dispose();
     this.transitionCompositor.dispose();
     this.selectionOverlay.dispose();
@@ -1644,6 +1912,10 @@ export class Renderer {
     if (this._compStoreUnsub) {
       this._compStoreUnsub();
       this._compStoreUnsub = null;
+    }
+    if (this._camBridgeUnsub) {
+      this._camBridgeUnsub();
+      this._camBridgeUnsub = null;
     }
 
     this.gpuTextureCache.dispose();

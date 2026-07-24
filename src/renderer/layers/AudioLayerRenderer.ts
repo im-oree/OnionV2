@@ -20,6 +20,8 @@ export class AudioLayerRenderer {
   private _source: MediaElementAudioSourceNode | null = null;
   private _gainNode: GainNode | null = null;
   private _panNode: StereoPannerNode | null = null;
+  private _spatialNode: PannerNode | null = null;
+  private _lastSpatialHash = '';
   private _effectsInput: GainNode | null = null;
   private _effectsOutput: GainNode | null = null;
   private _eqInput: GainNode | null = null;
@@ -107,6 +109,7 @@ export class AudioLayerRenderer {
     // ── Update effects chain + EQ if changed ──
     this._syncEffectsChain(data);
     this._syncEQ(data);
+    this._syncSpatial(data);
 
     audio.muted = !!data.muted;
     const rate = data.playbackRate;
@@ -174,6 +177,9 @@ export class AudioLayerRenderer {
     for (const b of this._activeEQBands) { try { b.disconnect(); } catch {} }
     this._activeEQBands = [];
     // Disconnect graph nodes in order
+    try { this._spatialNode?.disconnect(); } catch {}
+    this._spatialNode = null;
+    this._lastSpatialHash = '';
     try { this._eqOutput?.disconnect(); } catch {}
     try { this._eqInput?.disconnect(); } catch {}
     try { this._effectsOutput?.disconnect(); } catch {}
@@ -261,6 +267,48 @@ export class AudioLayerRenderer {
       this._activeEQBands.push(filter);
     }
     prev.connect(this._eqOutput);
+  }
+
+  // ── Spatial audio ──────────────────────────────────────────
+
+  private _syncSpatial(data: AudioData): void {
+    if (!this._eqOutput) return;
+
+    import('../audio/spatialAudio').then(({ readSpatialFromData, applyLinkedLayerPosition, createSpatialNode, applySpatialConfig }) => {
+      let config = readSpatialFromData(data);
+      if (config) {
+        config = applyLinkedLayerPosition(config, (data as any).spatialLinkedLayerId);
+      }
+
+      const enabled = !!config;
+      const hash = enabled
+        ? JSON.stringify({ ...config, linked: (data as any).spatialLinkedLayerId })
+        : 'off';
+      if (hash === this._lastSpatialHash) return;
+      this._lastSpatialHash = hash;
+
+      const ctx = (this._eqOutput!.context as AudioContext);
+
+      if (!enabled) {
+        if (this._spatialNode) {
+          try { this._eqOutput!.disconnect(); } catch {}
+          try { this._spatialNode.disconnect(); } catch {}
+          this._spatialNode = null;
+        }
+        try { this._eqOutput!.disconnect(); } catch {}
+        this._eqOutput!.connect(ctx.destination);
+        return;
+      }
+
+      if (!this._spatialNode) {
+        this._spatialNode = createSpatialNode(config!);
+        try { this._eqOutput!.disconnect(); } catch {}
+        this._eqOutput!.connect(this._spatialNode);
+        this._spatialNode.connect(ctx.destination);
+      } else {
+        applySpatialConfig(this._spatialNode, config!);
+      }
+    });
   }
 
   private _loadAudio(assetId: string, layer: Layer): void {

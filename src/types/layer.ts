@@ -31,7 +31,9 @@ export type AudioEffectType =
   | 'phaser'
   | 'tremolo'
   | 'bitcrusher'
-  | 'stereoWiden';
+  | 'stereoWiden'
+  | 'reduceNoise'
+  | 'isolateVoice';
 
 /**
  * An audio effect instance attached to a layer.
@@ -284,6 +286,36 @@ export interface VideoData {
   fadeOutBezier?: [number, number, number, number];
   audioEffects?: AudioEffectInstance[];
   eq?: AudioEQ;
+
+  // ── Spatial audio (3D positioning) ──
+  /** Enable 3D spatial positioning for this audio source */
+  spatialEnabled?: boolean;
+  /** Position in world/comp space (listener is at 0,0,0) */
+  spatialX?: number;
+  spatialY?: number;
+  spatialZ?: number;
+  /** Distance model: how volume falls off with distance */
+  spatialDistanceModel?: 'linear' | 'inverse' | 'exponential';
+  /** Full-volume radius */
+  spatialRefDistance?: number;
+  /** Beyond this distance the source is silent */
+  spatialMaxDistance?: number;
+  /** How quickly volume falls off between ref & max */
+  spatialRolloff?: number;
+  /** Directional cone — 360 = omnidirectional */
+  spatialConeInnerAngle?: number;
+  /** Cone outer angle (beyond inner, gain fades toward outer gain) */
+  spatialConeOuterAngle?: number;
+  /** Volume multiplier outside the cone (0..1) */
+  spatialConeOuterGain?: number;
+  /** Orientation vector — direction the source is "pointing" */
+  spatialOrientX?: number;
+  spatialOrientY?: number;
+  spatialOrientZ?: number;
+  /** Enable doppler shift as source moves */
+  spatialDoppler?: boolean;
+  /** Layer ID this source is linked to (auto-sync position to layer) */
+  spatialLinkedLayerId?: string | null;
 }
 
 export interface AudioData {
@@ -306,6 +338,36 @@ export interface AudioData {
   fadeOutBezier?: [number, number, number, number];
   audioEffects?: AudioEffectInstance[];
   eq?: AudioEQ;
+
+  // ── Spatial audio (3D positioning) ──
+  /** Enable 3D spatial positioning for this audio source */
+  spatialEnabled?: boolean;
+  /** Position in world/comp space (listener is at 0,0,0) */
+  spatialX?: number;
+  spatialY?: number;
+  spatialZ?: number;
+  /** Distance model: how volume falls off with distance */
+  spatialDistanceModel?: 'linear' | 'inverse' | 'exponential';
+  /** Full-volume radius */
+  spatialRefDistance?: number;
+  /** Beyond this distance the source is silent */
+  spatialMaxDistance?: number;
+  /** How quickly volume falls off between ref & max */
+  spatialRolloff?: number;
+  /** Directional cone — 360 = omnidirectional */
+  spatialConeInnerAngle?: number;
+  /** Cone outer angle (beyond inner, gain fades toward outer gain) */
+  spatialConeOuterAngle?: number;
+  /** Volume multiplier outside the cone (0..1) */
+  spatialConeOuterGain?: number;
+  /** Orientation vector — direction the source is "pointing" */
+  spatialOrientX?: number;
+  spatialOrientY?: number;
+  spatialOrientZ?: number;
+  /** Enable doppler shift as source moves */
+  spatialDoppler?: boolean;
+  /** Layer ID this source is linked to (auto-sync position to layer) */
+  spatialLinkedLayerId?: string | null;
 }
 
 export type TextAlignment = 'left'|'center'|'right'|'justify';
@@ -389,6 +451,138 @@ export interface TransitionData {
   centerY: number;
   /** Custom parameters passed to the transition shader */
   customParams: Record<string, number | string | boolean>;
+}
+
+// ── Cutout (background removal) data ─────────────────────────
+
+export type CutoutModel = 'mediapipe' | 'modnet' | 'u2net' | 'none';
+
+export interface CutoutStrokeSettings {
+  enabled: boolean;
+  color: string;                        // hex
+  width: number;                        // 0..50 px
+  softness: number;                     // 0..100 (%)
+  position: 'inside' | 'outside' | 'center';
+  style: 'solid' | 'glow';
+}
+
+export interface CutoutManualStroke {
+  id: string;
+  /** true = add to keep-mask (correction brush), false = subtract (erase) */
+  keep: boolean;
+  /** normalized local coords (0..1 in layer space) */
+  points: { x: number; y: number }[];
+  size: number;                         // brush diameter in px
+}
+
+export interface CutoutChromaSettings {
+  enabled: boolean;
+  keyColor: string;                     // hex — color to remove
+  similarity: number;                   // 0..100
+  smoothness: number;                   // 0..100
+  spillSuppress: number;                // 0..100
+}
+
+export interface CutoutData {
+  /** Master enable for auto background removal */
+  enabled: boolean;
+  /** Which model to use for realtime preview + bake */
+  model: CutoutModel;
+  /** Refine controls */
+  feather: number;                      // 0..100 (px)
+  contract: number;                     // -50..50 (px, negative shrinks)
+  smoothing: number;                    // 0..100 (edge smoothing)
+  threshold: number;                    // 0..100 (matte threshold)
+  /** Stroke around subject after cutout */
+  stroke: CutoutStrokeSettings;
+  /** Manual correction brush strokes */
+  manualStrokes: CutoutManualStroke[];
+  /** Manual mode — 'ai' = AI-only, 'replace' = manual only, 'correct' = AI+manual */
+  manualMode: 'ai' | 'replace' | 'correct';
+  /** Chroma-key section (independent of AI removal) */
+  chroma: CutoutChromaSettings;
+  /** Path to cached bake result (relative to project folder) */
+  bakedAlphaRef?: string;
+  /** Total frames baked so far (for progress UI) */
+  bakedFrameCount?: number;
+  /** Total frames needing bake */
+  totalFrameCount?: number;
+  /** True once bake completes for all frames */
+  bakeComplete?: boolean;
+}
+
+export function defaultCutoutData(): CutoutData {
+  return {
+    enabled: false,
+    model: 'mediapipe',
+    feather: 2,
+    contract: 0,
+    smoothing: 30,
+    threshold: 50,
+    stroke: {
+      enabled: false,
+      color: '#ffffff',
+      width: 4,
+      softness: 40,
+      position: 'outside',
+      style: 'solid',
+    },
+    manualStrokes: [],
+    manualMode: 'ai',
+    chroma: {
+      enabled: false,
+      keyColor: '#00ff00',
+      similarity: 40,
+      smoothness: 20,
+      spillSuppress: 30,
+    },
+  };
+}
+
+// ── Adjust layer data ────────────────────────────────────────
+
+export interface AdjustData {
+  enabled: boolean;
+  // Color
+  temp: number;          // -100..100 — cool to warm
+  tint: number;          // -100..100 — green to magenta
+  saturation: number;    // -100..100
+  // Lightness
+  exposure: number;      // -100..100 (EV-like)
+  contrast: number;      // -100..100
+  highlights: number;    // -100..100
+  shadows: number;       // -100..100
+  whites: number;        // -100..100
+  blacks: number;        // -100..100
+  brilliance: number;    // -100..100
+  // Effects
+  sharpen: number;       // 0..100
+  clarity: number;       // -100..100
+  fade: number;          // 0..100
+  vignette: number;      // -100..100 (negative = dark corners, positive = bright corners)
+  vignetteFeather: number; // 0..100
+  // Curves — added in 10F
+  // HSL — added in 10F
+  // Color wheels — added in 10F
+  // LUT
+  /** LUT identifier from lutStore, or '__identity' for no LUT */
+  lutId?: string;
+  /** LUT intensity 0..100 — how much to blend LUT vs original */
+  lutIntensity?: number;
+  /** Protect skin tones from LUT tinting (skin-tone hue mask) */
+  protectSkinTone?: boolean;
+}
+
+export function defaultAdjustData(): AdjustData {
+  return {
+    enabled: true,
+    temp: 0, tint: 0, saturation: 0,
+    exposure: 0, contrast: 0,
+    highlights: 0, shadows: 0, whites: 0, blacks: 0, brilliance: 0,
+    sharpen: 0, clarity: 0, fade: 0,
+    vignette: 0, vignetteFeather: 50,
+    lutId: '__identity', lutIntensity: 100, protectSkinTone: false,
+  };
 }
 
 export type LayerPayload = SolidData | ShapeData | ImageData | VideoData | AudioData | TextData | CompData | TransitionData | Record<string,never>;

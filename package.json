@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "clean": "npx rimraf dist electron/dist release",
-"electron:build-ts": "tsc -p electron/tsconfig.json",
+    "electron:build-ts": "tsc -p electron/tsconfig.json",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 -t 30000 && electron .\"",
     "electron:build": "npx rimraf release && npm run build && npm run electron:build-ts && electron-builder",
     "electron:start": "npm run build && npm run electron:build-ts && electron ."
@@ -22,6 +22,7 @@
     "gifenc": "^1.0.3",
     "lucide-react": "^1.25.0",
     "mp4-muxer": "^5.2.2",
+    "onnxruntime-web": "^1.27.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "three": "^0.168.0",

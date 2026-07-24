@@ -35,7 +35,6 @@ import { PenToolOverlay } from './PenToolOverlay';
 import { PickWhipOverlay } from './PickWhipOverlay';
 import { ShapeDrawOverlay } from './ShapeDrawOverlay';
 import { ShapeContextToolbar } from './ShapeContextToolbar';
-import { MaskContextToolbar } from './MaskContextToolbar';
 import { SnapGuidesOverlay } from './SnapGuidesOverlay';
 import { TextureLoadingOverlay } from './TextureLoadingOverlay';
 import { MotionBlurBadgeOverlay } from './MotionBlurBadgeOverlay';
@@ -47,8 +46,12 @@ import { RotationGizmo3D } from './RotationGizmo3D';
 import { CameraFrameGuide } from './CameraFrameGuide';
 import { CameraFrustumOverlay } from './CameraFrustumOverlay';
 import { CameraPreview } from './CameraPreview';
+import { FocalPointOverlay } from './FocalPointOverlay';
+import { CutoutBrushOverlay } from './CutoutBrushOverlay';
+import { cameraController } from '../../../renderer/CameraController';
 import { PerfHUD } from './PerfHUD';
 import { ViewportToolbar } from './ViewportToolbar';
+import { useRendererBackendStore } from '../../../state/rendererBackendStore';
 import { assetManager } from '../../../storage/AssetManager';
 import { createLayerInstance } from '../../../utils/createLayerInstance';
 import { useNotificationStore } from '../../../state/notificationStore';
@@ -350,6 +353,14 @@ const ViewportOverlays: React.FC<{
         isFreeView={isFreeView}
         renderer={renderer}
       />
+      <FocalPointOverlay
+        cameraManager={cameraManager}
+        viewportSize={viewportSize}
+      />
+      <CutoutBrushOverlay
+        cameraManager={cameraManager}
+        viewportSize={viewportSize}
+      />
       <SnapGuidesOverlay
         modalTransform={modalTransform}
         cameraManager={cameraManager}
@@ -384,7 +395,7 @@ export const ViewportPanel: React.FC = () => {
   const lastMouse = useRef({ x: 0, y: 0 });
   const [dropHighlight, setDropHighlight] = useState(false);
   const [isFreeView, setIsFreeView] = useState(
-    () => !!(window as any).__freeViewMode,
+    () => cameraController.isFreeView,
   );
 
   const viewportSize = useViewportSize(
@@ -426,19 +437,13 @@ export const ViewportPanel: React.FC = () => {
       : undefined,
   });
 
-  // Track free view mode changes
+  // Track view mode changes — subscribe to the controller directly
   useEffect(() => {
-    const handler = (e?: Event) => {
-      const detail = (e as CustomEvent | undefined)?.detail;
-      if (detail && typeof detail.free === 'boolean') {
-        setIsFreeView(detail.free);
-      } else {
-        setIsFreeView(!!(window as any).__freeViewMode);
-      }
-    };
-    document.addEventListener('viewport:viewmode', handler);
-    handler();
-    return () => document.removeEventListener('viewport:viewmode', handler);
+    const unsub = cameraController.onModeChange((mode) => {
+      setIsFreeView(mode === 'freeView');
+    });
+    setIsFreeView(cameraController.isFreeView);
+    return unsub;
   }, []);
 
   // Mouse tracking for context menu positioning
@@ -798,7 +803,6 @@ export const ViewportPanel: React.FC = () => {
 
       {/* Contextual toolbars */}
       {comp && <ShapeContextToolbar />}
-      {comp && <MaskContextToolbar />}
 
       {/* Axis gizmo */}
       {comp && <AxisGizmo onAxisClick={() => {}} />}
@@ -839,6 +843,63 @@ export const ViewportPanel: React.FC = () => {
 
       {/* Performance HUD (Shift+F to toggle) */}
       <PerfHUD />
+
+      {/* Backend warning banner — disabled while WebGPU is paused (TODO)
+      <BackendWarningBanner />
+      */}
+    </div>
+  );
+};
+
+const BackendWarningBanner: React.FC = () => {
+  const actual = useRendererBackendStore(s => s.actualBackend);
+  const unsupported = useRendererBackendStore(s => s.unsupportedEffectIds);
+  const fallbackReason = useRendererBackendStore(s => s.fallbackReason);
+  const [dismissed, setDismissed] = React.useState(false);
+
+  if (actual !== 'webgpu' && !fallbackReason) return null;
+  if (dismissed) return null;
+
+  const unsupportedCount = unsupported.size;
+
+  return (
+    <div style={{
+      position: 'absolute', left: 0, right: 0, bottom: 0,
+      padding: '6px 12px',
+      background: actual === 'webgpu'
+        ? 'linear-gradient(90deg, rgba(191,64,255,0.15), rgba(191,64,255,0.05))'
+        : 'rgba(255,151,96,0.15)',
+      borderTop: `1px solid ${actual === 'webgpu' ? 'rgba(191,64,255,0.4)' : 'rgba(255,151,96,0.4)'}`,
+      color: actual === 'webgpu' ? '#e5b8ff' : '#ffb890',
+      fontSize: 10,
+      display: 'flex', alignItems: 'center', gap: 8,
+      zIndex: 100,
+      pointerEvents: 'auto',
+      fontFamily: 'system-ui, sans-serif',
+    }}>
+      <span style={{
+        fontSize: 8, fontWeight: 700, letterSpacing: '0.06em',
+        padding: '2px 6px',
+        background: actual === 'webgpu' ? 'rgba(191,64,255,0.3)' : 'rgba(255,151,96,0.3)',
+        borderRadius: 3,
+      }}>
+        {actual === 'webgpu' ? 'WEBGPU (EXPERIMENTAL)' : 'FALLBACK'}
+      </span>
+      <span style={{ flex: 1 }}>
+        {actual === 'webgpu'
+          ? unsupportedCount > 0
+            ? `${unsupportedCount} effect${unsupportedCount === 1 ? '' : 's'} rendering via WebGL sidecar or disabled. See Preferences → Rendering.`
+            : 'Running on WebGPU. Some features may fall back to WebGL.'
+          : `Fell back to WebGL: ${fallbackReason}`}
+      </span>
+      <button
+        onClick={() => setDismissed(true)}
+        title="Dismiss"
+        style={{
+          background: 'transparent', border: 0, cursor: 'pointer',
+          color: 'inherit', opacity: 0.6, fontSize: 14, padding: '0 4px',
+        }}
+      >×</button>
     </div>
   );
 };

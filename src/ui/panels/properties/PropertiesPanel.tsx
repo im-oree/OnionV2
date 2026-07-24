@@ -11,14 +11,16 @@ import { EffectsSection } from './EffectsSection';
 import { VideoSection } from './VideoSection';
 import { AudioSection } from './AudioSection';
 import { ChartSection } from './ChartSection';
-import { MaskSection } from './MaskSection';
+import { MaskTab } from './MaskTab';
+import { AdjustTab } from './adjust/AdjustTab';
+import { CutoutTab } from './cutout/CutoutTab';
 import { SplineSection } from './SplineSection';
 import { ModifierSection } from './ModifierSection';
 import { TextAnimatorSection } from './TextAnimatorSection';
 import { ModelSection } from './ModelSection';
 import { MaterialSection } from './MaterialSection';
 
-type TabId = 'transform' | 'object' | 'audio' | 'modifiers';
+type TabId = 'transform' | 'object' | 'audio' | 'mask' | 'adjust' | 'cutout' | 'modifiers';
 
 interface TabDef {
   id: TabId;
@@ -105,6 +107,55 @@ function buildTabs(layerType: string | undefined): TabDef[] {
       id: 'audio',
       label: 'Audio',
       icon: AUDIO_ICON,
+    });
+  }
+
+  // Mask tab — shown for all visual layer types
+  const canMask = layerType && !['audio', 'null', 'camera', 'light'].includes(layerType);
+  if (canMask) {
+    tabs.push({
+      id: 'mask',
+      label: 'Mask',
+      icon: (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+          <rect x="4" y="4" width="16" height="16" rx="2" />
+          <circle cx="12" cy="12" r="5" fill="currentColor" fillOpacity="0.3" />
+        </svg>
+      ),
+    });
+  }
+
+  // Adjust tab — color grading for visual layer types
+  const canAdjust = layerType && ['video', 'image', 'comp', 'solid', 'shape', 'text'].includes(layerType);
+  if (canAdjust) {
+    tabs.push({
+      id: 'adjust',
+      label: 'Adjust',
+      icon: (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 3 A9 9 0 0 1 12 21 Z" fill="currentColor" />
+          <line x1="6" y1="6" x2="18" y2="18" opacity="0.4" />
+        </svg>
+      ),
+    });
+  }
+
+  // Cutout tab — AI background removal for video, image, comp layers
+  const canCutout = layerType && ['video', 'image', 'comp'].includes(layerType);
+  if (canCutout) {
+    tabs.push({
+      id: 'cutout',
+      label: 'Cutout',
+      icon: (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M20 3 H4 C3 3 3 4 3 5 V16 C3 17 4 18 5 18 H8 L12 22 L16 18 H19 C20 18 21 17 21 16 V5 C21 4 20 3 20 3 Z" fill="currentColor" fillOpacity="0.2" />
+          <circle cx="12" cy="10" r="3" />
+        </svg>
+      ),
     });
   }
 
@@ -309,10 +360,33 @@ export const PropertiesPanel: React.FC = () => {
             <Placeholder text="Multi-layer audio editing coming soon" />
           )}
 
+          {/* MASK TAB — dedicated Mask sub-panel */}
+          {activeTab === 'mask' && single && (
+            <MaskTab layerId={single.id} />
+          )}
+          {activeTab === 'mask' && selectedLayers.length > 1 && (
+            <Placeholder text="Multi-layer mask editing disabled — select one layer" />
+          )}
+
+          {/* ADJUST TAB — color grading */}
+          {activeTab === 'adjust' && single && (
+            <AdjustTab layer={single} compId={comp.id} />
+          )}
+          {activeTab === 'adjust' && selectedLayers.length > 1 && (
+            <Placeholder text="Multi-layer adjust editing disabled — select one layer" />
+          )}
+
+          {/* CUTOUT TAB — AI background removal */}
+          {activeTab === 'cutout' && single && (
+            <CutoutTab layer={single} compId={comp.id} />
+          )}
+          {activeTab === 'cutout' && selectedLayers.length > 1 && (
+            <Placeholder text="Multi-layer cutout editing disabled — select one layer" />
+          )}
+
           {activeTab === 'modifiers' && single && (
             <>
               <EffectsSection layer={single} compId={comp.id} />
-              <MaskSection layerId={single.id} />
               <ModifierSection layer={single} compId={comp.id} />
             </>
           )}

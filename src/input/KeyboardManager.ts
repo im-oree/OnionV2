@@ -297,26 +297,22 @@ export function registerAllShortcuts(): void {
   }, remappable: true });
 
   shortcutRegistry.register({ id: 'file.save', key: 's', ctrl: true, context: 'global', handler: async () => {
-    console.log('[Ctrl+S] triggered');
     try {
       const smMod = await import('../storage/StorageManager');
       const psMod = await import('../state/projectStore');
       const sm = smMod.StorageManager.getInstance();
-      const name = psMod.useProjectStore.getState().project.name;
-      console.log('[Ctrl+S] saving project:', name, 'handle:', sm.currentProjectHandle);
+
+      // If the project has never been saved, open the naming modal
+      // (no OS file picker, no "Save As first" error).
       if (!sm.currentProjectHandle) {
-        const notif = await import('../state/notificationStore');
-        notif.useNotificationStore.getState().addNotification({
-          type: 'warning',
-          message: 'No project open — use File > Save As to save first.',
-          autoDismiss: 3000,
-        });
+        const { openSaveProjectDialog } = await import('../ui/dialogs/DialogManager');
+        openSaveProjectDialog('first-save');
         return;
       }
+
+      const name = psMod.useProjectStore.getState().project.name;
       await sm.save(name);
-      console.log('[Ctrl+S] saved successfully');
     } catch (err: any) {
-      console.error('[Ctrl+S] failed:', err);
       const notif = await import('../state/notificationStore');
       notif.useNotificationStore.getState().addNotification({
         type: 'error',
@@ -327,10 +323,7 @@ export function registerAllShortcuts(): void {
 
   // File shortcuts
   shortcutRegistry.register({ id: 'file.saveAs', key: 's', ctrl: true, shift: true, context: 'global', handler: () => {
-    import('../ui/menubar/menus/fileMenu').then(m => {
-      const saveAs = m.fileMenu.find((i: any) => i.id === 'file.saveAs');
-      saveAs?.onClick?.();
-    });
+    import('../ui/dialogs/DialogManager').then(m => m.openSaveProjectDialog('save-as'));
   }, remappable: true });
 
   shortcutRegistry.register({ id: 'file.newComp', key: 'n', ctrl: true, context: 'global', handler: () => {

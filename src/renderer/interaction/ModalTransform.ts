@@ -570,9 +570,18 @@ export class ModalTransform {
           break;
         }
 
-        // ── 2D mode: original screen-to-world math ─────────────────────
-        let gx = delta.x / zoom;
-        let gy = delta.y / zoom;
+        // ── 2D mode: convert pixel delta → world delta ──
+        // Use the ACTUAL visible world span rather than cameraManager.zoom,
+        // which can be stale after fit-to-comp / perspective swap.
+        const cam = this.cameraManager.camera; // orthographic
+        const viewW = cam.right - cam.left;
+        const viewH = cam.top - cam.bottom;
+        const vpW = this.cameraManager.viewportWidth || 1;
+        const vpH = this.cameraManager.viewportHeight || 1;
+        const worldPerPxX = viewW / vpW;
+        const worldPerPxY = viewH / vpH;
+        let gx = delta.x * worldPerPxX;
+        let gy = delta.y * worldPerPxY;
         if (_axisLock === 'x' || _axisExclude === 'y') gy = 0;
         if (_axisLock === 'y' || _axisExclude === 'x') gx = 0;
         if (_precisionMode) { gx *= 0.1; gy *= 0.1; }

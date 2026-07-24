@@ -11,6 +11,8 @@ import { useViewportStore } from '../../state/viewportStore';
 import { autoSave } from '../../storage/AutoSave';
 import { themeManager } from '../../styles/ThemeManager';
 import { alertConfirm, alertPrompt } from '../../state/alertModalStore';
+import { useRendererBackendStore } from '../../state/rendererBackendStore';
+import type { BackendId } from '../../renderer/backend/RenderBackend';
 
 // ─── Color Utility Helpers ───
 function hexToRgba(hex: string, alpha: number): string {
@@ -70,7 +72,7 @@ interface Props {
   initialSection?: string;
 }
 
-type Tab = 'interface' | 'themes' | 'viewport' | 'playback' | 'storage' | 'export' | 'performance' | 'system' | 'about';
+type Tab = 'interface' | 'themes' | 'viewport' | 'playback' | 'storage' | 'export' | 'performance' | 'system' | 'rendering' | 'about';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'interface', label: 'Interface' },
@@ -81,6 +83,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'export', label: 'Export' },
   { id: 'performance', label: 'Performance' },
   { id: 'system', label: 'System' },
+  { id: 'rendering', label: 'Rendering' },
   { id: 'about', label: 'About' },
 ];
 
@@ -761,6 +764,16 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
               </>
             )}
 
+            {/* ─── RENDERING ─── */}
+            {activeTab === 'rendering' && (
+              <>
+                <div style={sectionStyle}>
+                  <div className="text-ui-xs font-medium text-text-primary mb-2">Rendering Backend</div>
+                  <RenderingPreferences />
+                </div>
+              </>
+            )}
+
             {/* ─── ABOUT ─── */}
             {activeTab === 'about' && (
               <div className="flex flex-col items-center gap-4 py-6">
@@ -796,6 +809,153 @@ export const PreferencesDialog: React.FC<Props> = ({ onClose, initialSection }) 
           </div>
         </div>
       </div>
+    </div>
+  );
+};
+
+// ── Rendering Preferences ─────────────────────────────────────
+
+const RenderingPreferences: React.FC = () => {
+  const preferred = useRendererBackendStore(s => s.preferredBackend);
+  const actual = useRendererBackendStore(s => s.actualBackend);
+  const swapping = useRendererBackendStore(s => s.swapping);
+  const webgpuAvailable = useRendererBackendStore(s => s.webgpuAvailable);
+  const webgpuChecked = useRendererBackendStore(s => s.webgpuChecked);
+  const fallbackReason = useRendererBackendStore(s => s.fallbackReason);
+  const mismatch = actual !== preferred;
+
+  const setPreferred = (backend: BackendId) => {
+    useRendererBackendStore.getState().setPreferredBackend(backend);
+  };
+
+  const applyNow = async (backend: BackendId) => {
+    useRendererBackendStore.getState().setPreferredBackend(backend);
+    const r: any = (window as any).__renderer;
+    if (r?.swapBackend) {
+      const result = await r.swapBackend(backend);
+      if (!result.ok && result.reason) {
+        alert(`Backend switch failed: ${result.reason}`);
+      }
+    }
+  };
+
+  const retryDetection = async () => {
+    await useRendererBackendStore.getState().checkWebGPUAvailability();
+  };
+
+  const labelStyle: React.CSSProperties = {
+    fontSize: 'var(--font-size-xs)',
+    color: 'var(--color-text-secondary)',
+  };
+  const valueStyle: React.CSSProperties = {
+    fontSize: 'var(--font-size-xs)',
+    color: 'var(--color-text-primary)',
+    fontFamily: 'var(--font-family-mono)',
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* Preferred backend selector */}
+      <div className="flex items-center justify-between">
+        <span style={labelStyle}>Preferred Backend</span>
+        <select
+          value={preferred}
+          onChange={e => setPreferred(e.target.value as BackendId)}
+          className="text-ui-xs bg-surface border border-border rounded-sm px-1 py-0.5 text-text-primary"
+        >
+          <option value="webgl">WebGL (default)</option>
+          <option value="webgpu" disabled={!webgpuAvailable}>
+            WebGPU{!webgpuAvailable ? ' (unavailable)' : ''}
+          </option>
+        </select>
+      </div>
+
+      {/* Currently active backend */}
+      <div className="flex items-center justify-between">
+        <span style={labelStyle}>Active Backend</span>
+        <span style={valueStyle}>
+          {actual === 'webgl' ? 'WebGL' : 'WebGPU'}
+          {swapping && ' (swapping…)'}
+          {mismatch && !swapping && (
+            <span style={{ color: 'var(--color-warning)', marginLeft: 4 }}>
+              (fallback)
+            </span>
+          )}
+        </span>
+      </div>
+
+      {/* WebGPU detection status */}
+      <div className="flex items-center justify-between">
+        <span style={labelStyle}>WebGPU Available</span>
+        <div className="flex items-center gap-2">
+          <span style={valueStyle}>
+            {!webgpuChecked
+              ? 'Checking…'
+              : webgpuAvailable
+                ? 'Yes'
+                : 'No'}
+          </span>
+          {!webgpuChecked && (
+            <button
+              onClick={retryDetection}
+              className="text-ui-xs px-1.5 py-0.5 rounded-sm border border-border bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Fallback reason */}
+      {fallbackReason && (
+        <div
+          style={{
+            padding: '6px 8px',
+            background: 'rgba(255,160,50,0.12)',
+            border: '1px solid rgba(255,160,50,0.3)',
+            borderRadius: 3,
+            fontSize: 10,
+            color: 'var(--color-text-secondary)',
+            lineHeight: 1.4,
+          }}
+        >
+          <strong style={{ color: '#ffa030' }}>Fallback reason:</strong>{' '}
+          {fallbackReason}
+        </div>
+      )}
+
+      {/* Apply Now button */}
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          onClick={() => applyNow('webgl')}
+          disabled={swapping}
+          className="flex-1 text-ui-xs px-2 py-1 rounded-sm border border-border
+                     bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer
+                     disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Apply WebGL Now
+        </button>
+        <button
+          onClick={() => applyNow('webgpu')}
+          disabled={swapping || !webgpuAvailable}
+          className="flex-1 text-ui-xs px-2 py-1 rounded-sm border border-border
+                     bg-surface hover:bg-panel-hover text-text-secondary cursor-pointer
+                     disabled:opacity-40 disabled:cursor-not-allowed"
+          title={
+            !webgpuAvailable
+              ? 'WebGPU not available in this browser'
+              : 'Switch to WebGPU backend'
+          }
+        >
+          {swapping ? 'Swapping…' : 'Apply WebGPU Now'}
+        </button>
+      </div>
+
+      {/* Info note */}
+      <p className="text-[10px] text-text-tertiary mt-1" style={{ lineHeight: 1.4 }}>
+        WebGPU is experimental — some features (custom effects, motion blur, DOF)
+        may not work. You can switch back to WebGL at any time.
+      </p>
     </div>
   );
 };

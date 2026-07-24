@@ -1,5 +1,7 @@
 /**
  * AudioEQSection — 5-band EQ with visual response curve.
+ * All band params (gain, frequency, Q) are keyframeable via property path
+ * `eq.<bandIdx>.<field>`.
  */
 import React, { useCallback, useRef, useEffect, useState } from 'react';
 import { Section } from './Section';
@@ -25,6 +27,9 @@ const DEFAULT_EQ: AudioEQ = {
 };
 
 const BAND_LABELS = ['Low', 'Low-Mid', 'Mid', 'High-Mid', 'High'];
+
+const bandPath = (idx: number, field: 'gain' | 'frequency' | 'q') =>
+  `eq.${idx}.${field}`;
 
 export const AudioEQSection: React.FC<Props> = ({ layer, compId }) => {
   const data = layer.data as (VideoData | AudioData) | undefined;
@@ -52,20 +57,13 @@ export const AudioEQSection: React.FC<Props> = ({ layer, compId }) => {
   return (
     <>
       <Section label="Equalizer">
-        {/* Enable toggle + reset */}
         <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '6px 10px',
         }}>
           <label style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            fontSize: 11,
-            color: 'var(--color-text-primary)',
-            cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 8,
+            fontSize: 11, color: 'var(--color-text-primary)', cursor: 'pointer',
           }}>
             <CheckboxInput value={eq.enabled} onChange={setEnabled} />
             <span>EQ Enabled</span>
@@ -73,27 +71,22 @@ export const AudioEQSection: React.FC<Props> = ({ layer, compId }) => {
           <button
             onClick={resetEQ}
             style={{
-              padding: '3px 8px',
-              fontSize: 9,
+              padding: '3px 8px', fontSize: 9,
               background: 'transparent',
               border: '1px solid var(--color-border)',
-              borderRadius: 3,
-              color: 'var(--color-text-secondary)',
-              cursor: 'pointer',
+              borderRadius: 3, color: 'var(--color-text-secondary)', cursor: 'pointer',
             }}
           >
             Reset
           </button>
         </div>
 
-        {/* Visual response curve */}
         {eq.enabled && (
           <div style={{ padding: '4px 10px 8px' }}>
             <EQResponseCurve bands={eq.bands} />
           </div>
         )}
 
-        {/* Band controls */}
         {eq.enabled && eq.bands.map((band, idx) => (
           <div key={idx} style={{
             borderTop: idx === 0 ? '1px solid var(--color-divider)' : undefined,
@@ -101,12 +94,9 @@ export const AudioEQSection: React.FC<Props> = ({ layer, compId }) => {
             padding: '6px 0 4px',
           }}>
             <div style={{
-              padding: '2px 10px',
-              fontSize: 10,
-              fontWeight: 600,
+              padding: '2px 10px', fontSize: 10, fontWeight: 600,
               color: 'var(--color-text-secondary)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
+              textTransform: 'uppercase', letterSpacing: '0.05em',
             }}>
               {BAND_LABELS[idx]} · {formatFreq(band.frequency)}
             </div>
@@ -117,7 +107,7 @@ export const AudioEQSection: React.FC<Props> = ({ layer, compId }) => {
               defaultValue={0}
               formatValue={(v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}dB`}
               layerId={layer.id}
-              propertyPath={`eq.bands.${idx}.gain`}
+              propertyPath={bandPath(idx, 'gain')}
               onChange={(v) => updateBand(idx, { gain: v })}
             />
             <PropRowWithKF
@@ -126,6 +116,8 @@ export const AudioEQSection: React.FC<Props> = ({ layer, compId }) => {
               min={20} max={20000} step={10}
               defaultValue={DEFAULT_EQ.bands[idx].frequency}
               formatValue={formatFreq}
+              layerId={layer.id}
+              propertyPath={bandPath(idx, 'frequency')}
               onChange={(v) => updateBand(idx, { frequency: v })}
             />
             {band.type === 'peaking' && (
@@ -134,6 +126,8 @@ export const AudioEQSection: React.FC<Props> = ({ layer, compId }) => {
                 value={band.q}
                 min={0.1} max={20} step={0.1}
                 defaultValue={1}
+                layerId={layer.id}
+                propertyPath={bandPath(idx, 'q')}
                 onChange={(v) => updateBand(idx, { q: v })}
               />
             )}
@@ -149,7 +143,7 @@ function formatFreq(hz: number): string {
   return `${Math.round(hz)}Hz`;
 }
 
-// ── Visual response curve ─────────────────────────────
+// ── Visual response curve (unchanged) ──────────────────
 
 const EQResponseCurve: React.FC<{ bands: EQBand[] }> = ({ bands }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -181,12 +175,8 @@ const EQResponseCurve: React.FC<{ bands: EQBand[] }> = ({ bands }) => {
     if (!ctx) return;
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
-
-    // Background
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
     ctx.fillRect(0, 0, w, h);
-
-    // 0dB reference line
     ctx.strokeStyle = 'rgba(255,255,255,0.15)';
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -194,23 +184,17 @@ const EQResponseCurve: React.FC<{ bands: EQBand[] }> = ({ bands }) => {
     ctx.lineTo(w, h / 2);
     ctx.stroke();
 
-    // Compute response
     const samples = 200;
     const points: [number, number][] = [];
     for (let i = 0; i < samples; i++) {
-      // Log-scale frequency 20Hz → 20kHz
       const f = 20 * Math.pow(1000, i / (samples - 1));
       let totalGainDb = 0;
-      for (const band of bands) {
-        totalGainDb += simulateBandResponse(band, f);
-      }
+      for (const band of bands) totalGainDb += simulateBandResponse(band, f);
       const x = (i / (samples - 1)) * w;
-      // Map -24..+24 dB to canvas height (inverted)
       const y = h / 2 - (totalGainDb / 24) * (h / 2);
       points.push([x, Math.max(2, Math.min(h - 2, y))]);
     }
 
-    // Fill under curve
     ctx.beginPath();
     ctx.moveTo(0, h / 2);
     for (const [x, y] of points) ctx.lineTo(x, y);
@@ -223,7 +207,6 @@ const EQResponseCurve: React.FC<{ bands: EQBand[] }> = ({ bands }) => {
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // Curve outline
     ctx.beginPath();
     ctx.moveTo(points[0][0], points[0][1]);
     for (const [x, y] of points) ctx.lineTo(x, y);
@@ -231,7 +214,6 @@ const EQResponseCurve: React.FC<{ bands: EQBand[] }> = ({ bands }) => {
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    // Band frequency markers
     for (const band of bands) {
       const logPos = Math.log(band.frequency / 20) / Math.log(1000);
       const x = logPos * w;
@@ -249,8 +231,7 @@ const EQResponseCurve: React.FC<{ bands: EQBand[] }> = ({ bands }) => {
       <canvas
         ref={canvasRef}
         style={{
-          display: 'block',
-          borderRadius: 3,
+          display: 'block', borderRadius: 3,
           border: '1px solid var(--color-border)',
         }}
       />
@@ -258,26 +239,18 @@ const EQResponseCurve: React.FC<{ bands: EQBand[] }> = ({ bands }) => {
   );
 };
 
-/**
- * Approximate the dB response of a single band at a given frequency.
- * Simple model — good enough for visualization.
- */
 function simulateBandResponse(band: EQBand, freq: number): number {
   const ratio = freq / band.frequency;
   const logRatio = Math.log2(ratio);
-
   if (band.type === 'peaking') {
-    // Bell curve peaking at freq, width controlled by Q
     const width = 1 / band.q;
     const falloff = Math.exp(-Math.pow(logRatio / width, 2) * 2);
     return band.gain * falloff;
   } else if (band.type === 'lowshelf') {
-    // Full gain below freq, taper to 0 above
     if (logRatio < -1) return band.gain;
     if (logRatio > 1) return 0;
     return band.gain * (1 - (logRatio + 1) / 2);
   } else {
-    // highshelf: 0 gain below freq, full above
     if (logRatio > 1) return band.gain;
     if (logRatio < -1) return 0;
     return band.gain * ((logRatio + 1) / 2);

@@ -4,6 +4,7 @@ import { SelectInput } from './inputs/SelectInput';
 import { PropRowWithKF } from './PropRowWithKF';
 import { AudioEffectsSection } from './AudioEffectsSection';
 import { AudioEQSection } from './AudioEQSection';
+import { AudioSpatialSection } from './audio/AudioSpatialSection';
 import type { Layer, VideoData, AudioData, FadeCurve } from '../../../types/layer';
 import { useCompositionStore } from '../../../state/compositionStore';
 
@@ -12,12 +13,13 @@ interface Props {
   compId: string;
 }
 
-type SubTab = 'basic' | 'effects' | 'eq';
+type SubTab = 'basic' | 'effects' | 'eq' | 'spatial';
 
 const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: 'basic', label: 'Basic' },
   { id: 'effects', label: 'Effects' },
   { id: 'eq', label: 'EQ' },
+  { id: 'spatial', label: 'Spatial' },
 ];
 
 export const AudioSection: React.FC<Props> = ({ layer, compId }) => {
@@ -219,6 +221,11 @@ export const AudioSection: React.FC<Props> = ({ layer, compId }) => {
       {/* ── EQ TAB ── */}
       {subTab === 'eq' && (
         <AudioEQSection layer={layer} compId={compId} />
+      )}
+
+      {/* ── SPATIAL TAB ── */}
+      {subTab === 'spatial' && (
+        <AudioSpatialSection layer={layer} compId={compId} />
       )}
     </>
   );

@@ -16,6 +16,8 @@ import { EffectChain } from './EffectChain';
 import { fboPool } from './FBOPool';
 import { useEffectsStore } from '../../state/effectsStore';
 import { useCompositionStore } from '../../state/compositionStore';
+import { useRendererBackendStore } from '../../state/rendererBackendStore';
+import { glslSidecar } from './GLSLSidecar';
 
 export class EffectsRenderer {
   private renderer: THREE.WebGLRenderer;
@@ -32,6 +34,10 @@ export class EffectsRenderer {
   setCurrentTime(t: number): void {
     this._currentTime = t;
   }
+
+  /** Hidden WebGL renderer used when the main backend is WebGPU. */
+  private _sidecarRenderer: THREE.WebGLRenderer | null = null;
+  private _sidecarFailed = false;
 
   constructor(renderer: THREE.WebGLRenderer) {
     this.renderer = renderer;
@@ -113,6 +119,40 @@ export class EffectsRenderer {
 
     const w = Math.max(1, Math.ceil(layerWidth));
     const h = Math.max(1, Math.ceil(layerHeight));
+
+    // Backend check — if WebGPU, route GLSL effects through the hidden
+    // WebGL sidecar renderer. The sidecar creates a WebGL context alongside
+    // WebGPU and the compositor blits the result back.
+    // We attempt creation once; if it fails, all effects are marked unsupported
+    // so the UI shows badges and the user can switch backends.
+    const backendStatus = (window as any).__renderer?.activeBackend as string | undefined;
+    if (backendStatus === 'webgpu') {
+      if (!this._sidecarRenderer && !this._sidecarFailed) {
+        try {
+          const r = glslSidecar.ensure();
+          if (r) {
+            this._sidecarRenderer = r;
+            glslSidecar.resize(w, h);
+          } else {
+            this._sidecarFailed = true;
+          }
+        } catch {
+          this._sidecarFailed = true;
+        }
+      }
+
+      if (this._sidecarFailed) {
+        // Mark all active effects as unsupported so UI shows WEBGL badges
+        for (const fx of active) {
+          useRendererBackendStore.getState().markEffectUnsupported(fx.type);
+        }
+        return false;
+      }
+
+      // Sidecar is ready — the compositor will route effect rendering to the
+      // sidecar's WebGL context for any effects that use raw GLSL shaders.
+      // Full sidecar integration (FBO migration, blit-back) is Batch 9C.
+    }
 
     const oldTarget = this.renderer.getRenderTarget();
     const oldViewport = new THREE.Vector4();
@@ -285,6 +325,22 @@ export class EffectsRenderer {
     if (!this.enabledEffects.has(layerId)) return false;
     const effects = useEffectsStore.getState().effectsByLayer[layerId] ?? [];
     return effects.some((e) => e.enabled && (e.space ?? 'local') === 'screen');
+  }
+
+  /** Swap in a new renderer after a backend hot-swap. */
+  updateRenderer(renderer: THREE.WebGLRenderer): void {
+    (this as any).renderer = renderer;
+    // Dispose per-layer FBOs — they're tied to the old GL context
+    try { fboPool.dispose(); } catch {}
+    // Dispose all effect chains (their FBOs belong to the old context)
+    for (const [, chain] of this.effectChains) {
+      chain.dispose();
+    }
+    this.effectChains.clear();
+    this.effectQuads.clear();
+    this.enabledEffects.clear();
+    this._effectsDisabled.clear();
+    this._clearPrivateScene();
   }
 
   dispose(): void {

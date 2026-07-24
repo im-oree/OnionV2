@@ -7,6 +7,7 @@ import {
   usePreviewResolutionStore,
   PREVIEW_SCALE_LABELS,
 } from '../../../state/previewResolutionStore';
+import { useRendererBackendStore } from '../../../state/rendererBackendStore';
 
 interface PerfSnapshot {
   fps: number;
@@ -91,6 +92,8 @@ export const PerfHUD: React.FC = () => {
     return () => cancelAnimationFrame(rafRef.current);
   }, [visible]);
 
+  const backend = useRendererBackendStore(s => s.actualBackend);
+
   if (!visible || !stats) return null;
 
   const fpsCol = fpsColor(stats.fps, stats.targetFps);
@@ -140,6 +143,13 @@ export const PerfHUD: React.FC = () => {
         <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>
           / {stats.targetFps} fps
         </span>
+        <span style={{
+          fontSize: 8, fontWeight: 700,
+          padding: '1px 4px', borderRadius: 2,
+          background: backend === 'webgpu' ? 'rgba(191,64,255,0.3)' : 'rgba(60,120,220,0.3)',
+          color: backend === 'webgpu' ? '#c37cff' : '#5cc0ff',
+          marginLeft: 4,
+        }}>{backend === 'webgpu' ? 'GPU' : 'GL'}</span>
         <span style={{ flex: 1 }} />
         <span
           style={{

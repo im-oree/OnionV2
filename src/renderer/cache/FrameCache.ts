@@ -285,16 +285,16 @@ export class FrameCache {
    * old blitted frame never shows through when we've moved to normal render.
    */
   hideOverlay(): void {
-    if (FrameCache._overlayCanvas) {
-      FrameCache._overlayCanvas.style.display = 'none';
-      const ctx = FrameCache._overlayCanvas.getContext('2d');
-      if (ctx) {
-        ctx.clearRect(
-          0, 0,
-          FrameCache._overlayCanvas.width,
-          FrameCache._overlayCanvas.height,
-        );
-      }
+    if (!FrameCache._overlayCanvas) return;
+    if (FrameCache._overlayCanvas.style.display === 'none') return;
+    FrameCache._overlayCanvas.style.display = 'none';
+    const ctx = FrameCache._overlayCanvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(
+        0, 0,
+        FrameCache._overlayCanvas.width,
+        FrameCache._overlayCanvas.height,
+      );
     }
   }
 }

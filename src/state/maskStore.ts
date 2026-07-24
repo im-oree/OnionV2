@@ -117,6 +117,8 @@ interface MaskStore {
   /** Whether the mask panel/system is enabled for the currently active layer */
   maskEnabledByLayer: Record<string, boolean>;
   revision: number;
+  /** Active brush mode when editing a brush mask */
+  brushMode: 'paint' | 'erase';
 
   // Create
   addMask: (layerId: string, shapeType: MaskShapeType, sizeW?: number, sizeH?: number) => VectorMask;
@@ -158,6 +160,7 @@ export const useMaskStore = create<MaskStore>((set, get) => ({
   selectedMaskId: null,
   maskEnabledByLayer: {},
   revision: 0,
+  brushMode: 'paint',
 
   addMask: (layerId, shapeType, sizeW, sizeH) => {
     const snapshot = captureSnapshot();

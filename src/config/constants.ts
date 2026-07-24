@@ -22,8 +22,7 @@ export const TOOLS = {
   SHAPE:'shape',
   PEN:'pen', TEXT:'text', NULL:'null', GRADIENT:'gradient', PICK_WHIP:'pickWhip',
   ORBIT:'orbit', TRACKXY:'trackXY', DOLLY:'dolly',
-  MASK:'mask',              // ← ADD THIS
-  PERSPECTIVE:'perspective', // ← ADD THIS
+  PERSPECTIVE:'perspective',
 } as const;
 
 export const RENDERER_MODE = { DRAFT:'draft', PREVIEW:'preview', FULL:'full' } as const;

@@ -121,6 +121,13 @@ const App: React.FC = () => {
     });
   }, []);
 
+  // WebGPU check disabled — always WebGL until backend port is complete.
+  // React.useEffect(() => {
+  //   import('./state/rendererBackendStore').then(({ useRendererBackendStore }) => {
+  //     useRendererBackendStore.getState().checkWebGPUAvailability();
+  //   });
+  // }, []);
+
   // Keep navigation stack in sync with active comp on first mount
   React.useEffect(() => {
     const activeId = useCompositionStore.getState().activeCompositionId;
@@ -138,6 +145,11 @@ const App: React.FC = () => {
     (window as any).__effectsStore = useEffectsStore;
     (window as any).__maskStore = useMaskStore;
     (window as any).__markerStore = useMarkerStore;
+    import('./renderer/color/lutStore').then(({ useLUTStore }) => {
+      (window as any).__lutStore = useLUTStore;
+      // Load LUTs from workspace on startup
+      useLUTStore.getState().loadFromWorkspace();
+    });
     // Debugging: expose selection store and animation clock for split diagnosis
     import('./state/selectionStore').then(({ useSelectionStore }) => {
       (window as any).__selectionStore = useSelectionStore;

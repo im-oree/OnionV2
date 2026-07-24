@@ -16,6 +16,7 @@ import { useEffectsStore } from '../../../state/effectsStore';
 import { useSelectionStore } from '../../../state/selectionStore';
 import { useCompositionStore } from '../../../state/compositionStore';
 import { useNotificationStore } from '../../../state/notificationStore';
+import { useRendererBackendStore } from '../../../state/rendererBackendStore';
 import { EffectPresetsPanel } from './EffectPresetsPanel';
 import { createLayerInstance } from '../../../utils/createLayerInstance';
 import { useContextMenu } from '../../common/useContextMenu';
@@ -263,6 +264,9 @@ const EffectCard: React.FC<{
   onContext: (e: React.MouseEvent) => void;
   onHover: () => void;
 }> = ({ def, onDoubleClick, onContext, onHover }) => {
+  const isUnsupported = useRendererBackendStore(s =>
+    s.actualBackend === 'webgpu' && s.getCapabilities && !s.getCapabilities().rawGLSLShaders
+  );
   const [thumbImg, setThumbImg] = useState<HTMLImageElement | null>(null);
   const [hover, setHover] = useState(false);
   const [resizeKey, setResizeKey] = useState(0);
@@ -430,6 +434,20 @@ const EffectCard: React.FC<{
           display: 'block',
         }}
       >
+        {isUnsupported && (
+          <div style={{
+            position: 'absolute', top: 4, right: 4,
+            fontSize: 7, fontWeight: 700,
+            padding: '1px 4px',
+            background: 'rgba(255,151,96,0.9)',
+            color: '#000',
+            borderRadius: 2,
+            letterSpacing: '0.03em',
+            zIndex: 5,
+          }} title="This effect requires WebGL. Switch backend in Preferences.">
+            WEBGL
+          </div>
+        )}
         {thumbImg ? (
           <canvas
             ref={canvasRef}

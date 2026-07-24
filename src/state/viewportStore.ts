@@ -32,8 +32,12 @@ export interface ViewportSettings {
   panY: number;
   /** Camera-view UI zoom (only affects visual display when viewing through active camera) */
   cameraViewZoom: number;
-  /** Fly mode active (Shift+`) */
+  /** Fly mode active (Shift+F toggle, FPS-style) */
   flyMode: boolean;
+  /** Fly mode speed multiplier (Q slows, E accelerates) */
+  flySpeed: number;
+  /** Show the focal point marker in Free View */
+  showFocalPoint: boolean;
   /** Show checkerboard pattern inside the comp rect for transparency preview */
   showTransparencyCheckerboard: boolean;
   /** Outside-composition background style */
@@ -78,6 +82,8 @@ export interface ViewportStoreState {
   setCameraViewZoom: (z: number) => void;
   setFlyMode: (v: boolean) => void;
   toggleFlyMode: () => void;
+  setFlySpeed: (n: number) => void;
+  setShowFocalPoint: (v: boolean) => void;
   setOutsideBgStyle: (style: OutsideBgStyle) => void;
 }
 
@@ -105,6 +111,8 @@ const DEFAULT_SETTINGS: ViewportSettings = {
   panY: 0,
   cameraViewZoom: 1,
   flyMode: false,
+  flySpeed: 500,
+  showFocalPoint: true,
   showTransparencyCheckerboard: false,
   outsideBgStyle: 'gradient',
 };
@@ -164,6 +172,10 @@ export const useViewportStore = create<ViewportStoreState>((set) => ({
   })),
   setFlyMode: (v) => set((s) => ({ settings: { ...s.settings, flyMode: v } })),
   toggleFlyMode: () => set((s) => ({ settings: { ...s.settings, flyMode: !s.settings.flyMode } })),
+  setFlySpeed: (n) => set((s) => ({
+    settings: { ...s.settings, flySpeed: Math.max(10, Math.min(10000, n)) },
+  })),
+  setShowFocalPoint: (v) => set((s) => ({ settings: { ...s.settings, showFocalPoint: v } })),
   setOutsideBgStyle: (style) => set((s) => ({ settings: { ...s.settings, outsideBgStyle: style } })),
   setShowTransparencyCheckerboard: (v) => set((s) => ({ settings: { ...s.settings, showTransparencyCheckerboard: v } })),
   toggleTransparencyCheckerboard: () => set((s) => ({ settings: { ...s.settings, showTransparencyCheckerboard: !s.settings.showTransparencyCheckerboard } })),
